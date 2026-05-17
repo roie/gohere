@@ -30,6 +30,7 @@ type Config struct {
 
 type Result struct {
 	Port    int
+	ctx     context.Context
 	cmd     *exec.Cmd
 	done    chan struct{}
 	waitErr error
@@ -51,6 +52,9 @@ func (r *Result) Wait() error {
 		return nil
 	}
 	<-r.done
+	if r.waitErr != nil && r.ctx != nil && r.ctx.Err() != nil {
+		return nil
+	}
 	return r.waitErr
 }
 
@@ -208,7 +212,7 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	go streamAndScan(stderr, cfg.Stderr, detected, &scanWG)
 
 	done := make(chan struct{})
-	result := &Result{cmd: cmd, done: done}
+	result := &Result{ctx: ctx, cmd: cmd, done: done}
 	go func() {
 		result.waitErr = cmd.Wait()
 		scanWG.Wait()

@@ -161,6 +161,25 @@ func TestRunStreamsOutputAndDetectsPort(t *testing.T) {
 	}
 }
 
+func TestWaitTreatsContextCancelAsCleanShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	result, err := Start(ctx, Config{
+		Command:        []string{os.Args[0], "-test.run=TestHelperProcess", "--", "print-port-sleep"},
+		Env:            []string{"GOHERE_HELPER_PROCESS=1"},
+		Stdout:         &bytes.Buffer{},
+		Stderr:         &bytes.Buffer{},
+		StartupTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cancel()
+	if err := result.Wait(); err != nil {
+		t.Fatalf("Wait after context cancel = %v, want nil", err)
+	}
+}
+
 func TestRunFallsBackToChosenPortWhenReachable(t *testing.T) {
 	server := &http.Server{Addr: "127.0.0.1:0"}
 	ln, err := net.Listen("tcp", server.Addr)
@@ -233,6 +252,9 @@ func TestHelperProcess(t *testing.T) {
 	case "print-port":
 		os.Stderr.WriteString("diagnostic line\n")
 		os.Stdout.WriteString("Local: http://127.0.0.1:47654\n")
+	case "print-port-sleep":
+		os.Stdout.WriteString("Local: http://127.0.0.1:47654\n")
+		time.Sleep(2 * time.Second)
 	case "sleep":
 		time.Sleep(2 * time.Second)
 	default:
