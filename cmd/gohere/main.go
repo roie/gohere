@@ -28,6 +28,36 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case cli.CommandList:
+		if err := app.List(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case cli.CommandClean:
+		if err := app.Clean(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case cli.CommandStop:
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := app.Stop(cwd, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case cli.CommandDoctor:
+		if err := app.Doctor(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case cli.CommandSetup:
+		if err := app.Setup(context.Background()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case cli.CommandRouter:
 		running, err := router.Start(context.Background(), router.StartConfig{})
 		if err != nil {
@@ -36,9 +66,6 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "gohere router listening on %s\n", running.HTTPAddr)
 		select {}
-	case cli.CommandList, cli.CommandStop, cli.CommandClean, cli.CommandDoctor, cli.CommandSetup:
-		fmt.Fprintf(os.Stderr, "gohere %s is not implemented yet\n", cmd.Kind)
-		os.Exit(1)
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command")
 		os.Exit(2)

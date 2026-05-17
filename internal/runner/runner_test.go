@@ -206,8 +206,8 @@ func TestHelperProcess(t *testing.T) {
 
 	switch args[1] {
 	case "print-port":
-		os.Stdout.WriteString("Local: http://127.0.0.1:47654\n")
 		os.Stderr.WriteString("diagnostic line\n")
+		os.Stdout.WriteString("Local: http://127.0.0.1:47654\n")
 	case "sleep":
 		time.Sleep(2 * time.Second)
 	default:

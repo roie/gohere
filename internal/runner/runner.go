@@ -53,6 +53,13 @@ func (r *Result) Wait() error {
 	return r.waitErr
 }
 
+func (r *Result) PID() int {
+	if r == nil || r.cmd == nil || r.cmd.Process == nil {
+		return 0
+	}
+	return r.cmd.Process.Pid
+}
+
 func ChooseFreePort() (int, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
