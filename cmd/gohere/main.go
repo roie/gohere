@@ -7,6 +7,7 @@ import (
 
 	"github.com/roie/gohere/internal/app"
 	"github.com/roie/gohere/internal/cli"
+	"github.com/roie/gohere/internal/router"
 )
 
 func main() {
@@ -27,7 +28,15 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-	case cli.CommandList, cli.CommandStop, cli.CommandClean, cli.CommandDoctor, cli.CommandRouter, cli.CommandSetup:
+	case cli.CommandRouter:
+		running, err := router.Start(context.Background(), router.StartConfig{})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "gohere router listening on %s\n", running.HTTPAddr)
+		select {}
+	case cli.CommandList, cli.CommandStop, cli.CommandClean, cli.CommandDoctor, cli.CommandSetup:
 		fmt.Fprintf(os.Stderr, "gohere %s is not implemented yet\n", cmd.Kind)
 		os.Exit(1)
 	default:

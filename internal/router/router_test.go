@@ -1,0 +1,293 @@
+package router
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestTokenGeneratedWith0600Permissions(t *testing.T) {
+	dir := t.TempDir()
+
+	token, err := EnsureToken(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(token) < 32 {
+		t.Fatalf("token too short: %q", token)
+	}
+
+	info, err := os.Stat(filepath.Join(dir, "token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("token permissions = %v, want 0600", got)
+	}
+}
+
+func TestRouteStoreRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store := NewRouteStore(filepath.Join(dir, "routes.json"))
+	route := Route{
+		Host:      "eventca.localhost",
+		Target:    "http://127.0.0.1:49231",
+		PID:       12345,
+		CWD:       "/home/roie/code/eventca",
+		Name:      "eventca",
+		StartedAt: time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+	}
+
+	if err := store.Save([]Route{route}); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Host != route.Host || routes[0].Target != route.Target {
+		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestAdminAPIRequiresTokenForRoutes(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+
+	req := httptest.NewRequest(http.MethodGet, "/routes", nil)
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /routes without token = %d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec = httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /health = %d", rec.Code)
+	}
+}
+
+func TestAdminAPIRouteCRUD(t *testing.T) {
+	store := NewMemoryStore()
+	srv := NewServer(Config{Token: "secret", Store: store})
+	handler := srv.AdminHandler()
+
+	body := strings.NewReader(`{"host":"eventca.localhost","target":"http://127.0.0.1:49231","pid":12345,"cwd":"/tmp/eventca","name":"eventca","startedAt":"2026-05-16T00:00:00Z"}`)
+	req := httptest.NewRequest(http.MethodPost, "/routes", body)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST /routes = %d body %q", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/routes", nil)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /routes = %d", rec.Code)
+	}
+	var routes []Route
+	if err := json.Unmarshal(rec.Body.Bytes(), &routes); err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Host != "eventca.localhost" {
+		t.Fatalf("routes = %#v", routes)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/routes/eventca.localhost", nil)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /routes/host = %d", rec.Code)
+	}
+	if routes, _ := store.Load(); len(routes) != 0 {
+		t.Fatalf("routes after delete = %#v", routes)
+	}
+}
+
+func TestProxyRoutesByHostHeader(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Backend-Host", r.Host)
+		io.WriteString(w, "proxied response")
+	}))
+	defer backend.Close()
+
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "eventca.localhost", Target: backend.URL}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://eventca.localhost/", nil)
+	req.Host = "eventca.localhost"
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d body %q", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "proxied response" {
+		t.Fatalf("proxy body = %q", rec.Body.String())
+	}
+}
+
+func TestProxySupportsUpgradeRequests(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			t.Errorf("Upgrade header = %q", r.Header.Get("Upgrade"))
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Errorf("response writer is not hijackable")
+			return
+		}
+		conn, bufrw, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		bufrw.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
+		bufrw.WriteString("Upgrade: websocket\r\n")
+		bufrw.WriteString("Connection: Upgrade\r\n\r\n")
+		bufrw.Flush()
+	}))
+	defer backend.Close()
+
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "hmr.localhost", Target: backend.URL}})
+	routerServer := httptest.NewServer(NewServer(Config{Token: "secret", Store: store}).HTTPHandler())
+	defer routerServer.Close()
+
+	addr := strings.TrimPrefix(routerServer.URL, "http://")
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	io.WriteString(conn, "GET /hmr HTTP/1.1\r\n")
+	io.WriteString(conn, "Host: hmr.localhost\r\n")
+	io.WriteString(conn, "Connection: Upgrade\r\n")
+	io.WriteString(conn, "Upgrade: websocket\r\n")
+	io.WriteString(conn, "Sec-WebSocket-Version: 13\r\n")
+	io.WriteString(conn, "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade status = %d", resp.StatusCode)
+	}
+}
+
+func TestMissingRouteShowsFriendlyPage(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+	req := httptest.NewRequest(http.MethodGet, "http://missing.localhost/", nil)
+	req.Host = "missing.localhost"
+	rec := httptest.NewRecorder()
+
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("missing route status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "No gohere route is running for missing.localhost") {
+		t.Fatalf("missing route body = %q", rec.Body.String())
+	}
+}
+
+func TestListenAndProxyOnHighPort(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "from backend")
+	}))
+	defer backend.Close()
+
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "app.localhost", Target: backend.URL}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go http.Serve(ln, srv.HTTPHandler())
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "app.localhost"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+
+	if string(data) != "from backend" {
+		t.Fatalf("proxy response = %q", string(data))
+	}
+}
+
+func TestRotateLogKeepsOneBackup(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "router.log")
+	if err := os.WriteFile(logPath, bytes.Repeat([]byte("x"), maxLogSize+1), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RotateLog(logPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(logPath + ".1"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("new log size = %d, want 0", info.Size())
+	}
+}
+
+func TestStartRunsAdminHealthAndCreatesState(t *testing.T) {
+	ctx := t.Context()
+	stateDir := t.TempDir()
+
+	running, err := Start(ctx, StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  stateDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+
+	resp, err := http.Get("http://" + running.AdminAddr + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("health status = %d", resp.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "token")); err != nil {
+		t.Fatal(err)
+	}
+}
