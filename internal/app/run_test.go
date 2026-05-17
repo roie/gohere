@@ -1,8 +1,11 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/roie/gohere/internal/cli"
@@ -139,6 +142,58 @@ func TestRunSuccessOutput(t *testing.T) {
 	want := "eventca is running\n\nhttp://eventca.localhost\n"
 	if got != want {
 		t.Fatalf("runSuccessOutput() = %q, want %q", got, want)
+	}
+}
+
+func TestShouldRunSetupFromAnswer(t *testing.T) {
+	tests := map[string]bool{
+		"\n":  true,
+		"Y\n": true,
+		"y\n": true,
+		"n\n": false,
+		"N\n": false,
+	}
+
+	for answer, want := range tests {
+		t.Run(answer, func(t *testing.T) {
+			got := shouldRunSetupFromAnswer(answer)
+			if got != want {
+				t.Fatalf("shouldRunSetupFromAnswer(%q) = %v, want %v", answer, got, want)
+			}
+		})
+	}
+}
+
+func TestEnsureRouterPromptsAndRunsSetup(t *testing.T) {
+	oldSetup := setupFunc
+	oldPromptInput := promptInput
+	defer func() {
+		setupFunc = oldSetup
+		promptInput = oldPromptInput
+	}()
+
+	calls := 0
+	setupFunc = func(ctx context.Context) error {
+		calls++
+		return nil
+	}
+	promptInput = strings.NewReader("\n")
+	var out strings.Builder
+
+	err := ensureRouter(context.Background(), &out, func(context.Context) error {
+		if calls == 0 {
+			return errors.New("router unavailable")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("setup calls = %d, want 1", calls)
+	}
+	if !strings.Contains(out.String(), "Clean local URLs are not enabled yet.") {
+		t.Fatalf("prompt output = %q", out.String())
 	}
 }
 

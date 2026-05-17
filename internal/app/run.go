@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,13 @@ import (
 	"github.com/roie/gohere/internal/runner"
 	"github.com/roie/gohere/internal/setup"
 	"github.com/roie/gohere/internal/staticserver"
+)
+
+var (
+	promptInput = io.Reader(os.Stdin)
+	setupFunc   = func(ctx context.Context) error {
+		return setup.Linux(ctx, setup.Config{SystemdAvailable: systemdUserAvailable()})
+	}
 )
 
 type RunPlan struct {
@@ -135,8 +143,8 @@ func registerRoute(ctx context.Context, plan RunPlan, port, pid int, verbose boo
 	if err != nil {
 		return nil, err
 	}
-	if err := adminClient.Health(ctx); err != nil {
-		return nil, errors.New("gohere router is not running; run gohere setup")
+	if err := ensureRouter(ctx, stderr, adminClient.Health); err != nil {
+		return nil, err
 	}
 	routes, err := adminClient.Routes(ctx)
 	if err != nil {
@@ -189,6 +197,41 @@ func runSuccessOutput(name, host string) string {
 	return fmt.Sprintf("%s is running\n\nhttp://%s\n", name, host)
 }
 
+func ensureRouter(ctx context.Context, out io.Writer, health func(context.Context) error) error {
+	if err := health(ctx); err == nil {
+		return nil
+	}
+
+	fmt.Fprint(out, firstRunPrompt())
+	answer, _ := bufio.NewReader(promptInput).ReadString('\n')
+	if !shouldRunSetupFromAnswer(answer) {
+		return errors.New("gohere router is not running; run gohere setup")
+	}
+	if err := setupFunc(ctx); err != nil {
+		return err
+	}
+	if err := health(ctx); err != nil {
+		return errors.New("gohere setup finished, but the router is still not reachable")
+	}
+	return nil
+}
+
+func firstRunPrompt() string {
+	return `Clean local URLs are not enabled yet.
+gohere can enable:
+  http://myproject.localhost
+
+This requires one-time system permission.
+It will not run your project as root.
+
+Enable now? [Y/n] `
+}
+
+func shouldRunSetupFromAnswer(answer string) bool {
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "" || answer == "y" || answer == "yes"
+}
+
 func List(stdout io.Writer) error {
 	store := defaultStore()
 	routes, err := store.Load()
@@ -239,7 +282,7 @@ func Doctor(stdout io.Writer) error {
 }
 
 func Setup(ctx context.Context) error {
-	return setup.Linux(ctx, setup.Config{SystemdAvailable: systemdUserAvailable()})
+	return setupFunc(ctx)
 }
 
 func projectDir(packagePath string) string {
