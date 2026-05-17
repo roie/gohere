@@ -299,6 +299,13 @@ func TestProxySupportsUpgradeRequests(t *testing.T) {
 		bufrw.WriteString("Upgrade: websocket\r\n")
 		bufrw.WriteString("Connection: Upgrade\r\n\r\n")
 		bufrw.Flush()
+		message, err := bufrw.ReadString('\n')
+		if err != nil {
+			t.Errorf("backend read upgraded stream: %v", err)
+			return
+		}
+		bufrw.WriteString("backend:" + message)
+		bufrw.Flush()
 	}))
 	defer backend.Close()
 
@@ -328,6 +335,17 @@ func TestProxySupportsUpgradeRequests(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("upgrade status = %d", resp.StatusCode)
+	}
+	if _, err := conn.Write([]byte("ping\n")); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	echo, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if echo != "backend:ping\n" {
+		t.Fatalf("upgrade echo = %q", echo)
 	}
 }
 
