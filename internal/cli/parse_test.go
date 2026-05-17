@@ -90,6 +90,16 @@ func TestParseHelp(t *testing.T) {
 	}
 }
 
+func TestParseVerboseAfterFixedCommand(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "list", "--verbose"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandList || !cmd.Verbose {
+		t.Fatalf("Parse list --verbose = %#v", cmd)
+	}
+}
+
 func TestParseOptions(t *testing.T) {
 	cmd, err := Parse([]string{"gohere", "--verbose", "--target", "5173", "--port-flag", "-p", "dev"})
 	if err != nil {

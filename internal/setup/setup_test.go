@@ -107,7 +107,7 @@ func TestLinuxSetupDetachedFallbackWritesRouterPID(t *testing.T) {
 	}
 }
 
-func TestLinuxSetupDetachedFallbackWarnsAboutReboot(t *testing.T) {
+func TestLinuxSetupDetachedFallbackIsQuiet(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source-gohere")
 	if err := os.WriteFile(source, []byte("binary"), 0755); err != nil {
@@ -125,7 +125,7 @@ func TestLinuxSetupDetachedFallbackWarnsAboutReboot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !contains(stderr.String(), "router may need restart after reboot") {
+	if stderr.String() != "" {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
@@ -188,7 +188,7 @@ func TestLinuxSetupFallsBackToDetachedWhenSystemdStartFails(t *testing.T) {
 	if !runner.saw(stable, "router") {
 		t.Fatalf("detached fallback missing: %#v", runner.commands)
 	}
-	if !contains(stderr.String(), "router may need restart after reboot") {
+	if stderr.String() != "" {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }

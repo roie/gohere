@@ -96,7 +96,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 			host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
 			return RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, Static: true}, nil
 		}
-		return RunPlan{}, errors.New("no package.json found; use gohere -- <command>")
+		return RunPlan{}, errors.New("No package.json or index.html found; use gohere -- <command>.")
 	}
 
 	pkg, err := project.ReadPackageJSON(packagePath)
@@ -105,7 +105,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	}
 	scriptCommand, ok := pkg.Script(cmd.Script)
 	if !ok {
-		return RunPlan{}, fmt.Errorf("script %s not found; available scripts: %s", cmd.Script, strings.Join(pkg.AvailableScripts(), ", "))
+		return RunPlan{}, missingScriptError(cmd.Script, pkg.AvailableScripts())
 	}
 
 	pm, _, err := project.DetectPackageManager(projectDir(packagePath))
@@ -240,6 +240,18 @@ func runSuccessOutput(cmd cli.Command, host string) string {
 	return fmt.Sprintf("%s \u2192 http://%s\n", label, host)
 }
 
+func missingScriptError(script string, available []string) error {
+	if len(available) > 3 {
+		var out strings.Builder
+		fmt.Fprintf(&out, "gohere error: script %q not found.\n\nAvailable scripts:", script)
+		for _, item := range available {
+			fmt.Fprintf(&out, "\n  %s", item)
+		}
+		return errors.New(out.String())
+	}
+	return fmt.Errorf("gohere error: script %q not found; available scripts: %s", script, strings.Join(available, ", "))
+}
+
 func formatRunError(err error) error {
 	msg := err.Error()
 	if strings.Contains(msg, "could not detect a local URL") {
@@ -302,7 +314,8 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 	fmt.Fprint(out, firstRunPrompt())
 	answer, _ := bufio.NewReader(promptInput).ReadString('\n')
 	if !shouldRunSetupFromAnswer(answer) {
-		return errors.New("gohere router is not running; run gohere setup")
+		fmt.Fprint(out, "gohere was not enabled.\n\nRun gohere again when you are ready.\n")
+		return errors.New("gohere was not enabled")
 	}
 	if err := setupFunc(ctx); err != nil {
 		return err
@@ -310,18 +323,12 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 	if err := health(ctx); err != nil {
 		return errors.New("gohere setup finished, but the router is still not reachable")
 	}
+	fmt.Fprintln(out)
 	return nil
 }
 
 func firstRunPrompt() string {
-	return `Clean local URLs are not enabled yet.
-gohere can enable:
-  http://myproject.localhost
-
-This requires one-time system permission.
-It will not run your project as root.
-
-Enable now? [Y/n] `
+	return "gohere needs one-time permission to enable .localhost project URLs.\nThis lets gohere use port 80 locally. Continue? [Y/n] "
 }
 
 func shouldRunSetupFromAnswer(answer string) bool {
@@ -329,13 +336,21 @@ func shouldRunSetupFromAnswer(answer string) bool {
 	return answer == "" || answer == "y" || answer == "yes"
 }
 
-func List(stdout io.Writer) error {
-	store := defaultStore()
+func List(stdout io.Writer, verbose bool) error {
+	return ListWithStore(stdout, defaultStore(), verbose)
+}
+
+func ListWithStore(stdout io.Writer, store router.Store, verbose bool) error {
 	routes, err := store.Load()
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(stdout, lifecycle.FormatRoutes(lifecycle.RouteStatuses(routes)))
+	statuses := lifecycle.RouteStatuses(routes)
+	if verbose {
+		fmt.Fprint(stdout, lifecycle.FormatRoutesVerbose(statuses))
+		return nil
+	}
+	fmt.Fprint(stdout, lifecycle.FormatRoutes(statuses))
 	return nil
 }
 
@@ -344,19 +359,39 @@ func Clean(stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "Removed %d dead route(s).\n", removed)
+	return printCleanResult(stdout, removed)
+}
+
+func printCleanResult(stdout io.Writer, removed int) error {
+	switch removed {
+	case 0:
+		fmt.Fprintln(stdout, "No dead routes.")
+	case 1:
+		fmt.Fprintln(stdout, "Removed 1 dead route.")
+	default:
+		fmt.Fprintf(stdout, "Removed %d dead routes.\n", removed)
+	}
 	return nil
 }
 
 func Stop(cwd string, stdout io.Writer) error {
-	stopped, err := lifecycle.StopCurrent(defaultStore(), cwd)
+	host, stopped, err := lifecycle.StopCurrent(defaultStore(), cwd)
 	if err != nil {
-		return err
+		if host != "" {
+			return fmt.Errorf("gohere error: could not stop %s.\nTry:\n  gohere doctor", host)
+		}
+		return fmt.Errorf("gohere error: %w", err)
 	}
-	if !stopped {
-		fmt.Fprintln(stdout, "No running gohere-managed process found for this folder.")
-	}
+	printStopResult(stdout, host, stopped)
 	return nil
+}
+
+func printStopResult(stdout io.Writer, host string, stopped bool) {
+	if !stopped {
+		fmt.Fprintln(stdout, "No running gohere app found for this folder.")
+		return
+	}
+	fmt.Fprintf(stdout, "Stopped %s.\n", host)
 }
 
 func Doctor(stdout io.Writer) error {

@@ -81,6 +81,9 @@ func Parse(args []string) (Command, error) {
 			if helpRequested(rest) {
 				return helpCommand(arg), nil
 			}
+			if verboseRequested(rest) {
+				cmd.Verbose = true
+			}
 			cmd.Kind = CommandList
 			cmd.Script = ""
 			return cmd, nil
@@ -92,6 +95,9 @@ func Parse(args []string) (Command, error) {
 			}
 			if helpRequested(rest) {
 				return helpCommand(arg), nil
+			}
+			if verboseRequested(rest) {
+				cmd.Verbose = true
 			}
 			cmd.Kind = CommandStop
 			cmd.Script = ""
@@ -105,6 +111,9 @@ func Parse(args []string) (Command, error) {
 			if helpRequested(rest) {
 				return helpCommand(arg), nil
 			}
+			if verboseRequested(rest) {
+				cmd.Verbose = true
+			}
 			cmd.Kind = CommandClean
 			cmd.Script = ""
 			return cmd, nil
@@ -116,6 +125,9 @@ func Parse(args []string) (Command, error) {
 			}
 			if helpRequested(rest) {
 				return helpCommand(arg), nil
+			}
+			if verboseRequested(rest) {
+				cmd.Verbose = true
 			}
 			cmd.Kind = CommandDoctor
 			cmd.Script = ""
@@ -129,6 +141,9 @@ func Parse(args []string) (Command, error) {
 			if helpRequested(rest) {
 				return helpCommand(arg), nil
 			}
+			if verboseRequested(rest) {
+				cmd.Verbose = true
+			}
 			cmd.Kind = CommandRouter
 			cmd.Script = ""
 			return cmd, nil
@@ -140,6 +155,9 @@ func Parse(args []string) (Command, error) {
 			}
 			if helpRequested(rest) {
 				return helpCommand(arg), nil
+			}
+			if verboseRequested(rest) {
+				cmd.Verbose = true
 			}
 			cmd.Kind = CommandSetup
 			cmd.Script = ""
@@ -163,4 +181,8 @@ func helpRequested(args []string) bool {
 
 func helpCommand(topic string) Command {
 	return Command{Kind: CommandHelp, HelpTopic: topic}
+}
+
+func verboseRequested(args []string) bool {
+	return len(args) == 1 && args[0] == "--verbose"
 }

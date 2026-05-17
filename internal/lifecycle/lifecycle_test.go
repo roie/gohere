@@ -11,15 +11,25 @@ import (
 	"github.com/roie/gohere/internal/router"
 )
 
-func TestFormatRoutesShowsReachability(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer backend.Close()
-
+func TestFormatRoutesShowsCompactTable(t *testing.T) {
 	out := FormatRoutes([]RouteStatus{{
-		Route:     router.Route{Host: "app.localhost", Target: backend.URL, CWD: "/tmp/app", PID: 123},
+		Route:     router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173", CWD: "/tmp/app", PID: 123},
+		Reachable: false,
+	}})
+	if !strings.Contains(out, "host") || !strings.Contains(out, "target") || !strings.Contains(out, "status") {
+		t.Fatalf("output = %q", out)
+	}
+	if !strings.Contains(out, "app.localhost") || !strings.Contains(out, "unknown") || strings.Contains(out, "dead") || strings.Contains(out, "cwd") || strings.Contains(out, "pid") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestFormatRoutesVerboseShowsOperationalDetails(t *testing.T) {
+	out := FormatRoutesVerbose([]RouteStatus{{
+		Route:     router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173", CWD: "/tmp/app", PID: 123},
 		Reachable: true,
 	}})
-	if !strings.Contains(out, "app.localhost") || !strings.Contains(out, "backend yes") {
+	if !strings.Contains(out, "cwd /tmp/app") || !strings.Contains(out, "pid 123") || !strings.Contains(out, "backend yes") {
 		t.Fatalf("output = %q", out)
 	}
 }
@@ -72,9 +82,12 @@ func TestStopCurrentFolderRemovesStaleRouteAndReportsNotStopped(t *testing.T) {
 		{Host: "api.localhost", CWD: "/tmp/api", PID: 999998, StartedAt: time.Now()},
 	})
 
-	stopped, err := StopCurrent(store, "/tmp/app")
+	host, stopped, err := StopCurrent(store, "/tmp/app")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if host != "app.localhost" {
+		t.Fatalf("host = %q", host)
 	}
 	if stopped {
 		t.Fatal("stale PID should not be reported as stopped")
@@ -95,9 +108,12 @@ func TestStopCurrentFolderStopsLiveProcess(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{{Host: "app.localhost", CWD: "/tmp/app", PID: cmd.Process.Pid, StartedAt: time.Now()}})
 
-	stopped, err := StopCurrent(store, "/tmp/app")
+	host, stopped, err := StopCurrent(store, "/tmp/app")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if host != "app.localhost" {
+		t.Fatalf("host = %q", host)
 	}
 	if !stopped {
 		t.Fatal("expected live process to be stopped")
@@ -110,9 +126,12 @@ func TestStopCurrentFolderStopsLiveProcess(t *testing.T) {
 
 func TestStopCurrentReportsMissingRoute(t *testing.T) {
 	store := router.NewMemoryStore()
-	stopped, err := StopCurrent(store, "/tmp/app")
+	host, stopped, err := StopCurrent(store, "/tmp/app")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if host != "" {
+		t.Fatalf("host = %q", host)
 	}
 	if stopped {
 		t.Fatal("expected no route")

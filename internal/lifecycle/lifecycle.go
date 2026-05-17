@@ -24,6 +24,23 @@ func FormatRoutes(statuses []RouteStatus) string {
 	}
 
 	var out strings.Builder
+	fmt.Fprintf(&out, "%-28s %-25s %s\n", "host", "target", "status")
+	for _, status := range statuses {
+		reachable := "unknown"
+		if status.Reachable {
+			reachable = "ready"
+		}
+		fmt.Fprintf(&out, "%-28s %-25s %s\n", status.Route.Host, status.Route.Target, reachable)
+	}
+	return out.String()
+}
+
+func FormatRoutesVerbose(statuses []RouteStatus) string {
+	if len(statuses) == 0 {
+		return "No active routes.\n"
+	}
+
+	var out strings.Builder
 	for _, status := range statuses {
 		reachable := "no"
 		if status.Reachable {
@@ -70,21 +87,23 @@ func routeAlive(route router.Route) bool {
 	return targetReachable(route.Target)
 }
 
-func StopCurrent(store router.Store, cwd string) (bool, error) {
+func StopCurrent(store router.Store, cwd string) (string, bool, error) {
 	routes, err := store.Load()
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	absCWD, err := filepath.Abs(cwd)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 
 	stopped := false
+	stoppedHost := ""
 	kept := routes[:0]
 	for _, route := range routes {
 		routeCWD, err := filepath.Abs(route.CWD)
 		if err == nil && routeCWD == absCWD {
+			stoppedHost = route.Host
 			if PIDAlive(route.PID) {
 				stopPID(route.PID)
 				stopped = true
@@ -94,9 +113,9 @@ func StopCurrent(store router.Store, cwd string) (bool, error) {
 		kept = append(kept, route)
 	}
 	if err := store.Save(kept); err != nil {
-		return false, err
+		return stoppedHost, false, err
 	}
-	return stopped, nil
+	return stoppedHost, stopped, nil
 }
 
 func targetReachable(target string) bool {

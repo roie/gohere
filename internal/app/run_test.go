@@ -78,8 +78,23 @@ func TestPrepareRunMissingScriptShowsAvailableScripts(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if got := err.Error(); got != "script preview not found; available scripts: dev, dev:web" {
+	if got := err.Error(); got != "gohere error: script \"preview\" not found; available scripts: dev, dev:web" {
 		t.Fatalf("error = %q", got)
+	}
+}
+
+func TestPrepareRunMissingScriptShowsLongScriptListMultiline(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"build":"vite build","dev":"vite","dev:web":"vite","test":"vitest"}}`,
+	})
+
+	_, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "preview"}, dir)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: script \"preview\" not found.\n\nAvailable scripts:\n  build\n  dev\n  dev:web\n  test"
+	if got := err.Error(); got != want {
+		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
 
@@ -118,7 +133,8 @@ func TestPrepareRunFailsWithoutPackageJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if got := err.Error(); got != "no package.json found; use gohere -- <command>" {
+	want := "No package.json or index.html found; use gohere -- <command>."
+	if got := err.Error(); got != want {
 		t.Fatalf("error = %q", got)
 	}
 }
@@ -225,8 +241,69 @@ func TestEnsureRouterPromptsAndRunsSetup(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("setup calls = %d, want 1", calls)
 	}
-	if !strings.Contains(out.String(), "Clean local URLs are not enabled yet.") {
-		t.Fatalf("prompt output = %q", out.String())
+	want := "gohere needs one-time permission to enable .localhost project URLs.\nThis lets gohere use port 80 locally. Continue? [Y/n] \n"
+	if out.String() != want {
+		t.Fatalf("prompt output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestEnsureRouterDeclinePrintsCalmMessage(t *testing.T) {
+	oldSetup := setupFunc
+	oldPromptInput := promptInput
+	defer func() {
+		setupFunc = oldSetup
+		promptInput = oldPromptInput
+	}()
+
+	setupFunc = func(ctx context.Context) error {
+		t.Fatal("setup should not run after decline")
+		return nil
+	}
+	promptInput = strings.NewReader("n\n")
+	var out strings.Builder
+
+	err := ensureRouter(context.Background(), &out, func(context.Context) error {
+		return errors.New("router unavailable")
+	})
+	if err == nil {
+		t.Fatal("expected decline error")
+	}
+	if err.Error() != "gohere was not enabled" {
+		t.Fatalf("error = %q", err.Error())
+	}
+	want := "gohere needs one-time permission to enable .localhost project URLs.\nThis lets gohere use port 80 locally. Continue? [Y/n] gohere was not enabled.\n\nRun gohere again when you are ready.\n"
+	if out.String() != want {
+		t.Fatalf("decline output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestEnsureRouterAddsBlankLineAfterSetup(t *testing.T) {
+	oldSetup := setupFunc
+	oldPromptInput := promptInput
+	defer func() {
+		setupFunc = oldSetup
+		promptInput = oldPromptInput
+	}()
+
+	calls := 0
+	setupFunc = func(ctx context.Context) error {
+		calls++
+		return nil
+	}
+	promptInput = strings.NewReader("\n")
+	var out strings.Builder
+
+	err := ensureRouter(context.Background(), &out, func(context.Context) error {
+		if calls == 0 {
+			return errors.New("router unavailable")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(out.String(), "\n") {
+		t.Fatalf("setup output should end with blank separator, got %q", out.String())
 	}
 }
 
@@ -470,6 +547,82 @@ func TestRunStaticTreatsContextCancelAsCleanShutdown(t *testing.T) {
 	}
 	if admin.deleted == "" {
 		t.Fatal("expected static route cleanup")
+	}
+}
+
+func TestListOutput(t *testing.T) {
+	store := router.NewMemoryStore()
+	store.Save([]router.Route{{
+		Host:   "vibe-oke.localhost",
+		Target: "http://127.0.0.1:46387",
+		CWD:    "/tmp/vibe-oke",
+		PID:    123,
+	}})
+	var out strings.Builder
+
+	if err := ListWithStore(&out, store, false); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "host") || !strings.Contains(text, "target") || !strings.Contains(text, "status") {
+		t.Fatalf("list output = %q", text)
+	}
+	if strings.Contains(text, "cwd") || strings.Contains(text, "pid") || strings.Contains(text, "backend") {
+		t.Fatalf("normal list output is too noisy: %q", text)
+	}
+}
+
+func TestListVerboseOutput(t *testing.T) {
+	store := router.NewMemoryStore()
+	store.Save([]router.Route{{
+		Host:   "vibe-oke.localhost",
+		Target: "http://127.0.0.1:46387",
+		CWD:    "/tmp/vibe-oke",
+		PID:    123,
+	}})
+	var out strings.Builder
+
+	if err := ListWithStore(&out, store, true); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "cwd /tmp/vibe-oke") || !strings.Contains(text, "pid 123") || !strings.Contains(text, "backend") {
+		t.Fatalf("verbose list output = %q", text)
+	}
+}
+
+func TestCleanOutput(t *testing.T) {
+	tests := map[int]string{
+		0: "No dead routes.\n",
+		1: "Removed 1 dead route.\n",
+		3: "Removed 3 dead routes.\n",
+	}
+
+	for removed, want := range tests {
+		t.Run(want, func(t *testing.T) {
+			var out strings.Builder
+			if err := printCleanResult(&out, removed); err != nil {
+				t.Fatal(err)
+			}
+			if out.String() != want {
+				t.Fatalf("clean output = %q, want %q", out.String(), want)
+			}
+		})
+	}
+}
+
+func TestStopOutput(t *testing.T) {
+	var out strings.Builder
+
+	printStopResult(&out, "vibe-oke.localhost", true)
+	if out.String() != "Stopped vibe-oke.localhost.\n" {
+		t.Fatalf("stop output = %q", out.String())
+	}
+
+	out.Reset()
+	printStopResult(&out, "", false)
+	if out.String() != "No running gohere app found for this folder.\n" {
+		t.Fatalf("stop missing output = %q", out.String())
 	}
 }
 

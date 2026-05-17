@@ -84,7 +84,6 @@ func Linux(ctx context.Context, cfg Config) error {
 	if err := os.WriteFile(filepath.Join(cfg.StateDir, "router.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
 		return err
 	}
-	fmt.Fprintln(cfg.Stderr, "gohere router started without systemd; router may need restart after reboot.")
 	return nil
 }
 

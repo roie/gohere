@@ -34,7 +34,7 @@ func main() {
 			os.Exit(1)
 		}
 	case cli.CommandList:
-		if err := app.List(os.Stdout); err != nil {
+		if err := app.List(os.Stdout, cmd.Verbose); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
