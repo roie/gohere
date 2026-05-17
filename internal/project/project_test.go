@@ -18,6 +18,7 @@ func TestNormalizeHostnameName(t *testing.T) {
 		{"non ascii stripped", "mañana café", "maana-caf"},
 		{"repeated hyphens collapse", "my---app", "my-app"},
 		{"empty fallback", "!!!", "app"},
+		{"long label truncated", "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijkl", "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijk"},
 	}
 
 	for _, tt := range tests {

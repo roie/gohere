@@ -162,6 +162,12 @@ func NormalizeHostnameName(name string) string {
 	if normalized == "" {
 		return "app"
 	}
+	if len(normalized) > 63 {
+		normalized = strings.TrimRight(normalized[:63], "-")
+	}
+	if normalized == "" {
+		return "app"
+	}
 	return normalized
 }
 
