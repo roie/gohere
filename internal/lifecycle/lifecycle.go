@@ -51,7 +51,7 @@ func Clean(store router.Store) (int, error) {
 	kept := routes[:0]
 	removed := 0
 	for _, route := range routes {
-		if targetReachable(route.Target) {
+		if routeAlive(route) {
 			kept = append(kept, route)
 		} else {
 			removed++
@@ -61,6 +61,13 @@ func Clean(store router.Store) (int, error) {
 		return 0, err
 	}
 	return removed, nil
+}
+
+func routeAlive(route router.Route) bool {
+	if route.PID > 0 && !PIDAlive(route.PID) {
+		return false
+	}
+	return targetReachable(route.Target)
 }
 
 func StopCurrent(store router.Store, cwd string) (bool, error) {

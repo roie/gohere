@@ -46,6 +46,25 @@ func TestCleanRemovesDeadRoutes(t *testing.T) {
 	}
 }
 
+func TestCleanRemovesDeadPIDRouteEvenIfTargetReachable(t *testing.T) {
+	store := router.NewMemoryStore()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+	store.Save([]router.Route{{Host: "dead-pid.localhost", Target: backend.URL, PID: 999999}})
+
+	removed, err := Clean(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	routes, _ := store.Load()
+	if len(routes) != 0 {
+		t.Fatalf("routes = %#v", routes)
+	}
+}
+
 func TestStopCurrentFolderRemovesStaleRouteAndReportsNotStopped(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{
