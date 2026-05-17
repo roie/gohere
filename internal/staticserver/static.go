@@ -31,9 +31,17 @@ func Handler(root string) http.Handler {
 
 		fullPath := filepath.Join(root, path)
 		info, err := os.Stat(fullPath)
-		if err != nil || info.IsDir() {
+		if err != nil {
 			http.NotFound(w, r)
 			return
+		}
+		if info.IsDir() {
+			fullPath = filepath.Join(fullPath, "index.html")
+			info, err = os.Stat(fullPath)
+			if err != nil || info.IsDir() {
+				http.NotFound(w, r)
+				return
+			}
 		}
 		http.ServeFile(w, r, fullPath)
 	})

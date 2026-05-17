@@ -54,6 +54,23 @@ func TestHandlerDoesNotExposeDirectoryListings(t *testing.T) {
 	}
 }
 
+func TestHandlerServesDirectoryIndex(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "docs"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs", "index.html"), []byte("<h1>Docs</h1>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler(dir)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/docs/", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "<h1>Docs</h1>" {
+		t.Fatalf("directory index response = %d %q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestStartServesOnHiddenPort(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>Hello</h1>"), 0644)
