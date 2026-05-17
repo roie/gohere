@@ -244,6 +244,31 @@ func TestRunEnsuresRouterBeforeStartingProject(t *testing.T) {
 	}
 }
 
+func TestRunTreatsStartupContextCancelAsCleanShutdown(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return fakeAdminClient{}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		cancel()
+		return nil, context.Canceled
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite"}}`,
+	})
+	if err := Run(ctx, cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, io.Discard, io.Discard); err != nil {
+		t.Fatalf("Run after startup context cancel = %v, want nil", err)
+	}
+}
+
 func TestRunStaticTreatsContextCancelAsCleanShutdown(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	defer func() {
