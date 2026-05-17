@@ -392,6 +392,28 @@ func TestStartDoesNotLeavePIDWhenListenFails(t *testing.T) {
 	}
 }
 
+func TestStartReportsClearPortConflict(t *testing.T) {
+	stateDir := t.TempDir()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	_, err = Start(t.Context(), StartConfig{
+		HTTPAddr:  ln.Addr().String(),
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  stateDir,
+	})
+	if err == nil {
+		t.Fatal("expected listen failure")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "gohere router cannot listen on") || !strings.Contains(msg, "port is already in use") {
+		t.Fatalf("listen error = %q", msg)
+	}
+}
+
 func TestStartRotatesDefaultRouterLog(t *testing.T) {
 	ctx := t.Context()
 	stateDir := t.TempDir()

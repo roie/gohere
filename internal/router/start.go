@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 type StartConfig struct {
@@ -66,7 +67,7 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 	httpLn, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
 		logFile.Close()
-		return nil, err
+		return nil, listenError(cfg.HTTPAddr, err)
 	}
 	adminLn, err := net.Listen("tcp", cfg.AdminAddr)
 	if err != nil {
@@ -100,6 +101,14 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		running.Close()
 	}()
 	return running, nil
+}
+
+func listenError(addr string, err error) error {
+	msg := fmt.Sprintf("gohere router cannot listen on %s", addr)
+	if strings.Contains(err.Error(), "address already in use") {
+		return fmt.Errorf("%s: port is already in use; stop the process using that port and try again: %w", msg, err)
+	}
+	return fmt.Errorf("%s: %w", msg, err)
 }
 
 func (r *Running) Close() error {
