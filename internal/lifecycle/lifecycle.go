@@ -78,8 +78,10 @@ func StopCurrent(store router.Store, cwd string) (bool, error) {
 	for _, route := range routes {
 		routeCWD, err := filepath.Abs(route.CWD)
 		if err == nil && routeCWD == absCWD {
-			stopPID(route.PID)
-			stopped = true
+			if PIDAlive(route.PID) {
+				stopPID(route.PID)
+				stopped = true
+			}
 			continue
 		}
 		kept = append(kept, route)

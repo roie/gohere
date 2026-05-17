@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ func TestCleanRemovesDeadRoutes(t *testing.T) {
 	}
 }
 
-func TestStopCurrentFolderRemovesRouteOnlyForCWD(t *testing.T) {
+func TestStopCurrentFolderRemovesStaleRouteAndReportsNotStopped(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{
 		{Host: "app.localhost", CWD: "/tmp/app", PID: 999999, StartedAt: time.Now()},
@@ -56,11 +57,34 @@ func TestStopCurrentFolderRemovesRouteOnlyForCWD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stopped {
-		t.Fatal("expected route to be stopped")
+	if stopped {
+		t.Fatal("stale PID should not be reported as stopped")
 	}
 	routes, _ := store.Load()
 	if len(routes) != 1 || routes[0].Host != "api.localhost" {
+		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestStopCurrentFolderStopsLiveProcess(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Process.Kill()
+
+	store := router.NewMemoryStore()
+	store.Save([]router.Route{{Host: "app.localhost", CWD: "/tmp/app", PID: cmd.Process.Pid, StartedAt: time.Now()}})
+
+	stopped, err := StopCurrent(store, "/tmp/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stopped {
+		t.Fatal("expected live process to be stopped")
+	}
+	routes, _ := store.Load()
+	if len(routes) != 0 {
 		t.Fatalf("routes = %#v", routes)
 	}
 }
