@@ -278,6 +278,29 @@ func TestDoctorWithStoreReportsPort80Availability(t *testing.T) {
 	}
 }
 
+func TestDoctorWithStoreReportsSetcapStatus(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, "bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	binaryPath := filepath.Join(stateDir, "bin", "gohere")
+	if err := os.WriteFile(binaryPath, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+
+	if err := DoctorWithChecks(&out, stateDir, router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		SetcapEnabled: func(path string) bool {
+			return path == binaryPath
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok setcap cap_net_bind_service") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
 type fakeAdminClient struct{}
 
 func (fakeAdminClient) Health(context.Context) error {

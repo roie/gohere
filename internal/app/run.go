@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -307,9 +308,16 @@ func DoctorWithStore(stdout io.Writer, stateDir string, store router.Store, clie
 
 type DoctorChecks struct {
 	Port80Available func() bool
+	SetcapEnabled   func(string) bool
 }
 
 func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, client adminClient, extra DoctorChecks) error {
+	if extra.Port80Available == nil {
+		extra.Port80Available = port80Available
+	}
+	if extra.SetcapEnabled == nil {
+		extra.SetcapEnabled = setcapEnabled
+	}
 	tokenPath := filepath.Join(stateDir, "token")
 	binaryPath := filepath.Join(stateDir, "bin", "gohere")
 	pidPath := filepath.Join(stateDir, "router.pid")
@@ -339,6 +347,9 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 			detail = "available"
 		}
 		checks = append(checks, lifecycle.DoctorCheck{Name: "port 80", OK: ok, Detail: detail})
+	}
+	if exists(binaryPath) {
+		checks = append(checks, lifecycle.DoctorCheck{Name: "setcap", OK: extra.SetcapEnabled(binaryPath), Detail: "cap_net_bind_service"})
 	}
 	fmt.Fprint(stdout, lifecycle.FormatDoctor(checks))
 	return nil
@@ -381,4 +392,12 @@ func port80Available() bool {
 	}
 	ln.Close()
 	return true
+}
+
+func setcapEnabled(path string) bool {
+	output, err := exec.Command("getcap", path).Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(output), "cap_net_bind_service")
 }
