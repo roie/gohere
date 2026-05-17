@@ -25,10 +25,14 @@ type Config struct {
 	ConfigDir        string
 	CurrentBinary    string
 	CommandRunner    CommandRunner
+	RouterHealth     func(context.Context) error
 	SystemdAvailable bool
 }
 
 func Linux(ctx context.Context, cfg Config) error {
+	if cfg.RouterHealth != nil && cfg.RouterHealth(ctx) == nil {
+		return nil
+	}
 	if cfg.StateDir == "" {
 		cfg.StateDir = router.DefaultStateDir()
 	}

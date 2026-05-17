@@ -24,7 +24,16 @@ import (
 var (
 	promptInput = io.Reader(os.Stdin)
 	setupFunc   = func(ctx context.Context) error {
-		return setup.Linux(ctx, setup.Config{SystemdAvailable: systemdUserAvailable()})
+		return setup.Linux(ctx, setup.Config{
+			SystemdAvailable: systemdUserAvailable(),
+			RouterHealth: func(ctx context.Context) error {
+				client, err := defaultAdminClient()
+				if err != nil {
+					return err
+				}
+				return client.Health(ctx)
+			},
+		})
 	}
 	defaultAdminClientFunc func() (adminClient, error) = func() (adminClient, error) {
 		return defaultAdminClient()

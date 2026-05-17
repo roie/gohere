@@ -101,6 +101,31 @@ func TestLinuxSetupWritesSystemdServiceWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestLinuxSetupReusesHealthyRouter(t *testing.T) {
+	dir := t.TempDir()
+	runner := &recordingRunner{}
+	healthCalls := 0
+
+	err := Linux(context.Background(), Config{
+		StateDir:      filepath.Join(dir, "state"),
+		CurrentBinary: filepath.Join(dir, "missing-binary"),
+		CommandRunner: runner,
+		RouterHealth: func(context.Context) error {
+			healthCalls++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if healthCalls != 1 {
+		t.Fatalf("health calls = %d, want 1", healthCalls)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("setup should not run commands when router is healthy: %#v", runner.commands)
+	}
+}
+
 type recordingRunner struct {
 	commands [][]string
 }
