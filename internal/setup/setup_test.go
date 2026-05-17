@@ -3,6 +3,7 @@ package setup
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -125,6 +126,39 @@ func TestLinuxSetupWritesSystemdServiceWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestLinuxSetupFallsBackToDetachedWhenSystemdStartFails(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source-gohere")
+	if err := os.WriteFile(source, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &failingSystemdRunner{detachingRunner: detachingRunner{pid: 4242}}
+	var stderr bytes.Buffer
+
+	err := Linux(context.Background(), Config{
+		StateDir:         filepath.Join(dir, "state"),
+		ConfigDir:        filepath.Join(dir, "config"),
+		CurrentBinary:    source,
+		CommandRunner:    runner,
+		Stderr:           &stderr,
+		SystemdAvailable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stable := filepath.Join(dir, "state", "bin", "gohere")
+	if !runner.saw("systemctl", "--user", "enable", "--now", "gohere-router") {
+		t.Fatalf("systemd command missing: %#v", runner.commands)
+	}
+	if !runner.saw(stable, "router") {
+		t.Fatalf("detached fallback missing: %#v", runner.commands)
+	}
+	if !contains(stderr.String(), "router may need restart after reboot") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestLinuxSetupReusesHealthyRouter(t *testing.T) {
 	dir := t.TempDir()
 	runner := &recordingRunner{}
@@ -167,6 +201,18 @@ type detachingRunner struct {
 func (r *detachingRunner) StartDetached(ctx context.Context, command string, args ...string) (int, error) {
 	r.commands = append(r.commands, append([]string{command}, args...))
 	return r.pid, nil
+}
+
+type failingSystemdRunner struct {
+	detachingRunner
+}
+
+func (r *failingSystemdRunner) Run(ctx context.Context, command string, args ...string) error {
+	r.commands = append(r.commands, append([]string{command}, args...))
+	if command == "systemctl" {
+		return errors.New("systemd unavailable")
+	}
+	return nil
 }
 
 func (r *recordingRunner) saw(items ...string) bool {

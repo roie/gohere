@@ -73,7 +73,9 @@ func Linux(ctx context.Context, cfg Config) error {
 		if err := writeSystemdService(cfg.ConfigDir, stableBinary); err != nil {
 			return err
 		}
-		return cfg.CommandRunner.Run(ctx, "systemctl", "--user", "enable", "--now", "gohere-router")
+		if err := cfg.CommandRunner.Run(ctx, "systemctl", "--user", "enable", "--now", "gohere-router"); err == nil {
+			return nil
+		}
 	}
 	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "router")
 	if err != nil {
