@@ -383,6 +383,26 @@ func TestDoctorWithStoreReportsSystemdStatus(t *testing.T) {
 	}
 }
 
+func TestSystemdUserAvailableRequiresUserBus(t *testing.T) {
+	runUserRoot := t.TempDir()
+
+	if systemdUserAvailableAt(runUserRoot, 1000) {
+		t.Fatal("systemd user should be unavailable without user bus")
+	}
+	if err := os.MkdirAll(filepath.Join(runUserRoot, "1000"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if systemdUserAvailableAt(runUserRoot, 1000) {
+		t.Fatal("systemd user should be unavailable without bus socket")
+	}
+	if err := os.WriteFile(filepath.Join(runUserRoot, "1000", "bus"), []byte{}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !systemdUserAvailableAt(runUserRoot, 1000) {
+		t.Fatal("systemd user should be available with user bus")
+	}
+}
+
 type fakeAdminClient struct{}
 
 func (fakeAdminClient) Health(context.Context) error {

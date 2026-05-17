@@ -400,7 +400,11 @@ func exists(path string) bool {
 }
 
 func systemdUserAvailable() bool {
-	_, err := os.Stat("/run/user")
+	return systemdUserAvailableAt("/run/user", os.Getuid())
+}
+
+func systemdUserAvailableAt(runUserRoot string, uid int) bool {
+	_, err := os.Stat(filepath.Join(runUserRoot, fmt.Sprintf("%d", uid), "bus"))
 	return err == nil
 }
 
