@@ -73,3 +73,36 @@ func TestParseOptions(t *testing.T) {
 		t.Fatalf("options = %#v", cmd)
 	}
 }
+
+func TestParseOptionsAfterScript(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "dev:web", "--target", "5173", "--port-flag", "--listen", "--verbose"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandRun || cmd.Script != "dev:web" || cmd.TargetPort != 5173 || cmd.PortFlag != "--listen" || !cmd.Verbose {
+		t.Fatalf("options after script = %#v", cmd)
+	}
+}
+
+func TestParseRawCommandPreservesTrailingFlags(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "--target", "5173", "--", "npm", "run", "dev", "--", "--host", "0.0.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"npm", "run", "dev", "--", "--host", "0.0.0.0"}
+	if !sameStrings(cmd.Raw, want) || cmd.TargetPort != 5173 {
+		t.Fatalf("raw command = %#v", cmd)
+	}
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

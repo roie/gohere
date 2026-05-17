@@ -33,6 +33,7 @@ func Parse(args []string) (Command, error) {
 		return cmd, nil
 	}
 
+	sawScript := false
 	rest := append([]string(nil), args[1:]...)
 	for len(rest) > 0 {
 		arg := rest[0]
@@ -66,33 +67,63 @@ func Parse(args []string) (Command, error) {
 			cmd.PortFlag = rest[0]
 			rest = rest[1:]
 		case "list":
+			if sawScript {
+				cmd.Kind = CommandRun
+				cmd.Script = arg
+				continue
+			}
 			cmd.Kind = CommandList
 			cmd.Script = ""
 			return cmd, nil
 		case "stop":
+			if sawScript {
+				cmd.Kind = CommandRun
+				cmd.Script = arg
+				continue
+			}
 			cmd.Kind = CommandStop
 			cmd.Script = ""
 			return cmd, nil
 		case "clean":
+			if sawScript {
+				cmd.Kind = CommandRun
+				cmd.Script = arg
+				continue
+			}
 			cmd.Kind = CommandClean
 			cmd.Script = ""
 			return cmd, nil
 		case "doctor":
+			if sawScript {
+				cmd.Kind = CommandRun
+				cmd.Script = arg
+				continue
+			}
 			cmd.Kind = CommandDoctor
 			cmd.Script = ""
 			return cmd, nil
 		case "router":
+			if sawScript {
+				cmd.Kind = CommandRun
+				cmd.Script = arg
+				continue
+			}
 			cmd.Kind = CommandRouter
 			cmd.Script = ""
 			return cmd, nil
 		case "setup":
+			if sawScript {
+				cmd.Kind = CommandRun
+				cmd.Script = arg
+				continue
+			}
 			cmd.Kind = CommandSetup
 			cmd.Script = ""
 			return cmd, nil
 		default:
 			cmd.Kind = CommandRun
 			cmd.Script = arg
-			return cmd, nil
+			sawScript = true
 		}
 	}
 
