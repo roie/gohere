@@ -175,6 +175,13 @@ func TestResolveHostnameConflict(t *testing.T) {
 	if got != "myproject.localhost" {
 		t.Fatalf("same cwd should reuse hostname, got %q", got)
 	}
+
+	got = ResolveHostnameConflict("myproject.localhost", "/work/parent/myproject", map[string]string{
+		"MyProject.localhost": "/other/myproject",
+	})
+	if got != "parent-myproject.localhost" {
+		t.Fatalf("case-insensitive conflict = %q, want parent-myproject.localhost", got)
+	}
 }
 
 func tempProject(t *testing.T, files map[string]string) string {

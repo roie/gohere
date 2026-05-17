@@ -267,23 +267,32 @@ func nameFromPackageOrFolder(dir string) (string, bool, error) {
 }
 
 func ResolveHostnameConflict(desiredHost, cwd string, active map[string]string) string {
-	if existingCWD, ok := active[desiredHost]; !ok || samePath(existingCWD, cwd) {
+	if existingCWD, ok := activeHostCWD(active, desiredHost); !ok || samePath(existingCWD, cwd) {
 		return desiredHost
 	}
 
 	base := strings.TrimSuffix(desiredHost, ".localhost")
 	parent := NormalizeHostnameName(filepath.Base(filepath.Dir(cwd)))
 	candidate := parent + "-" + base + ".localhost"
-	if existingCWD, ok := active[candidate]; !ok || samePath(existingCWD, cwd) {
+	if existingCWD, ok := activeHostCWD(active, candidate); !ok || samePath(existingCWD, cwd) {
 		return candidate
 	}
 
 	for suffix := 2; ; suffix++ {
 		candidate = parent + "-" + base + "-" + strconv.Itoa(suffix) + ".localhost"
-		if existingCWD, ok := active[candidate]; !ok || samePath(existingCWD, cwd) {
+		if existingCWD, ok := activeHostCWD(active, candidate); !ok || samePath(existingCWD, cwd) {
 			return candidate
 		}
 	}
+}
+
+func activeHostCWD(active map[string]string, host string) (string, bool) {
+	for activeHost, cwd := range active {
+		if strings.EqualFold(activeHost, host) {
+			return cwd, true
+		}
+	}
+	return "", false
 }
 
 func samePath(a, b string) bool {
