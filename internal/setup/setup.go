@@ -7,12 +7,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 
 	"github.com/roie/gohere/internal/router"
 )
 
 type CommandRunner interface {
 	Run(ctx context.Context, command string, args ...string) error
+}
+
+type DetachedRunner interface {
+	StartDetached(ctx context.Context, command string, args ...string) (int, error)
 }
 
 type Config struct {
@@ -62,7 +67,21 @@ func Linux(ctx context.Context, cfg Config) error {
 		}
 		return cfg.CommandRunner.Run(ctx, "systemctl", "--user", "enable", "--now", "gohere-router")
 	}
-	return cfg.CommandRunner.Run(ctx, stableBinary, "router")
+	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "router")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(cfg.StateDir, "router.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600)
+}
+
+func startDetached(ctx context.Context, runner CommandRunner, command string, args ...string) (int, error) {
+	if detached, ok := runner.(DetachedRunner); ok {
+		return detached.StartDetached(ctx, command, args...)
+	}
+	if err := runner.Run(ctx, command, args...); err != nil {
+		return 0, err
+	}
+	return 0, nil
 }
 
 func writeSystemdService(configDir, stableBinary string) error {
@@ -109,6 +128,17 @@ func (realRunner) Run(ctx context.Context, command string, args ...string) error
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
+}
+
+func (realRunner) StartDetached(ctx context.Context, command string, args ...string) (int, error) {
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Stdin = nil
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+	return cmd.Process.Pid, cmd.Process.Release()
 }
 
 func homeDir() string {
