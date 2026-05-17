@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -37,6 +38,13 @@ func (c *Client) Health(ctx context.Context) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("router health returned %s", resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(body)) != "ok" {
+		return fmt.Errorf("router health returned unexpected body")
 	}
 	return nil
 }

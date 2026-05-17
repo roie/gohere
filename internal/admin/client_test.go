@@ -60,3 +60,15 @@ func TestClientRejectsUnhealthyRouter(t *testing.T) {
 		t.Fatal("expected health error")
 	}
 }
+
+func TestClientRejectsNonGohereHealthResponse(t *testing.T) {
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("not gohere\n"))
+	}))
+	defer httpSrv.Close()
+
+	if err := NewClient(httpSrv.URL, "secret").Health(t.Context()); err == nil {
+		t.Fatal("expected health body error")
+	}
+}
