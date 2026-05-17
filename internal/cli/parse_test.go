@@ -22,6 +22,16 @@ func TestParseScriptRun(t *testing.T) {
 	}
 }
 
+func TestParseFileTargetRun(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "pages/about.html"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandRun || cmd.Script != "pages/about.html" {
+		t.Fatalf("Parse file target = %#v", cmd)
+	}
+}
+
 func TestParseRawCommand(t *testing.T) {
 	cmd, err := Parse([]string{"gohere", "--", "npm", "run", "dev"})
 	if err != nil {

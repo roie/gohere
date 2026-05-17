@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,6 +61,7 @@ type RunPlan struct {
 	Name                string
 	CWD                 string
 	Static              bool
+	URLPath             string
 	RequireDetectedPort bool
 }
 
@@ -87,11 +89,18 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 		}, nil
 	}
 
+	if isFileTarget(cmd) {
+		return prepareStaticFileTarget(cmd, cwd, port)
+	}
+
 	packagePath, found, err := project.FindNearestPackageJSON(cwd)
 	if err != nil {
 		return RunPlan{}, err
 	}
 	if !found {
+		if cmd.Script != "" && cmd.Script != "dev" && staticserver.IsStaticProject(cwd) {
+			return RunPlan{}, fmt.Errorf("Static files need a file extension: %s", cmd.Script)
+		}
 		if staticserver.IsStaticProject(cwd) {
 			host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
 			return RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, Static: true}, nil
@@ -200,7 +209,7 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		return nil, err
 	}
 
-	fmt.Fprint(stdout, runSuccessOutput(cmd, route.Host))
+	fmt.Fprint(stdout, runSuccessOutput(cmd, route.Host, plan.URLPath))
 	if cmd.Verbose {
 		fmt.Fprintf(stdout, "\ntarget: http://127.0.0.1:%d\n", port)
 		fmt.Fprintf(stdout, "command: %s\n", strings.Join(plan.Command, " "))
@@ -232,12 +241,49 @@ func toRegisteredRoutes(routes []router.Route) []registeredRoute {
 	return registered
 }
 
-func runSuccessOutput(cmd cli.Command, host string) string {
+func runSuccessOutput(cmd cli.Command, host, urlPath string) string {
 	label := "gohere"
-	if cmd.Kind == cli.CommandRun && cmd.Script != "" && cmd.Script != "dev" {
+	if cmd.Kind == cli.CommandRun && cmd.Script != "" && (cmd.Script != "dev" || urlPath != "") {
 		label += " " + cmd.Script
 	}
-	return fmt.Sprintf("%s \u2192 http://%s\n", label, host)
+	return fmt.Sprintf("%s \u2192 http://%s%s\n", label, host, escapedURLPath(urlPath))
+}
+
+func isFileTarget(cmd cli.Command) bool {
+	return cmd.Kind == cli.CommandRun && cmd.Script != "" && filepath.Ext(cmd.Script) != ""
+}
+
+func prepareStaticFileTarget(cmd cli.Command, cwd string, port int) (RunPlan, error) {
+	cleanPath := filepath.Clean(cmd.Script)
+	if filepath.IsAbs(cleanPath) || cleanPath == ".." || strings.HasPrefix(cleanPath, ".."+string(filepath.Separator)) {
+		return RunPlan{}, fmt.Errorf("File not found: %s", cmd.Script)
+	}
+
+	fullPath := filepath.Join(cwd, cleanPath)
+	info, err := os.Stat(fullPath)
+	if err != nil || info.IsDir() {
+		return RunPlan{}, fmt.Errorf("File not found: %s", cmd.Script)
+	}
+
+	host, err := project.HostnameForProject(cwd)
+	if err != nil {
+		return RunPlan{}, err
+	}
+	return RunPlan{
+		Port:    port,
+		Host:    host,
+		Name:    strings.TrimSuffix(host, ".localhost"),
+		CWD:     cwd,
+		Static:  true,
+		URLPath: "/" + filepath.ToSlash(cleanPath),
+	}, nil
+}
+
+func escapedURLPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	return (&url.URL{Path: path}).EscapedPath()
 }
 
 func missingScriptError(script string, available []string) error {

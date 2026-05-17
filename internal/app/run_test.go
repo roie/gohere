@@ -154,6 +154,94 @@ func TestPrepareStaticProject(t *testing.T) {
 	}
 }
 
+func TestPrepareStaticFileTarget(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"index.html":        "<h1>Hello</h1>",
+		"pages/about.html":  "<h1>About</h1>",
+		"assets/styles.css": "body{}",
+	})
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "pages/about.html"}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Static || plan.URLPath != "/pages/about.html" {
+		t.Fatalf("plan = %#v", plan)
+	}
+
+	plan, err = PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "assets/styles.css"}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Static || plan.URLPath != "/assets/styles.css" {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestPrepareStaticFileTargetWinsOverPackageScriptWhenFileExists(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"about.html":"vite"}}`,
+		"about.html":   "<h1>About</h1>",
+	})
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "about.html"}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Static || plan.URLPath != "/about.html" || len(plan.Command) != 0 {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestPrepareFileTargetMissingDoesNotFallBackToPackageScript(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"about.html":"vite"}}`,
+	})
+
+	_, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "about.html", TargetPort: 5173}, dir)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if err.Error() != "File not found: about.html" {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestPrepareStaticFileTargetErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		arg   string
+		want  string
+	}{
+		{
+			name:  "missing extension file",
+			files: map[string]string{"index.html": "<h1>Hello</h1>"},
+			arg:   "missing.html",
+			want:  "File not found: missing.html",
+		},
+		{
+			name:  "extensionless static arg",
+			files: map[string]string{"index.html": "<h1>Hello</h1>"},
+			arg:   "pages",
+			want:  "Static files need a file extension: pages",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := tempProject(t, tt.files)
+			_, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: tt.arg}, dir)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("error = %q, want %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveRouteHostAvoidsActiveConflict(t *testing.T) {
 	plan := RunPlan{
 		Host: "myproject.localhost",
@@ -171,7 +259,7 @@ func TestResolveRouteHostAvoidsActiveConflict(t *testing.T) {
 }
 
 func TestRunSuccessOutput(t *testing.T) {
-	got := runSuccessOutput(cli.Command{Kind: cli.CommandRun, Script: "dev"}, "eventca.localhost")
+	got := runSuccessOutput(cli.Command{Kind: cli.CommandRun, Script: "dev"}, "eventca.localhost", "")
 	want := "gohere \u2192 http://eventca.localhost\n"
 	if got != want {
 		t.Fatalf("runSuccessOutput() = %q, want %q", got, want)
@@ -179,15 +267,23 @@ func TestRunSuccessOutput(t *testing.T) {
 }
 
 func TestRunSuccessOutputLabelsExplicitScript(t *testing.T) {
-	got := runSuccessOutput(cli.Command{Kind: cli.CommandRun, Script: "dev:web"}, "eventca.localhost")
+	got := runSuccessOutput(cli.Command{Kind: cli.CommandRun, Script: "dev:web"}, "eventca.localhost", "")
 	want := "gohere dev:web \u2192 http://eventca.localhost\n"
 	if got != want {
 		t.Fatalf("runSuccessOutput() = %q, want %q", got, want)
 	}
 }
 
+func TestRunSuccessOutputLabelsStaticFileTarget(t *testing.T) {
+	got := runSuccessOutput(cli.Command{Kind: cli.CommandRun, Script: "pages/about.html"}, "eventca.localhost", "/pages/about.html")
+	want := "gohere pages/about.html \u2192 http://eventca.localhost/pages/about.html\n"
+	if got != want {
+		t.Fatalf("runSuccessOutput() = %q, want %q", got, want)
+	}
+}
+
 func TestRunSuccessOutputDoesNotLabelRawCommand(t *testing.T) {
-	got := runSuccessOutput(cli.Command{Kind: cli.CommandRaw, Raw: []string{"npm", "run", "dev"}}, "eventca.localhost")
+	got := runSuccessOutput(cli.Command{Kind: cli.CommandRaw, Raw: []string{"npm", "run", "dev"}}, "eventca.localhost", "")
 	want := "gohere \u2192 http://eventca.localhost\n"
 	if got != want {
 		t.Fatalf("runSuccessOutput() = %q, want %q", got, want)
@@ -428,6 +524,39 @@ func TestRunStaticUsesPlainSuccessLabel(t *testing.T) {
 	want := "gohere \u2192 http://" + filepath.Base(dir) + ".localhost\n"
 	if stdout.String() != want {
 		t.Fatalf("static output = %q, want %q", stdout.String(), want)
+	}
+}
+
+func TestRunStaticFileTargetOutput(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+	}()
+
+	admin := &recordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	dir := tempProject(t, map[string]string{
+		"index.html":       "<h1>Hello</h1>",
+		"pages/about.html": "<h1>About</h1>",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout, stderr strings.Builder
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, cli.Command{Kind: cli.CommandRun, Script: "pages/about.html", TargetPort: 0}, dir, &stdout, &stderr)
+	}()
+
+	admin.waitForUpsert(t)
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	want := "gohere pages/about.html \u2192 http://" + filepath.Base(dir) + ".localhost/pages/about.html\n"
+	if stdout.String() != want {
+		t.Fatalf("static file output = %q, want %q", stdout.String(), want)
 	}
 }
 
