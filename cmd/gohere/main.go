@@ -70,9 +70,13 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stderr, "gohere router listening on %s\n", running.HTTPAddr)
-		select {}
+		waitForRouter(ctx)
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command")
 		os.Exit(2)
 	}
+}
+
+func waitForRouter(ctx context.Context) {
+	<-ctx.Done()
 }
