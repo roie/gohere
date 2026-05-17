@@ -82,6 +82,23 @@ func TestEnsureTokenRegeneratesInvalidShortTokenFile(t *testing.T) {
 	}
 }
 
+func TestEnsureTokenRegeneratesNonHexTokenFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token")
+	badToken := strings.Repeat("z", tokenLength)
+	if err := os.WriteFile(path, []byte(badToken+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	token, err := EnsureToken(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token == badToken || len(token) != tokenLength {
+		t.Fatalf("token = %q, want regenerated %d-char hex token", token, tokenLength)
+	}
+}
+
 func TestRouteStoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	store := NewRouteStore(filepath.Join(dir, "routes.json"))

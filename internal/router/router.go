@@ -57,7 +57,7 @@ func EnsureToken(stateDir string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {
 		token := strings.TrimSpace(string(data))
-		if len(token) < tokenLength {
+		if !validToken(token) {
 			return writeToken(path)
 		}
 		if err := os.Chmod(path, 0600); err != nil {
@@ -85,6 +85,19 @@ func writeToken(path string) (string, error) {
 		return "", err
 	}
 	return token, nil
+}
+
+func validToken(token string) bool {
+	if len(token) != tokenLength {
+		return false
+	}
+	for _, r := range token {
+		if r >= '0' && r <= '9' || r >= 'a' && r <= 'f' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 type RouteStore struct {
