@@ -120,6 +120,17 @@ func TestParseOptionsAfterScript(t *testing.T) {
 	}
 }
 
+func TestParseRejectsUnknownFlag(t *testing.T) {
+	_, err := Parse([]string{"gohere", "--list"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: unknown option \"--list\"\nTry:\n  gohere list"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestParseRawCommandPreservesTrailingFlags(t *testing.T) {
 	cmd, err := Parse([]string{"gohere", "--target", "5173", "--", "npm", "run", "dev", "--", "--host", "0.0.0.0"})
 	if err != nil {

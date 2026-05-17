@@ -2,7 +2,9 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 )
 
 type CommandKind string
@@ -163,6 +165,9 @@ func Parse(args []string) (Command, error) {
 			cmd.Script = ""
 			return cmd, nil
 		default:
+			if strings.HasPrefix(arg, "-") {
+				return Command{}, unknownOptionError(arg)
+			}
 			cmd.Kind = CommandRun
 			cmd.Script = arg
 			sawScript = true
@@ -185,4 +190,18 @@ func helpCommand(topic string) Command {
 
 func verboseRequested(args []string) bool {
 	return len(args) == 1 && args[0] == "--verbose"
+}
+
+func unknownOptionError(arg string) error {
+	suggestions := map[string]string{
+		"--clean":  "clean",
+		"--doctor": "doctor",
+		"--list":   "list",
+		"--setup":  "setup",
+		"--stop":   "stop",
+	}
+	if command, ok := suggestions[arg]; ok {
+		return fmt.Errorf("gohere error: unknown option %q\nTry:\n  gohere %s", arg, command)
+	}
+	return fmt.Errorf("gohere error: unknown option %q", arg)
 }
