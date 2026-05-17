@@ -336,8 +336,10 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 	if info, err := os.Stat(tokenPath); err == nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "token permissions", OK: info.Mode().Perm() == 0600, Detail: info.Mode().Perm().String()})
 	}
+	adminHealthy := false
 	if client != nil {
-		checks = append(checks, lifecycle.DoctorCheck{Name: "admin API health", OK: client.Health(context.Background()) == nil})
+		adminHealthy = client.Health(context.Background()) == nil
+		checks = append(checks, lifecycle.DoctorCheck{Name: "admin API health", OK: adminHealthy})
 	}
 	if pid, err := os.ReadFile(pidPath); err == nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "router pid", OK: true, Detail: strings.TrimSpace(string(pid))})
@@ -352,6 +354,9 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 		ok := extra.Port80Available()
 		if ok {
 			detail = "available"
+		} else if adminHealthy {
+			ok = true
+			detail = "used by gohere router"
 		}
 		checks = append(checks, lifecycle.DoctorCheck{Name: "port 80", OK: ok, Detail: detail})
 	}

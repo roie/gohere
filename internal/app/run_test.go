@@ -332,6 +332,19 @@ func TestDoctorWithStoreReportsPort80Availability(t *testing.T) {
 	}
 }
 
+func TestDoctorWithStoreTreatsHealthyRouterAsPort80OK(t *testing.T) {
+	var out strings.Builder
+
+	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{Port80Available: func() bool {
+		return false
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok port 80 used by gohere router") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
 func TestDoctorWithStoreReportsSetcapStatus(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(stateDir, "bin"), 0755); err != nil {
