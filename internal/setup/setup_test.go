@@ -46,6 +46,40 @@ func TestLinuxSetupCopiesBinaryEnsuresTokenAndRunsSetcap(t *testing.T) {
 	}
 }
 
+func TestLinuxSetupRestoresStableBinaryModeWhenUpdating(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source-gohere")
+	if err := os.WriteFile(source, []byte("new-binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(dir, "state")
+	stable := filepath.Join(stateDir, "bin", "gohere")
+	if err := os.MkdirAll(filepath.Dir(stable), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stable, []byte("old-binary"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Linux(context.Background(), Config{
+		StateDir:         stateDir,
+		CurrentBinary:    source,
+		CommandRunner:    &detachingRunner{pid: 4242},
+		SystemdAvailable: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(stable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0755 {
+		t.Fatalf("stable binary mode = %v, want 0755", got)
+	}
+}
+
 func TestLinuxSetupDetachedFallbackWritesRouterPID(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source-gohere")

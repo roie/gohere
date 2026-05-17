@@ -131,7 +131,10 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		out.Close()
 		return err
 	}
-	return out.Close()
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Chmod(dst, mode)
 }
 
 type realRunner struct{}
