@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/roie/gohere/internal/app"
 	"github.com/roie/gohere/internal/cli"
@@ -11,6 +13,9 @@ import (
 )
 
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	cmd, err := cli.Parse(os.Args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -24,7 +29,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		if err := app.Run(context.Background(), cmd, cwd, os.Stdout, os.Stderr); err != nil {
+		if err := app.Run(ctx, cmd, cwd, os.Stdout, os.Stderr); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -54,12 +59,12 @@ func main() {
 			os.Exit(1)
 		}
 	case cli.CommandSetup:
-		if err := app.Setup(context.Background()); err != nil {
+		if err := app.Setup(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 	case cli.CommandRouter:
-		running, err := router.Start(context.Background(), router.StartConfig{})
+		running, err := router.Start(ctx, router.StartConfig{})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
