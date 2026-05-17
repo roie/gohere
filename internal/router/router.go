@@ -55,21 +55,32 @@ func EnsureToken(stateDir string) (string, error) {
 	path := filepath.Join(stateDir, "token")
 	data, err := os.ReadFile(path)
 	if err == nil {
+		token := strings.TrimSpace(string(data))
+		if token == "" {
+			return writeToken(path)
+		}
 		if err := os.Chmod(path, 0600); err != nil {
 			return "", err
 		}
-		return strings.TrimSpace(string(data)), nil
+		return token, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 
+	return writeToken(path)
+}
+
+func writeToken(path string) (string, error) {
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return "", err
 	}
 	token := hex.EncodeToString(tokenBytes)
 	if err := os.WriteFile(path, []byte(token+"\n"), 0600); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(path, 0600); err != nil {
 		return "", err
 	}
 	return token, nil
