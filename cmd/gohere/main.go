@@ -71,6 +71,8 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "gohere router listening on %s\n", running.HTTPAddr)
 		waitForRouter(ctx)
+	case cli.CommandHelp:
+		printUsage(os.Stdout, cmd.HelpTopic)
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command")
 		os.Exit(2)
@@ -79,4 +81,20 @@ func main() {
 
 func waitForRouter(ctx context.Context) {
 	<-ctx.Done()
+}
+
+func printUsage(out *os.File, topic string) {
+	if topic != "" {
+		fmt.Fprintf(out, "Usage: gohere %s\n\n", topic)
+	}
+	fmt.Fprint(out, `Usage:
+  gohere [script] [--verbose] [--target PORT] [--port-flag FLAG]
+  gohere --target PORT -- command [args...]
+  gohere list|stop|clean|doctor|setup
+
+Examples:
+  gohere
+  gohere dev:web
+  gohere --target 5173 -- npm run dev
+`)
 }

@@ -16,6 +16,7 @@ const (
 	CommandDoctor CommandKind = "doctor"
 	CommandRouter CommandKind = "router"
 	CommandSetup  CommandKind = "setup"
+	CommandHelp   CommandKind = "help"
 )
 
 type Command struct {
@@ -25,6 +26,7 @@ type Command struct {
 	Verbose    bool
 	TargetPort int
 	PortFlag   string
+	HelpTopic  string
 }
 
 func Parse(args []string) (Command, error) {
@@ -66,11 +68,18 @@ func Parse(args []string) (Command, error) {
 			}
 			cmd.PortFlag = rest[0]
 			rest = rest[1:]
+		case "--help", "-h", "help":
+			cmd.Kind = CommandHelp
+			cmd.Script = ""
+			return cmd, nil
 		case "list":
 			if sawScript {
 				cmd.Kind = CommandRun
 				cmd.Script = arg
 				continue
+			}
+			if helpRequested(rest) {
+				return helpCommand(arg), nil
 			}
 			cmd.Kind = CommandList
 			cmd.Script = ""
@@ -81,6 +90,9 @@ func Parse(args []string) (Command, error) {
 				cmd.Script = arg
 				continue
 			}
+			if helpRequested(rest) {
+				return helpCommand(arg), nil
+			}
 			cmd.Kind = CommandStop
 			cmd.Script = ""
 			return cmd, nil
@@ -89,6 +101,9 @@ func Parse(args []string) (Command, error) {
 				cmd.Kind = CommandRun
 				cmd.Script = arg
 				continue
+			}
+			if helpRequested(rest) {
+				return helpCommand(arg), nil
 			}
 			cmd.Kind = CommandClean
 			cmd.Script = ""
@@ -99,6 +114,9 @@ func Parse(args []string) (Command, error) {
 				cmd.Script = arg
 				continue
 			}
+			if helpRequested(rest) {
+				return helpCommand(arg), nil
+			}
 			cmd.Kind = CommandDoctor
 			cmd.Script = ""
 			return cmd, nil
@@ -108,6 +126,9 @@ func Parse(args []string) (Command, error) {
 				cmd.Script = arg
 				continue
 			}
+			if helpRequested(rest) {
+				return helpCommand(arg), nil
+			}
 			cmd.Kind = CommandRouter
 			cmd.Script = ""
 			return cmd, nil
@@ -116,6 +137,9 @@ func Parse(args []string) (Command, error) {
 				cmd.Kind = CommandRun
 				cmd.Script = arg
 				continue
+			}
+			if helpRequested(rest) {
+				return helpCommand(arg), nil
 			}
 			cmd.Kind = CommandSetup
 			cmd.Script = ""
@@ -128,4 +152,15 @@ func Parse(args []string) (Command, error) {
 	}
 
 	return cmd, nil
+}
+
+func helpRequested(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	return args[0] == "--help" || args[0] == "-h"
+}
+
+func helpCommand(topic string) Command {
+	return Command{Kind: CommandHelp, HelpTopic: topic}
 }

@@ -64,6 +64,32 @@ func TestParseFixedCommands(t *testing.T) {
 	}
 }
 
+func TestParseHelp(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantTopic string
+	}{
+		{name: "global long", args: []string{"gohere", "--help"}},
+		{name: "global short", args: []string{"gohere", "-h"}},
+		{name: "global command", args: []string{"gohere", "help"}},
+		{name: "setup topic", args: []string{"gohere", "setup", "--help"}, wantTopic: "setup"},
+		{name: "doctor topic short", args: []string{"gohere", "doctor", "-h"}, wantTopic: "doctor"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, err := Parse(tt.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cmd.Kind != CommandHelp || cmd.HelpTopic != tt.wantTopic {
+				t.Fatalf("Parse help = %#v", cmd)
+			}
+		})
+	}
+}
+
 func TestParseOptions(t *testing.T) {
 	cmd, err := Parse([]string{"gohere", "--verbose", "--target", "5173", "--port-flag", "-p", "dev"})
 	if err != nil {
