@@ -155,8 +155,24 @@ func TestResolveRouteHostAvoidsActiveConflict(t *testing.T) {
 }
 
 func TestRunSuccessOutput(t *testing.T) {
-	got := runSuccessOutput("eventca", "eventca.localhost")
-	want := "eventca is running\n\nhttp://eventca.localhost\n"
+	got := runSuccessOutput(cli.Command{Kind: cli.CommandRun, Script: "dev"}, "eventca.localhost")
+	want := "gohere \u2192 http://eventca.localhost\n"
+	if got != want {
+		t.Fatalf("runSuccessOutput() = %q, want %q", got, want)
+	}
+}
+
+func TestRunSuccessOutputLabelsExplicitScript(t *testing.T) {
+	got := runSuccessOutput(cli.Command{Kind: cli.CommandRun, Script: "dev:web"}, "eventca.localhost")
+	want := "gohere dev:web \u2192 http://eventca.localhost\n"
+	if got != want {
+		t.Fatalf("runSuccessOutput() = %q, want %q", got, want)
+	}
+}
+
+func TestRunSuccessOutputDoesNotLabelRawCommand(t *testing.T) {
+	got := runSuccessOutput(cli.Command{Kind: cli.CommandRaw, Raw: []string{"npm", "run", "dev"}}, "eventca.localhost")
+	want := "gohere \u2192 http://eventca.localhost\n"
 	if got != want {
 		t.Fatalf("runSuccessOutput() = %q, want %q", got, want)
 	}
@@ -241,6 +257,166 @@ func TestRunEnsuresRouterBeforeStartingProject(t *testing.T) {
 	}
 	if len(calls) != 2 || calls[0] != "admin" || calls[1] != "runner" {
 		t.Fatalf("calls = %#v", calls)
+	}
+}
+
+func TestRunSuppressesChildOutputOnSuccessfulStartup(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return fakeAdminClient{}, nil
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		cfg.Stdout.Write([]byte("Local: http://127.0.0.1:5173/\n"))
+		cfg.Stderr.Write([]byte("vite noisy warning\n"))
+		return &runner.Result{Port: 5173}, nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite"}}`,
+	})
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout.String(), "127.0.0.1") || strings.Contains(stderr.String(), "vite noisy warning") {
+		t.Fatalf("normal output leaked child startup logs, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	want := "gohere \u2192 http://" + filepath.Base(dir) + ".localhost\n"
+	if stdout.String() != want {
+		t.Fatalf("normal output = %q, want %q", stdout.String(), want)
+	}
+}
+
+func TestRunSuccessOutputLabelsExplicitScriptInNormalMode(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return fakeAdminClient{}, nil
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		cfg.Stdout.Write([]byte("Local: http://127.0.0.1:5173/\n"))
+		return &runner.Result{Port: 5173}, nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev:web":"vite"}}`,
+	})
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev:web"}, dir, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "gohere dev:web \u2192 http://" + filepath.Base(dir) + ".localhost\n"
+	if stdout.String() != want {
+		t.Fatalf("normal script output = %q, want %q", stdout.String(), want)
+	}
+}
+
+func TestRunStaticUsesPlainSuccessLabel(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+	}()
+
+	admin := &recordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	dir := tempProject(t, map[string]string{"index.html": "<h1>Hello</h1>"})
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout, stderr strings.Builder
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, cli.Command{Kind: cli.CommandRun, Script: "dev", TargetPort: 0}, dir, &stdout, &stderr)
+	}()
+
+	admin.waitForUpsert(t)
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	want := "gohere \u2192 http://" + filepath.Base(dir) + ".localhost\n"
+	if stdout.String() != want {
+		t.Fatalf("static output = %q, want %q", stdout.String(), want)
+	}
+}
+
+func TestRunReplaysChildOutputOnStartupFailure(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return fakeAdminClient{}, nil
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		cfg.Stdout.Write([]byte("starting dev server\n"))
+		cfg.Stderr.Write([]byte("Error: config is invalid\n"))
+		return nil, errors.New("started dev script, but could not detect a local URL; try: gohere --target 5173")
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite"}}`,
+	})
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected startup error")
+	}
+	if !strings.Contains(stderr.String(), "starting dev server") || !strings.Contains(stderr.String(), "Error: config is invalid") {
+		t.Fatalf("startup failure should replay child output, stderr=%q", stderr.String())
+	}
+	wantErr := "gohere error: started dev script, but could not detect a local URL.\nTry:\n  gohere --target 5173"
+	if err.Error() != wantErr {
+		t.Fatalf("error = %q, want %q", err.Error(), wantErr)
+	}
+}
+
+func TestRunVerboseOutputIncludesCleanURLAndMetadata(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return fakeAdminClient{}, nil
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		cfg.Stdout.Write([]byte("Local: http://127.0.0.1:5173/\n"))
+		return &runner.Result{Port: 5173}, nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite"}}`,
+	})
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev", Verbose: true}, dir, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(stdout.String(), "gohere \u2192 http://"+filepath.Base(dir)+".localhost\n\n") ||
+		!strings.Contains(stdout.String(), "\ntarget: http://127.0.0.1:5173\n") ||
+		!strings.Contains(stdout.String(), "command: npm run dev -- --host 127.0.0.1 --port ") ||
+		!strings.Contains(stdout.String(), "router: running\n") {
+		t.Fatalf("verbose stdout = %q", stdout.String())
 	}
 }
 

@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -129,11 +130,6 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		return err
 	}
 
-	if cmd.Verbose {
-		fmt.Fprintf(stderr, "hidden port: %d\n", plan.Port)
-		fmt.Fprintf(stderr, "command: %s\n", strings.Join(plan.Command, " "))
-	}
-
 	adminClient, err := defaultAdminClientFunc()
 	if err != nil {
 		return err
@@ -148,7 +144,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 			return err
 		}
 		defer staticServer.Close()
-		cleanup, err := registerRoute(ctx, adminClient, plan, staticServer.Port(), 0, cmd.Verbose, stdout, stderr)
+		cleanup, err := registerRoute(ctx, adminClient, cmd, plan, staticServer.Port(), 0, stdout, stderr)
 		if err != nil {
 			return err
 		}
@@ -157,24 +153,28 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		return nil
 	}
 
+	childStdout := newLimitedCapture(32 * 1024)
+	childStderr := newLimitedCapture(32 * 1024)
+
 	result, err := startRunnerFunc(ctx, runner.Config{
 		Command:             plan.Command,
 		Env:                 plan.Env,
 		ChosenPort:          plan.Port,
 		RequireDetectedPort: plan.RequireDetectedPort,
-		Stdout:              stdout,
-		Stderr:              stderr,
+		Stdout:              childStdout,
+		Stderr:              childStderr,
 		StartupTimeout:      15 * time.Second,
 	})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}
-		return err
+		replayCapturedOutput(stderr, childStdout, childStderr)
+		return formatRunError(err)
 	}
 	defer result.Stop()
 
-	cleanup, err := registerRoute(ctx, adminClient, plan, result.Port, result.PID(), cmd.Verbose, stdout, stderr)
+	cleanup, err := registerRoute(ctx, adminClient, cmd, plan, result.Port, result.PID(), stdout, stderr)
 	if err != nil {
 		return err
 	}
@@ -182,7 +182,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	return result.Wait()
 }
 
-func registerRoute(ctx context.Context, adminClient adminClient, plan RunPlan, port, pid int, verbose bool, stdout, stderr io.Writer) (func(), error) {
+func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command, plan RunPlan, port, pid int, stdout, stderr io.Writer) (func(), error) {
 	routes, err := adminClient.Routes(ctx)
 	if err != nil {
 		return nil, err
@@ -200,10 +200,12 @@ func registerRoute(ctx context.Context, adminClient adminClient, plan RunPlan, p
 		return nil, err
 	}
 
-	if verbose {
-		fmt.Fprintf(stderr, "target: http://127.0.0.1:%d\n", port)
+	fmt.Fprint(stdout, runSuccessOutput(cmd, route.Host))
+	if cmd.Verbose {
+		fmt.Fprintf(stdout, "\ntarget: http://127.0.0.1:%d\n", port)
+		fmt.Fprintf(stdout, "command: %s\n", strings.Join(plan.Command, " "))
+		fmt.Fprintln(stdout, "router: running")
 	}
-	fmt.Fprint(stdout, runSuccessOutput(plan.Name, route.Host))
 	return func() {
 		adminClient.DeleteRoute(context.Background(), route.Host)
 	}, nil
@@ -230,8 +232,66 @@ func toRegisteredRoutes(routes []router.Route) []registeredRoute {
 	return registered
 }
 
-func runSuccessOutput(name, host string) string {
-	return fmt.Sprintf("%s is running\n\nhttp://%s\n", name, host)
+func runSuccessOutput(cmd cli.Command, host string) string {
+	label := "gohere"
+	if cmd.Kind == cli.CommandRun && cmd.Script != "" && cmd.Script != "dev" {
+		label += " " + cmd.Script
+	}
+	return fmt.Sprintf("%s \u2192 http://%s\n", label, host)
+}
+
+func formatRunError(err error) error {
+	msg := err.Error()
+	if strings.Contains(msg, "could not detect a local URL") {
+		return errors.New("gohere error: started dev script, but could not detect a local URL.\nTry:\n  gohere --target 5173")
+	}
+	return fmt.Errorf("gohere error: %w", err)
+}
+
+func replayCapturedOutput(out io.Writer, captures ...*limitedCapture) {
+	wrote := false
+	for _, capture := range captures {
+		text := capture.String()
+		if text == "" {
+			continue
+		}
+		if wrote && !strings.HasSuffix(text, "\n") {
+			fmt.Fprintln(out)
+		}
+		fmt.Fprint(out, text)
+		if !strings.HasSuffix(text, "\n") {
+			fmt.Fprintln(out)
+		}
+		wrote = true
+	}
+	if wrote {
+		fmt.Fprintln(out)
+	}
+}
+
+type limitedCapture struct {
+	buf bytes.Buffer
+	max int
+}
+
+func newLimitedCapture(max int) *limitedCapture {
+	return &limitedCapture{max: max}
+}
+
+func (w *limitedCapture) Write(p []byte) (int, error) {
+	accepted := len(p)
+	remaining := w.max - w.buf.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		w.buf.Write(p)
+	}
+	return accepted, nil
+}
+
+func (w *limitedCapture) String() string {
+	return w.buf.String()
 }
 
 func ensureRouter(ctx context.Context, out io.Writer, health func(context.Context) error) error {
