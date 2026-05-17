@@ -131,6 +131,29 @@ func TestAdminAPIRouteCRUD(t *testing.T) {
 	}
 }
 
+func TestAdminAPIUpsertHostCaseInsensitive(t *testing.T) {
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "eventca.localhost", Target: "http://127.0.0.1:49231"}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	body := strings.NewReader(`{"host":"EventCA.localhost","target":"http://127.0.0.1:49232"}`)
+	req := httptest.NewRequest(http.MethodPost, "/routes", body)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST /routes = %d body %q", rec.Code, rec.Body.String())
+	}
+	routes, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Target != "http://127.0.0.1:49232" {
+		t.Fatalf("routes = %#v", routes)
+	}
+}
+
 func TestAdminAPIDeleteHostCaseInsensitive(t *testing.T) {
 	store := NewMemoryStore()
 	store.Save([]Route{{Host: "eventca.localhost", Target: "http://127.0.0.1:49231"}})

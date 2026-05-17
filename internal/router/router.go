@@ -307,7 +307,7 @@ func missingRoutePage(w http.ResponseWriter, host string) {
 
 func upsertRoute(routes []Route, route Route) []Route {
 	for i := range routes {
-		if routes[i].Host == route.Host {
+		if strings.EqualFold(routes[i].Host, route.Host) {
 			routes[i] = route
 			return routes
 		}
