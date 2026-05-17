@@ -54,10 +54,6 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 	if err != nil {
 		return nil, err
 	}
-	pidPath := filepath.Join(cfg.StateDir, "router.pid")
-	if err := writeRouterPID(pidPath); err != nil {
-		return nil, err
-	}
 	store := NewRouteStore(filepath.Join(cfg.StateDir, "routes.json"))
 	server := NewServer(Config{Token: token, Store: store})
 
@@ -68,6 +64,12 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 	adminLn, err := net.Listen("tcp", cfg.AdminAddr)
 	if err != nil {
 		httpLn.Close()
+		return nil, err
+	}
+	pidPath := filepath.Join(cfg.StateDir, "router.pid")
+	if err := writeRouterPID(pidPath); err != nil {
+		httpLn.Close()
+		adminLn.Close()
 		return nil, err
 	}
 

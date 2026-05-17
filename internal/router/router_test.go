@@ -353,6 +353,27 @@ func TestCloseRemovesRouterPID(t *testing.T) {
 	}
 }
 
+func TestStartDoesNotLeavePIDWhenListenFails(t *testing.T) {
+	stateDir := t.TempDir()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	_, err = Start(t.Context(), StartConfig{
+		HTTPAddr:  ln.Addr().String(),
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  stateDir,
+	})
+	if err == nil {
+		t.Fatal("expected listen failure")
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "router.pid")); !os.IsNotExist(err) {
+		t.Fatalf("router.pid should not exist after failed start, stat err = %v", err)
+	}
+}
+
 func TestStartRotatesDefaultRouterLog(t *testing.T) {
 	ctx := t.Context()
 	stateDir := t.TempDir()
