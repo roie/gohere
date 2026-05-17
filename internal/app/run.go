@@ -100,7 +100,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 			return err
 		}
 		defer staticServer.Close()
-		cleanup, err := registerRoute(ctx, plan, staticServer.Port(), 0, cmd.Verbose, stderr)
+		cleanup, err := registerRoute(ctx, plan, staticServer.Port(), 0, cmd.Verbose, stdout, stderr)
 		if err != nil {
 			return err
 		}
@@ -122,7 +122,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	}
 	defer result.Stop()
 
-	cleanup, err := registerRoute(ctx, plan, result.Port, result.PID(), cmd.Verbose, stderr)
+	cleanup, err := registerRoute(ctx, plan, result.Port, result.PID(), cmd.Verbose, stdout, stderr)
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	return result.Wait()
 }
 
-func registerRoute(ctx context.Context, plan RunPlan, port, pid int, verbose bool, stderr io.Writer) (func(), error) {
+func registerRoute(ctx context.Context, plan RunPlan, port, pid int, verbose bool, stdout, stderr io.Writer) (func(), error) {
 	adminClient, err := defaultAdminClient()
 	if err != nil {
 		return nil, err
@@ -138,6 +138,11 @@ func registerRoute(ctx context.Context, plan RunPlan, port, pid int, verbose boo
 	if err := adminClient.Health(ctx); err != nil {
 		return nil, errors.New("gohere router is not running; run gohere setup")
 	}
+	routes, err := adminClient.Routes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	plan.Host = resolveRouteHost(plan, toRegisteredRoutes(routes))
 	route := router.Route{
 		Host:      plan.Host,
 		Target:    fmt.Sprintf("http://127.0.0.1:%d", port),
@@ -153,9 +158,35 @@ func registerRoute(ctx context.Context, plan RunPlan, port, pid int, verbose boo
 	if verbose {
 		fmt.Fprintf(stderr, "target: http://127.0.0.1:%d\n", port)
 	}
+	fmt.Fprint(stdout, runSuccessOutput(plan.Name, route.Host))
 	return func() {
 		adminClient.DeleteRoute(context.Background(), route.Host)
 	}, nil
+}
+
+type registeredRoute struct {
+	Host string
+	CWD  string
+}
+
+func resolveRouteHost(plan RunPlan, routes []registeredRoute) string {
+	active := make(map[string]string, len(routes))
+	for _, route := range routes {
+		active[route.Host] = route.CWD
+	}
+	return project.ResolveHostnameConflict(plan.Host, plan.CWD, active)
+}
+
+func toRegisteredRoutes(routes []router.Route) []registeredRoute {
+	registered := make([]registeredRoute, 0, len(routes))
+	for _, route := range routes {
+		registered = append(registered, registeredRoute{Host: route.Host, CWD: route.CWD})
+	}
+	return registered
+}
+
+func runSuccessOutput(name, host string) string {
+	return fmt.Sprintf("%s is running\n\nhttp://%s\n", name, host)
 }
 
 func List(stdout io.Writer) error {

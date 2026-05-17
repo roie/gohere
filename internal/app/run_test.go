@@ -118,6 +118,30 @@ func TestPrepareStaticProject(t *testing.T) {
 	}
 }
 
+func TestResolveRouteHostAvoidsActiveConflict(t *testing.T) {
+	plan := RunPlan{
+		Host: "myproject.localhost",
+		CWD:  "/work/parent/myproject",
+	}
+	routes := []registeredRoute{
+		{Host: "myproject.localhost", CWD: "/other/myproject"},
+		{Host: "parent-myproject.localhost", CWD: "/other/parent-myproject"},
+	}
+
+	got := resolveRouteHost(plan, routes)
+	if got != "parent-myproject-2.localhost" {
+		t.Fatalf("resolveRouteHost() = %q", got)
+	}
+}
+
+func TestRunSuccessOutput(t *testing.T) {
+	got := runSuccessOutput("eventca", "eventca.localhost")
+	want := "eventca is running\n\nhttp://eventca.localhost\n"
+	if got != want {
+		t.Fatalf("runSuccessOutput() = %q, want %q", got, want)
+	}
+}
+
 func tempProject(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
