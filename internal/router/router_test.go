@@ -312,6 +312,28 @@ func TestStartRunsAdminHealthAndCreatesState(t *testing.T) {
 	}
 }
 
+func TestStartWritesRouterPID(t *testing.T) {
+	stateDir := t.TempDir()
+
+	running, err := Start(t.Context(), StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  stateDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+
+	data, err := os.ReadFile(filepath.Join(stateDir, "router.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		t.Fatalf("router.pid is empty")
+	}
+}
+
 func TestStartRotatesDefaultRouterLog(t *testing.T) {
 	ctx := t.Context()
 	stateDir := t.TempDir()

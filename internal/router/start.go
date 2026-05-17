@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 type StartConfig struct {
@@ -50,6 +51,9 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 
 	token, err := EnsureToken(cfg.StateDir)
 	if err != nil {
+		return nil, err
+	}
+	if err := writeRouterPID(cfg.StateDir); err != nil {
 		return nil, err
 	}
 	store := NewRouteStore(filepath.Join(cfg.StateDir, "routes.json"))
@@ -110,6 +114,13 @@ func homeDir() string {
 		return home
 	}
 	return "."
+}
+
+func writeRouterPID(stateDir string) error {
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(stateDir, "router.pid"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0600)
 }
 
 func isLoopbackAddr(addr string) bool {
