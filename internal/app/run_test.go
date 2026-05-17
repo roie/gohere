@@ -27,7 +27,7 @@ func TestPrepareScriptRun(t *testing.T) {
 	if plan.Port == 0 {
 		t.Fatal("expected hidden port")
 	}
-	want := []string{"pnpm", "run", "dev", "--", "--host", "127.0.0.1", "--port", itoa(plan.Port), "--strictPort"}
+	want := []string{"pnpm", "run", "dev", "--host", "127.0.0.1", "--port", itoa(plan.Port), "--strictPort"}
 	if !sameStrings(plan.Command, want) {
 		t.Fatalf("command = %#v, want %#v", plan.Command, want)
 	}

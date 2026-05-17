@@ -150,14 +150,24 @@ func BuildScriptCommand(pm project.PackageManager, script string, extraArgs []st
 	switch pm {
 	case project.PackageManagerPNPM:
 		cmd = []string{"pnpm", "run", script}
+		extraArgs = trimArgSeparator(extraArgs)
 	case project.PackageManagerYarn:
 		cmd = []string{"yarn", script}
+		extraArgs = trimArgSeparator(extraArgs)
 	case project.PackageManagerBun:
 		cmd = []string{"bun", "run", script}
+		extraArgs = trimArgSeparator(extraArgs)
 	default:
 		cmd = []string{"npm", "run", script}
 	}
 	return append(cmd, extraArgs...)
+}
+
+func trimArgSeparator(args []string) []string {
+	if len(args) > 0 && args[0] == "--" {
+		return args[1:]
+	}
+	return args
 }
 
 func Start(ctx context.Context, cfg Config) (*Result, error) {

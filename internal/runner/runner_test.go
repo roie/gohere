@@ -96,9 +96,9 @@ func TestBuildScriptCommand(t *testing.T) {
 		want []string
 	}{
 		{project.PackageManagerNPM, []string{"npm", "run", "dev", "--", "--port", "49231"}},
-		{project.PackageManagerPNPM, []string{"pnpm", "run", "dev", "--", "--port", "49231"}},
-		{project.PackageManagerYarn, []string{"yarn", "dev", "--", "--port", "49231"}},
-		{project.PackageManagerBun, []string{"bun", "run", "dev", "--", "--port", "49231"}},
+		{project.PackageManagerPNPM, []string{"pnpm", "run", "dev", "--port", "49231"}},
+		{project.PackageManagerYarn, []string{"yarn", "dev", "--port", "49231"}},
+		{project.PackageManagerBun, []string{"bun", "run", "dev", "--port", "49231"}},
 	}
 
 	for _, tt := range tests {
