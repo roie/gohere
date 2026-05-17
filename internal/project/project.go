@@ -273,17 +273,33 @@ func ResolveHostnameConflict(desiredHost, cwd string, active map[string]string) 
 
 	base := strings.TrimSuffix(desiredHost, ".localhost")
 	parent := NormalizeHostnameName(filepath.Base(filepath.Dir(cwd)))
-	candidate := parent + "-" + base + ".localhost"
+	candidate := conflictHost(parent, base, 0)
 	if existingCWD, ok := activeHostCWD(active, candidate); !ok || samePath(existingCWD, cwd) {
 		return candidate
 	}
 
 	for suffix := 2; ; suffix++ {
-		candidate = parent + "-" + base + "-" + strconv.Itoa(suffix) + ".localhost"
+		candidate = conflictHost(parent, base, suffix)
 		if existingCWD, ok := activeHostCWD(active, candidate); !ok || samePath(existingCWD, cwd) {
 			return candidate
 		}
 	}
+}
+
+func conflictHost(parent, base string, suffix int) string {
+	label := parent + "-" + strings.TrimSuffix(base, ".localhost")
+	if suffix > 0 {
+		suffixPart := "-" + strconv.Itoa(suffix)
+		label = NormalizeHostnameName(label)
+		if len(label)+len(suffixPart) > 63 {
+			label = strings.TrimRight(label[:63-len(suffixPart)], "-")
+		}
+		if label == "" {
+			label = "app"
+		}
+		return label + suffixPart + ".localhost"
+	}
+	return NormalizeHostnameName(label) + ".localhost"
 }
 
 func activeHostCWD(active map[string]string, host string) (string, bool) {

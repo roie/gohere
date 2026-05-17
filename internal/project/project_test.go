@@ -3,6 +3,7 @@ package project
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -181,6 +182,22 @@ func TestResolveHostnameConflict(t *testing.T) {
 	})
 	if got != "parent-myproject.localhost" {
 		t.Fatalf("case-insensitive conflict = %q, want parent-myproject.localhost", got)
+	}
+
+	longParent := strings.Repeat("parent", 12)
+	longBase := strings.Repeat("project", 12) + ".localhost"
+	got = ResolveHostnameConflict(longBase, filepath.Join("/work", longParent, strings.TrimSuffix(longBase, ".localhost")), map[string]string{
+		longBase: "/other/project",
+	})
+	label := strings.TrimSuffix(got, ".localhost")
+	if len(label) > 63 {
+		t.Fatalf("conflict label length = %d for %q, want <= 63", len(label), label)
+	}
+
+	got = conflictHost(strings.Repeat("p", 40), strings.Repeat("b", 40), 2)
+	label = strings.TrimSuffix(got, ".localhost")
+	if len(label) > 63 || !strings.HasSuffix(label, "-2") {
+		t.Fatalf("suffixed conflict label = %q length %d, want <= 63 and -2 suffix", label, len(label))
 	}
 }
 
