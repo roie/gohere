@@ -26,7 +26,18 @@ var (
 	setupFunc   = func(ctx context.Context) error {
 		return setup.Linux(ctx, setup.Config{SystemdAvailable: systemdUserAvailable()})
 	}
+	defaultAdminClientFunc func() (adminClient, error) = func() (adminClient, error) {
+		return defaultAdminClient()
+	}
+	startRunnerFunc = runner.Start
 )
+
+type adminClient interface {
+	Health(context.Context) error
+	Routes(context.Context) ([]router.Route, error)
+	UpsertRoute(context.Context, router.Route) error
+	DeleteRoute(context.Context, string) error
+}
 
 type RunPlan struct {
 	Command []string
@@ -102,13 +113,21 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		fmt.Fprintf(stderr, "command: %s\n", strings.Join(plan.Command, " "))
 	}
 
+	adminClient, err := defaultAdminClientFunc()
+	if err != nil {
+		return err
+	}
+	if err := ensureRouter(ctx, stderr, adminClient.Health); err != nil {
+		return err
+	}
+
 	if plan.Static {
 		staticServer, err := staticserver.Start(ctx, plan.CWD, plan.Port)
 		if err != nil {
 			return err
 		}
 		defer staticServer.Close()
-		cleanup, err := registerRoute(ctx, plan, staticServer.Port(), 0, cmd.Verbose, stdout, stderr)
+		cleanup, err := registerRoute(ctx, adminClient, plan, staticServer.Port(), 0, cmd.Verbose, stdout, stderr)
 		if err != nil {
 			return err
 		}
@@ -117,7 +136,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		return ctx.Err()
 	}
 
-	result, err := runner.Start(ctx, runner.Config{
+	result, err := startRunnerFunc(ctx, runner.Config{
 		Command:        plan.Command,
 		Env:            plan.Env,
 		ChosenPort:     plan.Port,
@@ -130,7 +149,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	}
 	defer result.Stop()
 
-	cleanup, err := registerRoute(ctx, plan, result.Port, result.PID(), cmd.Verbose, stdout, stderr)
+	cleanup, err := registerRoute(ctx, adminClient, plan, result.Port, result.PID(), cmd.Verbose, stdout, stderr)
 	if err != nil {
 		return err
 	}
@@ -138,14 +157,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	return result.Wait()
 }
 
-func registerRoute(ctx context.Context, plan RunPlan, port, pid int, verbose bool, stdout, stderr io.Writer) (func(), error) {
-	adminClient, err := defaultAdminClient()
-	if err != nil {
-		return nil, err
-	}
-	if err := ensureRouter(ctx, stderr, adminClient.Health); err != nil {
-		return nil, err
-	}
+func registerRoute(ctx context.Context, adminClient adminClient, plan RunPlan, port, pid int, verbose bool, stdout, stderr io.Writer) (func(), error) {
 	routes, err := adminClient.Routes(ctx)
 	if err != nil {
 		return nil, err

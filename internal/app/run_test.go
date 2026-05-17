@@ -3,12 +3,15 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/roie/gohere/internal/cli"
+	"github.com/roie/gohere/internal/router"
+	"github.com/roie/gohere/internal/runner"
 )
 
 func TestPrepareScriptRun(t *testing.T) {
@@ -195,6 +198,54 @@ func TestEnsureRouterPromptsAndRunsSetup(t *testing.T) {
 	if !strings.Contains(out.String(), "Clean local URLs are not enabled yet.") {
 		t.Fatalf("prompt output = %q", out.String())
 	}
+}
+
+func TestRunEnsuresRouterBeforeStartingProject(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	calls := []string{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		calls = append(calls, "admin")
+		return fakeAdminClient{}, nil
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		calls = append(calls, "runner")
+		return nil, errors.New("stop after order check")
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite"}}`,
+	})
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected runner error")
+	}
+	if len(calls) != 2 || calls[0] != "admin" || calls[1] != "runner" {
+		t.Fatalf("calls = %#v", calls)
+	}
+}
+
+type fakeAdminClient struct{}
+
+func (fakeAdminClient) Health(context.Context) error {
+	return nil
+}
+
+func (fakeAdminClient) Routes(context.Context) ([]router.Route, error) {
+	return nil, nil
+}
+
+func (fakeAdminClient) UpsertRoute(context.Context, router.Route) error {
+	return nil
+}
+
+func (fakeAdminClient) DeleteRoute(context.Context, string) error {
+	return nil
 }
 
 func tempProject(t *testing.T, files map[string]string) string {
