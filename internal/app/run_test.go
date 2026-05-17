@@ -243,6 +243,19 @@ func TestRunEnsuresRouterBeforeStartingProject(t *testing.T) {
 	}
 }
 
+func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
+	store := router.NewMemoryStore()
+	store.Save([]router.Route{{Host: "app.localhost", Target: "http://127.0.0.1:1234"}})
+	var out strings.Builder
+
+	if err := DoctorWithStore(&out, t.TempDir(), store, fakeAdminClient{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok active routes 1") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
 type fakeAdminClient struct{}
 
 func (fakeAdminClient) Health(context.Context) error {

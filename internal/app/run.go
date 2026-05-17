@@ -296,6 +296,11 @@ func Stop(cwd string, stdout io.Writer) error {
 
 func Doctor(stdout io.Writer) error {
 	stateDir := router.DefaultStateDir()
+	client, _ := defaultAdminClientFunc()
+	return DoctorWithStore(stdout, stateDir, defaultStore(), client)
+}
+
+func DoctorWithStore(stdout io.Writer, stateDir string, store router.Store, client adminClient) error {
 	tokenPath := filepath.Join(stateDir, "token")
 	binaryPath := filepath.Join(stateDir, "bin", "gohere")
 	checks := []lifecycle.DoctorCheck{
@@ -306,8 +311,11 @@ func Doctor(stdout io.Writer) error {
 	if info, err := os.Stat(tokenPath); err == nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "token permissions", OK: info.Mode().Perm() == 0600, Detail: info.Mode().Perm().String()})
 	}
-	if client, err := defaultAdminClient(); err == nil {
+	if client != nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "admin API health", OK: client.Health(context.Background()) == nil})
+	}
+	if routes, err := store.Load(); err == nil {
+		checks = append(checks, lifecycle.DoctorCheck{Name: "active routes", OK: true, Detail: fmt.Sprintf("%d", len(routes))})
 	}
 	fmt.Fprint(stdout, lifecycle.FormatDoctor(checks))
 	return nil
