@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 )
 
 type PackageManager string
@@ -156,11 +155,6 @@ func NormalizeHostnameName(name string) string {
 				lastHyphen = false
 			}
 			out.WriteRune(r)
-		default:
-			if unicode.IsLetter(r) || unicode.IsDigit(r) {
-				out.WriteRune(r)
-				lastHyphen = false
-			}
 		}
 	}
 

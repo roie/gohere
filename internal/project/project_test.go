@@ -15,6 +15,7 @@ func TestNormalizeHostnameName(t *testing.T) {
 		{"lowercase", "MyProject", "myproject"},
 		{"separators become hyphens", "my_project.site name", "my-project-site-name"},
 		{"invalid characters stripped", "@scope/my app!", "scopemy-app"},
+		{"non ascii stripped", "mañana café", "maana-caf"},
 		{"repeated hyphens collapse", "my---app", "my-app"},
 		{"empty fallback", "!!!", "app"},
 	}
