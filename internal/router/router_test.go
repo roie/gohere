@@ -78,6 +78,18 @@ func TestAdminAPIRequiresTokenForRoutes(t *testing.T) {
 	}
 }
 
+func TestAdminAPIRejectsRoutesWhenTokenIsEmpty(t *testing.T) {
+	srv := NewServer(Config{Token: "", Store: NewMemoryStore()})
+
+	req := httptest.NewRequest(http.MethodGet, "/routes", nil)
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /routes with empty configured token = %d", rec.Code)
+	}
+}
+
 func TestAdminAPIRouteCRUD(t *testing.T) {
 	store := NewMemoryStore()
 	srv := NewServer(Config{Token: "secret", Store: store})

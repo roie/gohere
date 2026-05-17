@@ -251,7 +251,7 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authorized(r *http.Request) bool {
-	return s.token == "" || r.Header.Get("X-Gohere-Token") == s.token
+	return s.token != "" && r.Header.Get("X-Gohere-Token") == s.token
 }
 
 func (s *Server) routeForHost(host string) (Route, bool, error) {
