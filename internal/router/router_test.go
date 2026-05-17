@@ -324,3 +324,14 @@ func TestStartRotatesDefaultRouterLog(t *testing.T) {
 		t.Fatalf("router.log size = %d, want 0", info.Size())
 	}
 }
+
+func TestStartRejectsNonLoopbackAdminAddress(t *testing.T) {
+	_, err := Start(t.Context(), StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		AdminAddr: "0.0.0.0:0",
+		StateDir:  t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("expected non-loopback admin address to be rejected")
+	}
+}

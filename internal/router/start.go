@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -31,6 +32,9 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 	}
 	if cfg.AdminAddr == "" {
 		cfg.AdminAddr = "127.0.0.1:39399"
+	}
+	if !isLoopbackAddr(cfg.AdminAddr) {
+		return nil, fmt.Errorf("admin API must listen on loopback, got %s", cfg.AdminAddr)
 	}
 	if cfg.StateDir == "" {
 		cfg.StateDir = DefaultStateDir()
@@ -106,4 +110,13 @@ func homeDir() string {
 		return home
 	}
 	return "."
+}
+
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
