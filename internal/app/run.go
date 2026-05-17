@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -301,6 +302,14 @@ func Doctor(stdout io.Writer) error {
 }
 
 func DoctorWithStore(stdout io.Writer, stateDir string, store router.Store, client adminClient) error {
+	return DoctorWithChecks(stdout, stateDir, store, client, DoctorChecks{Port80Available: port80Available})
+}
+
+type DoctorChecks struct {
+	Port80Available func() bool
+}
+
+func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, client adminClient, extra DoctorChecks) error {
 	tokenPath := filepath.Join(stateDir, "token")
 	binaryPath := filepath.Join(stateDir, "bin", "gohere")
 	pidPath := filepath.Join(stateDir, "router.pid")
@@ -322,6 +331,14 @@ func DoctorWithStore(stdout io.Writer, stateDir string, store router.Store, clie
 	}
 	if routes, err := store.Load(); err == nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "active routes", OK: true, Detail: fmt.Sprintf("%d", len(routes))})
+	}
+	if extra.Port80Available != nil {
+		detail := "blocked"
+		ok := extra.Port80Available()
+		if ok {
+			detail = "available"
+		}
+		checks = append(checks, lifecycle.DoctorCheck{Name: "port 80", OK: ok, Detail: detail})
 	}
 	fmt.Fprint(stdout, lifecycle.FormatDoctor(checks))
 	return nil
@@ -355,4 +372,13 @@ func exists(path string) bool {
 func systemdUserAvailable() bool {
 	_, err := os.Stat("/run/user")
 	return err == nil
+}
+
+func port80Available() bool {
+	ln, err := net.Listen("tcp", "127.0.0.1:80")
+	if err != nil {
+		return false
+	}
+	ln.Close()
+	return true
 }

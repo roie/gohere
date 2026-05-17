@@ -263,6 +263,21 @@ func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
 	}
 }
 
+func TestDoctorWithStoreReportsPort80Availability(t *testing.T) {
+	stateDir := t.TempDir()
+	store := router.NewMemoryStore()
+	var out strings.Builder
+
+	if err := DoctorWithChecks(&out, stateDir, store, fakeAdminClient{}, DoctorChecks{Port80Available: func() bool {
+		return true
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok port 80 available") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
 type fakeAdminClient struct{}
 
 func (fakeAdminClient) Health(context.Context) error {
