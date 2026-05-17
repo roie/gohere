@@ -17,6 +17,7 @@ import (
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/runner"
 	"github.com/roie/gohere/internal/setup"
+	"github.com/roie/gohere/internal/staticserver"
 )
 
 type RunPlan struct {
@@ -26,6 +27,7 @@ type RunPlan struct {
 	Host    string
 	Name    string
 	CWD     string
+	Static  bool
 }
 
 func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
@@ -49,6 +51,10 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 		return RunPlan{}, err
 	}
 	if !found {
+		if staticserver.IsStaticProject(cwd) {
+			host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
+			return RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, Static: true}, nil
+		}
 		return RunPlan{}, errors.New("no package.json found; use gohere -- <command>")
 	}
 
@@ -88,6 +94,21 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		fmt.Fprintf(stderr, "command: %s\n", strings.Join(plan.Command, " "))
 	}
 
+	if plan.Static {
+		staticServer, err := staticserver.Start(ctx, plan.CWD, plan.Port)
+		if err != nil {
+			return err
+		}
+		defer staticServer.Close()
+		cleanup, err := registerRoute(ctx, plan, staticServer.Port(), 0, cmd.Verbose, stderr)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
 	result, err := runner.Start(ctx, runner.Config{
 		Command:        plan.Command,
 		Env:            plan.Env,
@@ -101,30 +122,40 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	}
 	defer result.Stop()
 
-	adminClient, err := defaultAdminClient()
+	cleanup, err := registerRoute(ctx, plan, result.Port, result.PID(), cmd.Verbose, stderr)
 	if err != nil {
 		return err
 	}
+	defer cleanup()
+	return result.Wait()
+}
+
+func registerRoute(ctx context.Context, plan RunPlan, port, pid int, verbose bool, stderr io.Writer) (func(), error) {
+	adminClient, err := defaultAdminClient()
+	if err != nil {
+		return nil, err
+	}
 	if err := adminClient.Health(ctx); err != nil {
-		return errors.New("gohere router is not running; run gohere setup")
+		return nil, errors.New("gohere router is not running; run gohere setup")
 	}
 	route := router.Route{
 		Host:      plan.Host,
-		Target:    fmt.Sprintf("http://127.0.0.1:%d", result.Port),
-		PID:       result.PID(),
+		Target:    fmt.Sprintf("http://127.0.0.1:%d", port),
+		PID:       pid,
 		CWD:       plan.CWD,
 		Name:      plan.Name,
 		StartedAt: time.Now().UTC(),
 	}
 	if err := adminClient.UpsertRoute(ctx, route); err != nil {
-		return err
+		return nil, err
 	}
-	defer adminClient.DeleteRoute(ctx, route.Host)
 
-	if cmd.Verbose {
-		fmt.Fprintf(stderr, "target: http://127.0.0.1:%d\n", result.Port)
+	if verbose {
+		fmt.Fprintf(stderr, "target: http://127.0.0.1:%d\n", port)
 	}
-	return result.Wait()
+	return func() {
+		adminClient.DeleteRoute(context.Background(), route.Host)
+	}, nil
 }
 
 func List(stdout io.Writer) error {

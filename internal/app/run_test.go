@@ -103,6 +103,21 @@ func TestPrepareRunFailsWithoutPackageJSON(t *testing.T) {
 	}
 }
 
+func TestPrepareStaticProject(t *testing.T) {
+	dir := tempProject(t, map[string]string{"index.html": "<h1>Hello</h1>"})
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Static {
+		t.Fatal("expected static plan")
+	}
+	if plan.Host == "" || plan.Name == "" {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
 func tempProject(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
