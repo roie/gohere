@@ -231,7 +231,7 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host := strings.TrimPrefix(r.URL.Path, "/routes/")
+	host := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/routes/"))
 	routes, err := s.store.Load()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -239,7 +239,7 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	filtered := routes[:0]
 	for _, route := range routes {
-		if route.Host != host {
+		if strings.ToLower(route.Host) != host {
 			filtered = append(filtered, route)
 		}
 	}

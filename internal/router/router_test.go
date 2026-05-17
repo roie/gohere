@@ -118,6 +118,24 @@ func TestAdminAPIRouteCRUD(t *testing.T) {
 	}
 }
 
+func TestAdminAPIDeleteHostCaseInsensitive(t *testing.T) {
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "eventca.localhost", Target: "http://127.0.0.1:49231"}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodDelete, "/routes/EventCA.localhost", nil)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /routes/host = %d", rec.Code)
+	}
+	if routes, _ := store.Load(); len(routes) != 0 {
+		t.Fatalf("routes after delete = %#v", routes)
+	}
+}
+
 func TestProxyRoutesByHostHeader(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Backend-Host", r.Host)
