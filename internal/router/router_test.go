@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -410,6 +411,23 @@ func TestStartReportsClearPortConflict(t *testing.T) {
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "gohere router cannot listen on") || !strings.Contains(msg, "port is already in use") {
+		t.Fatalf("listen error = %q", msg)
+	}
+}
+
+func TestListenErrorIncludesPortOwnerWhenDetected(t *testing.T) {
+	old := findPortOwner
+	findPortOwner = func(port string) string {
+		if port != "80" {
+			t.Fatalf("port lookup = %q, want 80", port)
+		}
+		return "nginx 1234"
+	}
+	defer func() { findPortOwner = old }()
+
+	err := listenError("127.0.0.1:80", fmt.Errorf("listen tcp 127.0.0.1:80: bind: address already in use"))
+	msg := err.Error()
+	if !strings.Contains(msg, "port is already in use") || !strings.Contains(msg, "owning process: nginx 1234") {
 		t.Fatalf("listen error = %q", msg)
 	}
 }

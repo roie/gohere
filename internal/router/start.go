@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -106,9 +107,43 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 func listenError(addr string, err error) error {
 	msg := fmt.Sprintf("gohere router cannot listen on %s", addr)
 	if strings.Contains(err.Error(), "address already in use") {
+		_, port, _ := net.SplitHostPort(addr)
+		if owner := findPortOwner(port); owner != "" {
+			return fmt.Errorf("%s: port is already in use; owning process: %s; stop that process and try again: %w", msg, owner, err)
+		}
 		return fmt.Errorf("%s: port is already in use; stop the process using that port and try again: %w", msg, err)
 	}
 	return fmt.Errorf("%s: %w", msg, err)
+}
+
+var findPortOwner = func(port string) string {
+	if port == "" {
+		return ""
+	}
+	if path, err := exec.LookPath("lsof"); err == nil {
+		out, err := exec.Command(path, "-nP", "-iTCP:"+port, "-sTCP:LISTEN").CombinedOutput()
+		if err == nil {
+			return firstNonHeaderLine(string(out))
+		}
+	}
+	if path, err := exec.LookPath("ss"); err == nil {
+		out, err := exec.Command(path, "-ltnp", "sport", "="+port).CombinedOutput()
+		if err == nil {
+			return firstNonHeaderLine(string(out))
+		}
+	}
+	return ""
+}
+
+func firstNonHeaderLine(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "COMMAND ") || strings.HasPrefix(line, "State ") {
+			continue
+		}
+		return line
+	}
+	return ""
 }
 
 func (r *Running) Close() error {
