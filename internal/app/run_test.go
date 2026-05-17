@@ -98,6 +98,19 @@ func TestPrepareRawCommandIsExact(t *testing.T) {
 	assertEnv(t, plan.Env, "HOST", "127.0.0.1")
 }
 
+func TestPrepareRawCommandRequiresTargetWhenNoPortDetected(t *testing.T) {
+	dir := tempProject(t, nil)
+	cmd := cli.Command{Kind: cli.CommandRaw, Raw: []string{"npm", "run", "dev"}}
+
+	plan, err := PrepareRun(cmd, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.RequireDetectedPort {
+		t.Fatalf("raw plan should require detected port without --target: %#v", plan)
+	}
+}
+
 func TestPrepareRunFailsWithoutPackageJSON(t *testing.T) {
 	dir := tempProject(t, nil)
 	_, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir)

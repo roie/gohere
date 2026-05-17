@@ -40,13 +40,14 @@ type adminClient interface {
 }
 
 type RunPlan struct {
-	Command []string
-	Env     []string
-	Port    int
-	Host    string
-	Name    string
-	CWD     string
-	Static  bool
+	Command             []string
+	Env                 []string
+	Port                int
+	Host                string
+	Name                string
+	CWD                 string
+	Static              bool
+	RequireDetectedPort bool
 }
 
 func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
@@ -62,7 +63,15 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	env := runner.ChildEnv(os.Environ(), port)
 	if cmd.Kind == cli.CommandRaw {
 		host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
-		return RunPlan{Command: append([]string(nil), cmd.Raw...), Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd}, nil
+		return RunPlan{
+			Command:             append([]string(nil), cmd.Raw...),
+			Env:                 env,
+			Port:                port,
+			Host:                host,
+			Name:                strings.TrimSuffix(host, ".localhost"),
+			CWD:                 cwd,
+			RequireDetectedPort: cmd.TargetPort == 0,
+		}, nil
 	}
 
 	packagePath, found, err := project.FindNearestPackageJSON(cwd)
@@ -137,12 +146,13 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	}
 
 	result, err := startRunnerFunc(ctx, runner.Config{
-		Command:        plan.Command,
-		Env:            plan.Env,
-		ChosenPort:     plan.Port,
-		Stdout:         stdout,
-		Stderr:         stderr,
-		StartupTimeout: 15 * time.Second,
+		Command:             plan.Command,
+		Env:                 plan.Env,
+		ChosenPort:          plan.Port,
+		RequireDetectedPort: plan.RequireDetectedPort,
+		Stdout:              stdout,
+		Stderr:              stderr,
+		StartupTimeout:      15 * time.Second,
 	})
 	if err != nil {
 		return err

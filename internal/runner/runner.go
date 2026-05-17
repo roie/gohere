@@ -19,12 +19,13 @@ import (
 )
 
 type Config struct {
-	Command        []string
-	Env            []string
-	ChosenPort     int
-	Stdout         io.Writer
-	Stderr         io.Writer
-	StartupTimeout time.Duration
+	Command             []string
+	Env                 []string
+	ChosenPort          int
+	RequireDetectedPort bool
+	Stdout              io.Writer
+	Stderr              io.Writer
+	StartupTimeout      time.Duration
 }
 
 type Result struct {
@@ -214,7 +215,7 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 		}
 		return nil, result.waitErr
 	case <-time.After(timeout):
-		if cfg.ChosenPort != 0 && PortReachable(cfg.ChosenPort) {
+		if !cfg.RequireDetectedPort && cfg.ChosenPort != 0 && PortReachable(cfg.ChosenPort) {
 			result.Port = cfg.ChosenPort
 			return result, nil
 		}

@@ -191,6 +191,31 @@ func TestRunFallsBackToChosenPortWhenReachable(t *testing.T) {
 	}
 }
 
+func TestRunCanRequireDetectedPort(t *testing.T) {
+	server := &http.Server{Addr: "127.0.0.1:0"}
+	ln, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	go server.Serve(ln)
+	defer server.Close()
+
+	cfg := Config{
+		Command:             []string{os.Args[0], "-test.run=TestHelperProcess", "--", "sleep"},
+		Env:                 []string{"GOHERE_HELPER_PROCESS=1"},
+		ChosenPort:          port,
+		RequireDetectedPort: true,
+		Stdout:              &bytes.Buffer{},
+		Stderr:              &bytes.Buffer{},
+		StartupTimeout:      10 * time.Millisecond,
+	}
+
+	if _, err := Start(context.Background(), cfg); err == nil {
+		t.Fatal("expected no detected port error")
+	}
+}
+
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GOHERE_HELPER_PROCESS") != "1" {
 		return
