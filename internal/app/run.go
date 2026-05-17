@@ -307,8 +307,9 @@ func DoctorWithStore(stdout io.Writer, stateDir string, store router.Store, clie
 }
 
 type DoctorChecks struct {
-	Port80Available func() bool
-	SetcapEnabled   func(string) bool
+	Port80Available      func() bool
+	SetcapEnabled        func(string) bool
+	SystemdUserServiceOK func() (bool, bool)
 }
 
 func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, client adminClient, extra DoctorChecks) error {
@@ -317,6 +318,9 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 	}
 	if extra.SetcapEnabled == nil {
 		extra.SetcapEnabled = setcapEnabled
+	}
+	if extra.SystemdUserServiceOK == nil {
+		extra.SystemdUserServiceOK = systemdUserServiceOK
 	}
 	tokenPath := filepath.Join(stateDir, "token")
 	binaryPath := filepath.Join(stateDir, "bin", "gohere")
@@ -350,6 +354,13 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 	}
 	if exists(binaryPath) {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "setcap", OK: extra.SetcapEnabled(binaryPath), Detail: "cap_net_bind_service"})
+	}
+	if applicable, ok := extra.SystemdUserServiceOK(); applicable {
+		detail := "inactive"
+		if ok {
+			detail = "active"
+		}
+		checks = append(checks, lifecycle.DoctorCheck{Name: "systemd user service", OK: ok, Detail: detail})
 	}
 	fmt.Fprint(stdout, lifecycle.FormatDoctor(checks))
 	return nil
@@ -400,4 +411,12 @@ func setcapEnabled(path string) bool {
 		return false
 	}
 	return strings.Contains(string(output), "cap_net_bind_service")
+}
+
+func systemdUserServiceOK() (bool, bool) {
+	if !systemdUserAvailable() {
+		return false, false
+	}
+	err := exec.Command("systemctl", "--user", "is-active", "--quiet", "gohere-router").Run()
+	return true, err == nil
 }

@@ -301,6 +301,21 @@ func TestDoctorWithStoreReportsSetcapStatus(t *testing.T) {
 	}
 }
 
+func TestDoctorWithStoreReportsSystemdStatus(t *testing.T) {
+	var out strings.Builder
+
+	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		SystemdUserServiceOK: func() (bool, bool) {
+			return true, true
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok systemd user service active") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
 type fakeAdminClient struct{}
 
 func (fakeAdminClient) Health(context.Context) error {
