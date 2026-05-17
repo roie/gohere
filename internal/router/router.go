@@ -258,12 +258,13 @@ func (s *Server) routeForHost(host string) (Route, bool, error) {
 	if before, _, ok := strings.Cut(host, ":"); ok {
 		host = before
 	}
+	host = strings.ToLower(host)
 	routes, err := s.store.Load()
 	if err != nil {
 		return Route{}, false, err
 	}
 	for _, route := range routes {
-		if route.Host == host {
+		if strings.ToLower(route.Host) == host {
 			return route, true, nil
 		}
 	}

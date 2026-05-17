@@ -142,6 +142,26 @@ func TestProxyRoutesByHostHeader(t *testing.T) {
 	}
 }
 
+func TestProxyHostMatchIsCaseInsensitive(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "proxied response")
+	}))
+	defer backend.Close()
+
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "eventca.localhost", Target: backend.URL}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://EventCA.localhost/", nil)
+	req.Host = "EventCA.localhost"
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d body %q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestProxySupportsUpgradeRequests(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
