@@ -26,6 +26,7 @@ type Running struct {
 	httpLn      net.Listener
 	adminLn     net.Listener
 	pidPath     string
+	logFile     *os.File
 }
 
 func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
@@ -49,9 +50,14 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 			return nil, err
 		}
 	}
+	logFile, err := openRouterLog(cfg.LogPath)
+	if err != nil {
+		return nil, err
+	}
 
 	token, err := EnsureToken(cfg.StateDir)
 	if err != nil {
+		logFile.Close()
 		return nil, err
 	}
 	store := NewRouteStore(filepath.Join(cfg.StateDir, "routes.json"))
@@ -59,19 +65,23 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 
 	httpLn, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
+		logFile.Close()
 		return nil, err
 	}
 	adminLn, err := net.Listen("tcp", cfg.AdminAddr)
 	if err != nil {
 		httpLn.Close()
+		logFile.Close()
 		return nil, err
 	}
 	pidPath := filepath.Join(cfg.StateDir, "router.pid")
 	if err := writeRouterPID(pidPath); err != nil {
 		httpLn.Close()
 		adminLn.Close()
+		logFile.Close()
 		return nil, err
 	}
+	fmt.Fprintf(logFile, "gohere router started http=%s admin=%s\n", httpLn.Addr().String(), adminLn.Addr().String())
 
 	running := &Running{
 		HTTPAddr:    httpLn.Addr().String(),
@@ -81,6 +91,7 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		httpLn:      httpLn,
 		adminLn:     adminLn,
 		pidPath:     pidPath,
+		logFile:     logFile,
 	}
 	go running.httpServer.Serve(httpLn)
 	go running.adminServer.Serve(adminLn)
@@ -110,6 +121,9 @@ func (r *Running) Close() error {
 	if r.pidPath != "" {
 		os.Remove(r.pidPath)
 	}
+	if r.logFile != nil {
+		r.logFile.Close()
+	}
 	return nil
 }
 
@@ -129,6 +143,16 @@ func writeRouterPID(pidPath string) error {
 		return err
 	}
 	return os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0600)
+}
+
+func openRouterLog(logPath string) (*os.File, error) {
+	if logPath == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 }
 
 func isLoopbackAddr(addr string) bool {

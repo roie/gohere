@@ -402,8 +402,31 @@ func TestStartRotatesDefaultRouterLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Size() != 0 {
-		t.Fatalf("router.log size = %d, want 0", info.Size())
+	if info.Size() == 0 || info.Size() > maxLogSize {
+		t.Fatalf("router.log size = %d, want non-empty capped log", info.Size())
+	}
+}
+
+func TestStartWritesRouterLog(t *testing.T) {
+	stateDir := t.TempDir()
+	logPath := filepath.Join(stateDir, "logs", "router.log")
+
+	running, err := Start(t.Context(), StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  stateDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "gohere router started") {
+		t.Fatalf("router log = %q", string(data))
 	}
 }
 
