@@ -66,6 +66,22 @@ func TestEnsureTokenRegeneratesEmptyTokenFile(t *testing.T) {
 	}
 }
 
+func TestEnsureTokenRegeneratesInvalidShortTokenFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token")
+	if err := os.WriteFile(path, []byte("short\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	token, err := EnsureToken(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(token) < 32 || token == "short" {
+		t.Fatalf("token = %q, want regenerated token", token)
+	}
+}
+
 func TestRouteStoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	store := NewRouteStore(filepath.Join(dir, "routes.json"))

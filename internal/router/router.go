@@ -19,6 +19,7 @@ import (
 )
 
 const maxLogSize = 1024 * 1024
+const tokenLength = 64
 
 type Route struct {
 	Host      string    `json:"host"`
@@ -56,7 +57,7 @@ func EnsureToken(stateDir string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {
 		token := strings.TrimSpace(string(data))
-		if token == "" {
+		if len(token) < tokenLength {
 			return writeToken(path)
 		}
 		if err := os.Chmod(path, 0600); err != nil {
