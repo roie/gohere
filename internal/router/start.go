@@ -35,6 +35,9 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 	if cfg.StateDir == "" {
 		cfg.StateDir = DefaultStateDir()
 	}
+	if cfg.LogPath == "" {
+		cfg.LogPath = filepath.Join(cfg.StateDir, "logs", "router.log")
+	}
 	if cfg.LogPath != "" {
 		if err := RotateLog(cfg.LogPath); err != nil {
 			return nil, err

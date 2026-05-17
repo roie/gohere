@@ -291,3 +291,36 @@ func TestStartRunsAdminHealthAndCreatesState(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStartRotatesDefaultRouterLog(t *testing.T) {
+	ctx := t.Context()
+	stateDir := t.TempDir()
+	logPath := filepath.Join(stateDir, "logs", "router.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, bytes.Repeat([]byte("x"), maxLogSize+1), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	running, err := Start(ctx, StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  stateDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+
+	if _, err := os.Stat(logPath + ".1"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("router.log size = %d, want 0", info.Size())
+	}
+}
