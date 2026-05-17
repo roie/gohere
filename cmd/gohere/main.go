@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
+	"github.com/roie/gohere/internal/app"
 	"github.com/roie/gohere/internal/cli"
 )
 
@@ -16,8 +18,15 @@ func main() {
 
 	switch cmd.Kind {
 	case cli.CommandRun, cli.CommandRaw:
-		fmt.Fprintln(os.Stderr, "gohere run is not implemented yet")
-		os.Exit(1)
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := app.Run(context.Background(), cmd, cwd, os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case cli.CommandList, cli.CommandStop, cli.CommandClean, cli.CommandDoctor, cli.CommandRouter, cli.CommandSetup:
 		fmt.Fprintf(os.Stderr, "gohere %s is not implemented yet\n", cmd.Kind)
 		os.Exit(1)
