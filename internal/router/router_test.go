@@ -334,6 +334,25 @@ func TestStartWritesRouterPID(t *testing.T) {
 	}
 }
 
+func TestCloseRemovesRouterPID(t *testing.T) {
+	stateDir := t.TempDir()
+	running, err := Start(t.Context(), StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  stateDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := running.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "router.pid")); !os.IsNotExist(err) {
+		t.Fatalf("router.pid should be removed, stat err = %v", err)
+	}
+}
+
 func TestStartRotatesDefaultRouterLog(t *testing.T) {
 	ctx := t.Context()
 	stateDir := t.TempDir()

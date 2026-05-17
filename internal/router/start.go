@@ -25,6 +25,7 @@ type Running struct {
 	adminServer *http.Server
 	httpLn      net.Listener
 	adminLn     net.Listener
+	pidPath     string
 }
 
 func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
@@ -53,7 +54,8 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writeRouterPID(cfg.StateDir); err != nil {
+	pidPath := filepath.Join(cfg.StateDir, "router.pid")
+	if err := writeRouterPID(pidPath); err != nil {
 		return nil, err
 	}
 	store := NewRouteStore(filepath.Join(cfg.StateDir, "routes.json"))
@@ -76,6 +78,7 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		adminServer: &http.Server{Handler: server.AdminHandler()},
 		httpLn:      httpLn,
 		adminLn:     adminLn,
+		pidPath:     pidPath,
 	}
 	go running.httpServer.Serve(httpLn)
 	go running.adminServer.Serve(adminLn)
@@ -102,6 +105,9 @@ func (r *Running) Close() error {
 	if r.adminLn != nil {
 		r.adminLn.Close()
 	}
+	if r.pidPath != "" {
+		os.Remove(r.pidPath)
+	}
 	return nil
 }
 
@@ -116,11 +122,11 @@ func homeDir() string {
 	return "."
 }
 
-func writeRouterPID(stateDir string) error {
-	if err := os.MkdirAll(stateDir, 0700); err != nil {
+func writeRouterPID(pidPath string) error {
+	if err := os.MkdirAll(filepath.Dir(pidPath), 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(stateDir, "router.pid"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0600)
+	return os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0600)
 }
 
 func isLoopbackAddr(addr string) bool {
