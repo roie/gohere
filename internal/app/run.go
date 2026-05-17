@@ -26,6 +26,7 @@ var (
 	setupFunc   = func(ctx context.Context) error {
 		return setup.Linux(ctx, setup.Config{
 			SystemdAvailable: systemdUserAvailable(),
+			Stderr:           os.Stderr,
 			RouterHealth: func(ctx context.Context) error {
 				client, err := defaultAdminClient()
 				if err != nil {

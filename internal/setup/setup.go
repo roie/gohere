@@ -26,6 +26,7 @@ type Config struct {
 	CurrentBinary    string
 	CommandRunner    CommandRunner
 	RouterHealth     func(context.Context) error
+	Stderr           io.Writer
 	SystemdAvailable bool
 }
 
@@ -48,6 +49,9 @@ func Linux(ctx context.Context, cfg Config) error {
 	}
 	if cfg.CommandRunner == nil {
 		cfg.CommandRunner = realRunner{}
+	}
+	if cfg.Stderr == nil {
+		cfg.Stderr = io.Discard
 	}
 
 	binDir := filepath.Join(cfg.StateDir, "bin")
@@ -75,7 +79,11 @@ func Linux(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(cfg.StateDir, "router.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600)
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, "router.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
+		return err
+	}
+	fmt.Fprintln(cfg.Stderr, "gohere router started without systemd; router may need restart after reboot.")
+	return nil
 }
 
 func startDetached(ctx context.Context, runner CommandRunner, command string, args ...string) (int, error) {

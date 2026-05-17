@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -68,6 +69,29 @@ func TestLinuxSetupDetachedFallbackWritesRouterPID(t *testing.T) {
 	}
 	if string(data) != "4242\n" {
 		t.Fatalf("router.pid = %q", string(data))
+	}
+}
+
+func TestLinuxSetupDetachedFallbackWarnsAboutReboot(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source-gohere")
+	if err := os.WriteFile(source, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+
+	err := Linux(context.Background(), Config{
+		StateDir:         filepath.Join(dir, "state"),
+		CurrentBinary:    source,
+		CommandRunner:    &detachingRunner{pid: 4242},
+		Stderr:           &stderr,
+		SystemdAvailable: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(stderr.String(), "router may need restart after reboot") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 
