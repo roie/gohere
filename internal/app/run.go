@@ -303,6 +303,7 @@ func Doctor(stdout io.Writer) error {
 func DoctorWithStore(stdout io.Writer, stateDir string, store router.Store, client adminClient) error {
 	tokenPath := filepath.Join(stateDir, "token")
 	binaryPath := filepath.Join(stateDir, "bin", "gohere")
+	pidPath := filepath.Join(stateDir, "router.pid")
 	checks := []lifecycle.DoctorCheck{
 		{Name: "state dir", OK: exists(stateDir), Detail: stateDir},
 		{Name: "stable binary", OK: exists(binaryPath), Detail: binaryPath},
@@ -313,6 +314,11 @@ func DoctorWithStore(stdout io.Writer, stateDir string, store router.Store, clie
 	}
 	if client != nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "admin API health", OK: client.Health(context.Background()) == nil})
+	}
+	if pid, err := os.ReadFile(pidPath); err == nil {
+		checks = append(checks, lifecycle.DoctorCheck{Name: "router pid", OK: true, Detail: strings.TrimSpace(string(pid))})
+	} else {
+		checks = append(checks, lifecycle.DoctorCheck{Name: "router pid", OK: false, Detail: pidPath})
 	}
 	if routes, err := store.Load(); err == nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "active routes", OK: true, Detail: fmt.Sprintf("%d", len(routes))})
