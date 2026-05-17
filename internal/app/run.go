@@ -154,7 +154,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		}
 		defer cleanup()
 		<-ctx.Done()
-		return ctx.Err()
+		return nil
 	}
 
 	result, err := startRunnerFunc(ctx, runner.Config{

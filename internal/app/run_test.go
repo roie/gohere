@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/roie/gohere/internal/cli"
 	"github.com/roie/gohere/internal/router"
@@ -243,6 +244,34 @@ func TestRunEnsuresRouterBeforeStartingProject(t *testing.T) {
 	}
 }
 
+func TestRunStaticTreatsContextCancelAsCleanShutdown(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+	}()
+
+	admin := &recordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	dir := tempProject(t, map[string]string{"index.html": "<h1>Hello</h1>"})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, cli.Command{Kind: cli.CommandRun, Script: "dev", TargetPort: 0}, dir, io.Discard, io.Discard)
+	}()
+
+	admin.waitForUpsert(t)
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run static after context cancel = %v, want nil", err)
+	}
+	if admin.deleted == "" {
+		t.Fatal("expected static route cleanup")
+	}
+}
+
 func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "router.pid"), []byte("12345\n"), 0600); err != nil {
@@ -332,6 +361,44 @@ func (fakeAdminClient) UpsertRoute(context.Context, router.Route) error {
 
 func (fakeAdminClient) DeleteRoute(context.Context, string) error {
 	return nil
+}
+
+type recordingAdminClient struct {
+	upserted chan struct{}
+	deleted  string
+}
+
+func (c *recordingAdminClient) Health(context.Context) error {
+	return nil
+}
+
+func (c *recordingAdminClient) Routes(context.Context) ([]router.Route, error) {
+	return nil, nil
+}
+
+func (c *recordingAdminClient) UpsertRoute(ctx context.Context, route router.Route) error {
+	if c.upserted == nil {
+		c.upserted = make(chan struct{})
+	}
+	close(c.upserted)
+	return nil
+}
+
+func (c *recordingAdminClient) DeleteRoute(ctx context.Context, host string) error {
+	c.deleted = host
+	return nil
+}
+
+func (c *recordingAdminClient) waitForUpsert(t *testing.T) {
+	t.Helper()
+	if c.upserted == nil {
+		c.upserted = make(chan struct{})
+	}
+	select {
+	case <-c.upserted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for route registration")
+	}
 }
 
 func tempProject(t *testing.T, files map[string]string) string {
