@@ -97,6 +97,33 @@ func TestClientReportsUnauthorizedRoutes(t *testing.T) {
 	}
 }
 
+func TestClientProbeTarget(t *testing.T) {
+	srv := router.NewServer(router.Config{Token: "secret", Store: router.NewMemoryStore()})
+	httpSrv := httptest.NewServer(srv.AdminHandler())
+	defer httpSrv.Close()
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer target.Close()
+
+	reachable, err := NewClient(httpSrv.URL, "secret").ProbeTarget(t.Context(), target.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reachable {
+		t.Fatal("expected target to be reachable")
+	}
+}
+
+func TestClientProbeTargetReportsUnauthorized(t *testing.T) {
+	srv := router.NewServer(router.Config{Token: "server-token", Store: router.NewMemoryStore()})
+	httpSrv := httptest.NewServer(srv.AdminHandler())
+	defer httpSrv.Close()
+
+	_, err := NewClient(httpSrv.URL, "client-token").ProbeTarget(t.Context(), "http://127.0.0.1:1")
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("ProbeTarget error = %v, want ErrUnauthorized", err)
+	}
+}
+
 func TestNewClientUsesBoundedTimeout(t *testing.T) {
 	client := NewClient("http://127.0.0.1:39399", "secret")
 

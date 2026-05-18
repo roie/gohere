@@ -118,6 +118,37 @@ func (c *Client) DeleteRoute(ctx context.Context, host string) error {
 	return nil
 }
 
+func (c *Client) ProbeTarget(ctx context.Context, target string) (bool, error) {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(struct {
+		Target string `json:"target"`
+	}{Target: target}); err != nil {
+		return false, err
+	}
+	req, err := c.authedRequest(ctx, http.MethodPost, "/probe-target", &body)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return false, ErrUnauthorized
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("POST /probe-target returned %s", resp.Status)
+	}
+	var result struct {
+		Reachable bool `json:"reachable"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false, err
+	}
+	return result.Reachable, nil
+}
+
 func (c *Client) authedRequest(ctx context.Context, method, path string, body *bytes.Buffer) (*http.Request, error) {
 	var reader interface{ Read([]byte) (int, error) }
 	if body != nil {
