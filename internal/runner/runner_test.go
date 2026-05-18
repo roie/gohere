@@ -148,10 +148,12 @@ func TestRunStreamsOutputAndDetectsPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer result.Stop()
 
 	if result.Port != 47654 {
 		t.Fatalf("detected port = %d, want 47654", result.Port)
+	}
+	if err := result.Wait(); err != nil {
+		t.Fatal(err)
 	}
 	if !strings.Contains(stdout.String(), "http://127.0.0.1:47654") {
 		t.Fatalf("stdout was not streamed: %q", stdout.String())
