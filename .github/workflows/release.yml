@@ -40,8 +40,9 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           version="${VERSION#v}"
-          mkdir -p vendor/linux-x64
+          mkdir -p dist vendor/linux-x64
           GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.version=${version}" -o vendor/linux-x64/gohere ./cmd/gohere
+          cp vendor/linux-x64/gohere dist/gohere-linux-x64
 
       - name: Generate npm package files
         env:
@@ -121,4 +122,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" vendor/linux-x64/gohere --title "$TAG" --generate-notes
+          version="${TAG#v}"
+          cat > release-notes.md <<EOF
+          ## Install
+
+          \`\`\`bash
+          npm i -g gohere
+          \`\`\`
+
+          ## Linux x64 binary
+
+          Download \`gohere-linux-x64\` from the assets below.
+
+          ## Notes
+
+          First Linux/WSL release. The npm package includes the Linux x64 binary.
+
+          **Full Changelog**: https://github.com/roie/gohere/commits/${TAG}
+          EOF
+          gh release create "$TAG" dist/gohere-linux-x64 --title "$TAG" --notes-file release-notes.md
