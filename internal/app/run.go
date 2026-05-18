@@ -86,7 +86,13 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	if isFileTarget(cmd) {
 		return prepareStaticFileTarget(cmd, cwd, port)
 	}
-	if cmd.Script == "dev" && staticserver.IsStaticProject(cwd) {
+	currentPackagePath := filepath.Join(cwd, "package.json")
+	_, currentPackageErr := os.Stat(currentPackagePath)
+	hasCurrentPackage := currentPackageErr == nil
+	if currentPackageErr != nil && !errors.Is(currentPackageErr, os.ErrNotExist) {
+		return RunPlan{}, currentPackageErr
+	}
+	if cmd.Script == "dev" && staticserver.IsStaticProject(cwd) && !hasCurrentPackage {
 		host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
 		return RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, Static: true}, nil
 	}

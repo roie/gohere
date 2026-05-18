@@ -180,6 +180,24 @@ func TestPrepareStaticProjectWinsOverParentPackageForDefaultRun(t *testing.T) {
 	}
 }
 
+func TestPreparePackageProjectWinsOverStaticIndexForDefaultRun(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite --clearScreen false"}}`,
+		"index.html":   "<div id=\"root\"></div>",
+	})
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Static {
+		t.Fatalf("expected package script plan, got static: %#v", plan)
+	}
+	if len(plan.Command) == 0 || plan.Command[0] != "npm" {
+		t.Fatalf("command = %#v, want npm script command", plan.Command)
+	}
+}
+
 func TestPrepareStaticFileTarget(t *testing.T) {
 	dir := tempProject(t, map[string]string{
 		"index.html":        "<h1>Hello</h1>",
