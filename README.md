@@ -107,6 +107,8 @@ On Linux/WSL, first-time setup may ask for permission so the router can bind to 
 
 On Windows, first-time setup starts the local router directly on `127.0.0.1:80`.
 
+When used from WSL with a Windows gohere router available, `gohere` uses the Windows router automatically.
+
 ## Platform support
 
 Current target: Linux / WSL and Windows.

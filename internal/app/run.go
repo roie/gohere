@@ -849,8 +849,28 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 			checks = append(checks, lifecycle.DoctorCheck{Name: "systemd user service", OK: ok, Detail: detail, Hint: "Try: systemctl --user restart gohere-router"})
 		}
 	}
+	checks = append(checks, bridgeDoctorChecks(context.Background())...)
 	fmt.Fprint(stdout, lifecycle.FormatDoctor(checks))
 	return nil
+}
+
+func bridgeDoctorChecks(ctx context.Context) []lifecycle.DoctorCheck {
+	if !detectWSLFunc() {
+		return nil
+	}
+	checks := []lifecycle.DoctorCheck{{Name: "environment", OK: true, Detail: "WSL"}}
+	if err := windowsRouterHealthFunc(ctx); err != nil {
+		return checks
+	}
+	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
+	if err != nil {
+		return append(checks, lifecycle.DoctorCheck{Name: "windows router", OK: false, Detail: "token unavailable", Hint: "Try: run gohere from Windows or stop the Windows router."})
+	}
+	client := newWindowsAdminClientFunc(token)
+	if _, err := client.Routes(ctx); err != nil {
+		return append(checks, lifecycle.DoctorCheck{Name: "windows router", OK: false, Detail: "auth failed", Hint: "Try: gohere uninstall in the side where the old router is running."})
+	}
+	return append(checks, lifecycle.DoctorCheck{Name: "windows router", OK: true, Detail: "available"})
 }
 
 func stableBinaryName(goos string) string {

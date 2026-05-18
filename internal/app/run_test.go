@@ -1097,6 +1097,26 @@ func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsWindowsRouterWhenWSLBridgeAvailable(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL: true,
+		token: "windows-token",
+		admin: &recordingAdminClient{},
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		Port80Available: func() bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok environment WSL") ||
+		!strings.Contains(out.String(), "ok windows router available") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
 func TestDoctorDoesNotPanicWhenAdminClientCannotBeCreated(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	defer func() {
