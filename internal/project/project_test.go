@@ -82,6 +82,48 @@ func TestFindNearestPackageJSON(t *testing.T) {
 	}
 }
 
+func TestFindNearestPackageJSONStopsAtGitRoot(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json": `{"name":"outside"}`,
+		"repo/.git":    "",
+	})
+	dir := filepath.Join(root, "repo", "site")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, found, err := FindNearestPackageJSON(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Fatal("package search should not climb past git root")
+	}
+}
+
+func TestFindNearestPackageJSONIncludesGitRoot(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"repo/.git":         "",
+		"repo/package.json": `{"name":"repo"}`,
+	})
+	dir := filepath.Join(root, "repo", "site")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, found, err := FindNearestPackageJSON(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected package.json at git root")
+	}
+	want := filepath.Join(root, "repo", "package.json")
+	if got != want {
+		t.Fatalf("package.json = %q, want %q", got, want)
+	}
+}
+
 func TestScriptLookup(t *testing.T) {
 	dir := tempProject(t, map[string]string{
 		"package.json": `{"scripts":{"dev":"vite","dev:web":"vite --host 0.0.0.0"}}`,

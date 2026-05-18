@@ -79,8 +79,30 @@ func FindNearestPackageJSON(start string) (string, bool, error) {
 		if parent == dir {
 			return "", false, nil
 		}
+		if isGitRoot(dir) || isHomeDir(dir) {
+			return "", false, nil
+		}
 		dir = parent
 	}
+}
+
+func isGitRoot(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		return true
+	}
+	return false
+}
+
+func isHomeDir(dir string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	home, err = filepath.Abs(home)
+	if err != nil {
+		return false
+	}
+	return samePath(dir, home)
 }
 
 func DetectPackageManager(projectDir string) (PackageManager, bool, error) {

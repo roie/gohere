@@ -30,6 +30,9 @@ func TestPrepareScriptRun(t *testing.T) {
 	if plan.Port == 0 {
 		t.Fatal("expected hidden port")
 	}
+	if plan.ProjectRoot != dir {
+		t.Fatalf("project root = %q, want %q", plan.ProjectRoot, dir)
+	}
 	want := []string{"pnpm", "run", "dev", "--host", "127.0.0.1", "--port", itoa(plan.Port), "--strictPort"}
 	if !sameStrings(plan.Command, want) {
 		t.Fatalf("command = %#v, want %#v", plan.Command, want)
@@ -722,6 +725,7 @@ func TestRunVerboseOutputIncludesCleanURLAndMetadata(t *testing.T) {
 	}
 	if !strings.HasPrefix(stdout.String(), "gohere \u2192 http://"+filepath.Base(dir)+".localhost\n\n") ||
 		!strings.Contains(stdout.String(), "\ntarget: http://127.0.0.1:5173\n") ||
+		!strings.Contains(stdout.String(), "project root: "+dir+"\n") ||
 		!strings.Contains(stdout.String(), "command: npm run dev -- --host 127.0.0.1 --port ") ||
 		!strings.Contains(stdout.String(), "router: running\n") {
 		t.Fatalf("verbose stdout = %q", stdout.String())

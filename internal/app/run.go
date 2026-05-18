@@ -53,6 +53,7 @@ type RunPlan struct {
 	Host                string
 	Name                string
 	CWD                 string
+	ProjectRoot         string
 	Static              bool
 	URLPath             string
 	RequireDetectedPort bool
@@ -124,7 +125,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	if err != nil {
 		return RunPlan{}, err
 	}
-	return RunPlan{Command: command, Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd}, nil
+	return RunPlan{Command: command, Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: projectDir(packagePath)}, nil
 }
 
 func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Writer) error {
@@ -215,6 +216,9 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 	fmt.Fprint(stdout, runSuccessOutput(cmd, route.Host, plan.URLPath))
 	if cmd.Verbose {
 		fmt.Fprintf(stdout, "\ntarget: http://127.0.0.1:%d\n", port)
+		if plan.ProjectRoot != "" {
+			fmt.Fprintf(stdout, "project root: %s\n", plan.ProjectRoot)
+		}
 		fmt.Fprintf(stdout, "command: %s\n", strings.Join(plan.Command, " "))
 		fmt.Fprintln(stdout, "router: running")
 	}
