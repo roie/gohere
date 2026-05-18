@@ -35,13 +35,14 @@ jobs:
       - name: Test
         run: go test ./...
 
-      - name: Build Linux x64 binary
+      - name: Build package binaries
         env:
           VERSION: ${{ github.ref_name }}
         run: |
           version="${VERSION#v}"
-          mkdir -p vendor/linux-x64
+          mkdir -p vendor/linux-x64 vendor/win32-x64
           GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.version=${version}" -o vendor/linux-x64/gohere ./cmd/gohere
+          GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X main.version=${version}" -o vendor/win32-x64/gohere.exe ./cmd/gohere
 
       - name: Generate npm package files
         env:
@@ -76,7 +77,8 @@ jobs:
               "cli"
             ],
             "os": [
-              "linux"
+              "linux",
+              "win32"
             ],
             "cpu": [
               "x64"
@@ -122,7 +124,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           cat > release-notes.md <<EOF
-          Initial Linux/WSL release.
+          gohere release.
 
           Install:
           \`\`\`bash
@@ -132,6 +134,7 @@ jobs:
           Highlights:
           - Clean \`.localhost\` URLs for package projects and static folders.
           - Route management with \`list\`, \`stop\`, \`clean\`, and \`doctor\`.
+          - Linux x64 and Windows x64 npm package binaries.
           - Version output with \`--version\` and \`-v\`.
 
           **Full Changelog**: https://github.com/roie/gohere/commits/${TAG}

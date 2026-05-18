@@ -105,13 +105,15 @@ State is stored in:
 
 On Linux/WSL, first-time setup may ask for permission so the router can bind to local port `80`.
 
+On Windows, first-time setup starts the local router directly on `127.0.0.1:80`.
+
 ## Platform support
 
-Current target: Linux / WSL.
+Current target: Linux / WSL and Windows.
 
-Planned: macOS and native Windows.
+Planned: macOS.
 
-The npm package currently targets Linux x64 first.
+The npm package currently targets Linux x64 and Windows x64.
 
 ## Limits
 

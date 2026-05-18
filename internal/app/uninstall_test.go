@@ -87,6 +87,29 @@ func TestUninstallDeletesAllStateAfterConfirmation(t *testing.T) {
 	}
 }
 
+func TestUninstallRemovesWindowsStableBinary(t *testing.T) {
+	stateDir := t.TempDir()
+	configDir := t.TempDir()
+	writeFile(t, filepath.Join(stateDir, "bin", "gohere.exe"), "binary")
+	oldPromptInput := promptInput
+	defer func() {
+		promptInput = oldPromptInput
+	}()
+	promptInput = strings.NewReader("\n")
+
+	var out strings.Builder
+	if err := UninstallWithConfig(context.Background(), &out, UninstallConfig{
+		StateDir:  stateDir,
+		ConfigDir: configDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if exists(filepath.Join(stateDir, "bin", "gohere.exe")) {
+		t.Fatal("windows stable binary still exists")
+	}
+}
+
 type uninstallRecordingRunner struct {
 	commands [][]string
 }

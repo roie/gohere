@@ -57,8 +57,10 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 	if pid, ok := readRouterPID(pidPath); ok {
 		_ = cfg.ProcessSignal(pid)
 	}
-	if err := os.Remove(filepath.Join(cfg.StateDir, "bin", "gohere")); err != nil && !os.IsNotExist(err) {
-		return err
+	for _, binary := range []string{"gohere", "gohere.exe"} {
+		if err := os.Remove(filepath.Join(cfg.StateDir, "bin", binary)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
 		return err

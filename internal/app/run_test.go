@@ -14,6 +14,7 @@ import (
 	"github.com/roie/gohere/internal/cli"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/runner"
+	"github.com/roie/gohere/internal/setup"
 )
 
 func TestPrepareScriptRun(t *testing.T) {
@@ -431,6 +432,25 @@ func TestEnsureRouterWaitsForRouterAfterSetup(t *testing.T) {
 	}
 	if healthCalls != 3 {
 		t.Fatalf("health calls = %d, want 3", healthCalls)
+	}
+}
+
+func TestSetupForGOOSUsesWindowsSetup(t *testing.T) {
+	oldSetupWindows := setupWindowsFunc
+	defer func() {
+		setupWindowsFunc = oldSetupWindows
+	}()
+	calls := 0
+	setupWindowsFunc = func(ctx context.Context, cfg setup.Config) error {
+		calls++
+		return nil
+	}
+
+	if err := setupForGOOS(context.Background(), "windows"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("windows setup calls = %d, want 1", calls)
 	}
 }
 

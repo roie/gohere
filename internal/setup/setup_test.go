@@ -218,6 +218,49 @@ func TestLinuxSetupReusesHealthyRouter(t *testing.T) {
 	}
 }
 
+func TestWindowsSetupCopiesExeEnsuresTokenAndStartsDetachedRouter(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source-gohere.exe")
+	if err := os.WriteFile(source, []byte("windows-binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &detachingRunner{pid: 4242}
+
+	err := Windows(context.Background(), Config{
+		StateDir:      filepath.Join(dir, "state"),
+		CurrentBinary: source,
+		CommandRunner: runner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stable := filepath.Join(dir, "state", "bin", "gohere.exe")
+	data, err := os.ReadFile(stable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "windows-binary" {
+		t.Fatalf("stable binary contents = %q", string(data))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state", "token")); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.saw(stable, "router") {
+		t.Fatalf("detached router command missing: %#v", runner.commands)
+	}
+	if runner.saw("sudo", "setcap", "cap_net_bind_service=+ep", stable) {
+		t.Fatalf("windows setup should not run setcap: %#v", runner.commands)
+	}
+	data, err = os.ReadFile(filepath.Join(dir, "state", "router.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "4242\n" {
+		t.Fatalf("router.pid = %q", string(data))
+	}
+}
+
 type recordingRunner struct {
 	commands [][]string
 }

@@ -87,6 +87,45 @@ func Linux(ctx context.Context, cfg Config) error {
 	return nil
 }
 
+func Windows(ctx context.Context, cfg Config) error {
+	if cfg.RouterHealth != nil && cfg.RouterHealth(ctx) == nil {
+		return nil
+	}
+	if cfg.StateDir == "" {
+		cfg.StateDir = router.DefaultStateDir()
+	}
+	if cfg.CurrentBinary == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		cfg.CurrentBinary = exe
+	}
+	if cfg.CommandRunner == nil {
+		cfg.CommandRunner = realRunner{}
+	}
+
+	binDir := filepath.Join(cfg.StateDir, "bin")
+	if err := os.MkdirAll(binDir, 0700); err != nil {
+		return err
+	}
+	stableBinary := filepath.Join(binDir, "gohere.exe")
+	if err := copyFile(cfg.CurrentBinary, stableBinary, 0755); err != nil {
+		return err
+	}
+	if _, err := router.EnsureToken(cfg.StateDir); err != nil {
+		return err
+	}
+	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "router")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, "router.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
+		return err
+	}
+	return nil
+}
+
 func startDetached(ctx context.Context, runner CommandRunner, command string, args ...string) (int, error) {
 	if detached, ok := runner.(DetachedRunner); ok {
 		return detached.StartDetached(ctx, command, args...)

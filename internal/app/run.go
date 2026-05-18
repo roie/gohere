@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -28,18 +29,10 @@ import (
 var (
 	promptInput = io.Reader(os.Stdin)
 	setupFunc   = func(ctx context.Context) error {
-		return setup.Linux(ctx, setup.Config{
-			SystemdAvailable: systemdUserAvailable(),
-			Stderr:           os.Stderr,
-			RouterHealth: func(ctx context.Context) error {
-				client, err := defaultAdminClient()
-				if err != nil {
-					return err
-				}
-				return client.Health(ctx)
-			},
-		})
+		return setupForGOOS(ctx, runtime.GOOS)
 	}
+	setupLinuxFunc                                     = setup.Linux
+	setupWindowsFunc                                   = setup.Windows
 	defaultAdminClientFunc func() (adminClient, error) = func() (adminClient, error) {
 		return defaultAdminClient()
 	}
@@ -412,6 +405,28 @@ func firstRunPrompt() string {
 func shouldRunSetupFromAnswer(answer string) bool {
 	answer = strings.TrimSpace(strings.ToLower(answer))
 	return answer == "" || answer == "y" || answer == "yes"
+}
+
+func setupForGOOS(ctx context.Context, goos string) error {
+	cfg := setup.Config{
+		Stderr: os.Stderr,
+		RouterHealth: func(ctx context.Context) error {
+			client, err := defaultAdminClient()
+			if err != nil {
+				return err
+			}
+			return client.Health(ctx)
+		},
+	}
+	switch goos {
+	case "linux":
+		cfg.SystemdAvailable = systemdUserAvailable()
+		return setupLinuxFunc(ctx, cfg)
+	case "windows":
+		return setupWindowsFunc(ctx, cfg)
+	default:
+		return fmt.Errorf("gohere setup is not supported on %s yet", goos)
+	}
 }
 
 func List(stdout io.Writer, verbose bool) error {
