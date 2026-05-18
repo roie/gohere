@@ -108,6 +108,9 @@ func TestRouteStoreRoundTrip(t *testing.T) {
 		PID:       12345,
 		CWD:       "/home/roie/code/eventca",
 		Name:      "eventca",
+		Source:    "wsl",
+		OwnerCWD:  "/home/roie/code/eventca",
+		OwnerEnv:  "wsl",
 		StartedAt: time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
 	}
 
@@ -118,7 +121,7 @@ func TestRouteStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(routes) != 1 || routes[0].Host != route.Host || routes[0].Target != route.Target {
+	if len(routes) != 1 || routes[0].Host != route.Host || routes[0].Target != route.Target || routes[0].Source != "wsl" || routes[0].OwnerCWD != route.OwnerCWD || routes[0].OwnerEnv != "wsl" {
 		t.Fatalf("routes = %#v", routes)
 	}
 }
@@ -234,7 +237,7 @@ func TestAdminAPIRouteCRUD(t *testing.T) {
 	srv := NewServer(Config{Token: "secret", Store: store})
 	handler := srv.AdminHandler()
 
-	body := strings.NewReader(`{"host":"eventca.localhost","target":"http://127.0.0.1:49231","pid":12345,"cwd":"/tmp/eventca","name":"eventca","startedAt":"2026-05-16T00:00:00Z"}`)
+	body := strings.NewReader(`{"host":"eventca.localhost","target":"http://127.0.0.1:49231","pid":12345,"cwd":"/tmp/eventca","name":"eventca","source":"wsl","ownerCwd":"/home/roie/project","ownerEnv":"wsl","startedAt":"2026-05-16T00:00:00Z"}`)
 	req := httptest.NewRequest(http.MethodPost, "/routes", body)
 	req.Header.Set("X-Gohere-Token", "secret")
 	rec := httptest.NewRecorder()
@@ -254,7 +257,7 @@ func TestAdminAPIRouteCRUD(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &routes); err != nil {
 		t.Fatal(err)
 	}
-	if len(routes) != 1 || routes[0].Host != "eventca.localhost" {
+	if len(routes) != 1 || routes[0].Host != "eventca.localhost" || routes[0].Source != "wsl" || routes[0].OwnerCWD != "/home/roie/project" || routes[0].OwnerEnv != "wsl" {
 		t.Fatalf("routes = %#v", routes)
 	}
 

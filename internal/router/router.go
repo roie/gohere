@@ -28,6 +28,9 @@ type Route struct {
 	PID       int       `json:"pid"`
 	CWD       string    `json:"cwd"`
 	Name      string    `json:"name"`
+	Source    string    `json:"source,omitempty"`
+	OwnerCWD  string    `json:"ownerCwd,omitempty"`
+	OwnerEnv  string    `json:"ownerEnv,omitempty"`
 	StartedAt time.Time `json:"startedAt"`
 }
 
