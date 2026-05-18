@@ -156,6 +156,27 @@ func TestPrepareStaticProject(t *testing.T) {
 	}
 }
 
+func TestPrepareStaticProjectWinsOverParentPackageForDefaultRun(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{}}`,
+	})
+	dir := filepath.Join(root, "site")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>Hello</h1>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Static {
+		t.Fatalf("expected static plan, got %#v", plan)
+	}
+}
+
 func TestPrepareStaticFileTarget(t *testing.T) {
 	dir := tempProject(t, map[string]string{
 		"index.html":        "<h1>Hello</h1>",

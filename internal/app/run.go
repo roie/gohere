@@ -85,6 +85,10 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	if isFileTarget(cmd) {
 		return prepareStaticFileTarget(cmd, cwd, port)
 	}
+	if cmd.Script == "dev" && staticserver.IsStaticProject(cwd) {
+		host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
+		return RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, Static: true}, nil
+	}
 
 	packagePath, found, err := project.FindNearestPackageJSON(cwd)
 	if err != nil {
