@@ -121,22 +121,4 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          cat > release-notes.md <<EOF
-          gohere release.
-
-          Install:
-          \`\`\`bash
-          npm i -g gohere
-          \`\`\`
-
-          Highlights:
-          - Clean \`.localhost\` URLs for package projects and static folders.
-          - Route management with \`list\`, \`stop\`, \`clean\`, and \`doctor\`.
-          - Linux x64 and Windows x64 npm package binaries.
-          - Version output with \`--version\` and \`-v\`.
-
-          **Full Changelog**: https://github.com/roie/gohere/commits/${TAG}
-          EOF
-          gh release create "$TAG" --title "$TAG" --notes-file release-notes.md
+        run: gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --generate-notes
