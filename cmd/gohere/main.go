@@ -88,7 +88,7 @@ func waitForRouter(ctx context.Context) {
 	<-ctx.Done()
 }
 
-func printUsage(out *os.File, topic string) {
+func printUsage(out io.Writer, topic string) {
 	if topic != "" {
 		fmt.Fprintf(out, "Usage: gohere %s\n\n", topic)
 	}
@@ -101,7 +101,7 @@ Examples:
   gohere
   gohere dev:web
   gohere pages/about.html
- gohere --target 5173 -- npm run dev
+  gohere --target 5173 -- npm run dev
 `)
 }
 

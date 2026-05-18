@@ -38,3 +38,12 @@ func TestPrintVersion(t *testing.T) {
 		t.Fatalf("version output = %q", out.String())
 	}
 }
+
+func TestPrintUsageIndentsExamples(t *testing.T) {
+	var out bytes.Buffer
+	printUsage(&out, "")
+
+	if !bytes.Contains(out.Bytes(), []byte("\n  gohere --target 5173 -- npm run dev\n")) {
+		t.Fatalf("usage output = %q", out.String())
+	}
+}
