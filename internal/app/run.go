@@ -530,22 +530,22 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 	binaryPath := filepath.Join(stateDir, "bin", stableBinaryName(goos))
 	pidPath := filepath.Join(stateDir, "router.pid")
 	checks := []lifecycle.DoctorCheck{
-		{Name: "state dir", OK: exists(stateDir), Detail: stateDir},
-		{Name: "stable binary", OK: exists(binaryPath), Detail: binaryPath},
-		{Name: "token", OK: exists(tokenPath), Detail: tokenPath},
+		{Name: "state dir", OK: exists(stateDir), Detail: stateDir, Hint: "Try: run gohere once to finish setup."},
+		{Name: "stable binary", OK: exists(binaryPath), Detail: binaryPath, Hint: "Try: run gohere once to reinstall the local router binary."},
+		{Name: "token", OK: exists(tokenPath), Detail: tokenPath, Hint: "Try: run gohere uninstall, then run gohere again."},
 	}
 	if info, err := os.Stat(tokenPath); goos != "windows" && err == nil {
-		checks = append(checks, lifecycle.DoctorCheck{Name: "token permissions", OK: info.Mode().Perm() == 0600, Detail: info.Mode().Perm().String()})
+		checks = append(checks, lifecycle.DoctorCheck{Name: "token permissions", OK: info.Mode().Perm() == 0600, Detail: info.Mode().Perm().String(), Hint: "Try: chmod 600 ~/.gohere/token"})
 	}
 	adminHealthy := false
 	if client != nil {
 		adminHealthy = client.Health(context.Background()) == nil
-		checks = append(checks, lifecycle.DoctorCheck{Name: "admin API health", OK: adminHealthy})
+		checks = append(checks, lifecycle.DoctorCheck{Name: "admin API health", OK: adminHealthy, Hint: "Try: gohere uninstall, then run gohere again."})
 	}
 	if pid, err := os.ReadFile(pidPath); err == nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "router pid", OK: true, Detail: strings.TrimSpace(string(pid))})
 	} else {
-		checks = append(checks, lifecycle.DoctorCheck{Name: "router pid", OK: false, Detail: pidPath})
+		checks = append(checks, lifecycle.DoctorCheck{Name: "router pid", OK: false, Detail: pidPath, Hint: "Try: run gohere once to start the router."})
 	}
 	if routes, err := store.Load(); err == nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "active routes", OK: true, Detail: fmt.Sprintf("%d", len(routes))})
@@ -559,10 +559,10 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 			ok = true
 			detail = "used by gohere router"
 		}
-		checks = append(checks, lifecycle.DoctorCheck{Name: "port 80", OK: ok, Detail: detail})
+		checks = append(checks, lifecycle.DoctorCheck{Name: "port 80", OK: ok, Detail: detail, Hint: "Try: stop the process using port 80, then run gohere again."})
 	}
 	if goos == "linux" && exists(binaryPath) {
-		checks = append(checks, lifecycle.DoctorCheck{Name: "setcap", OK: extra.SetcapEnabled(binaryPath), Detail: "cap_net_bind_service"})
+		checks = append(checks, lifecycle.DoctorCheck{Name: "setcap", OK: extra.SetcapEnabled(binaryPath), Detail: "cap_net_bind_service", Hint: "Try: sudo setcap cap_net_bind_service=+ep ~/.gohere/bin/gohere"})
 	}
 	if goos == "linux" {
 		applicable, ok := extra.SystemdUserServiceOK()
@@ -571,7 +571,7 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 			if ok {
 				detail = "active"
 			}
-			checks = append(checks, lifecycle.DoctorCheck{Name: "systemd user service", OK: ok, Detail: detail})
+			checks = append(checks, lifecycle.DoctorCheck{Name: "systemd user service", OK: ok, Detail: detail, Hint: "Try: systemctl --user restart gohere-router"})
 		}
 	}
 	fmt.Fprint(stdout, lifecycle.FormatDoctor(checks))

@@ -943,6 +943,21 @@ func TestDoctorWithStoreReportsPort80Availability(t *testing.T) {
 	}
 }
 
+func TestDoctorWithStoreShowsHintWhenPort80Blocked(t *testing.T) {
+	stateDir := t.TempDir()
+	store := router.NewMemoryStore()
+	var out strings.Builder
+
+	if err := DoctorWithChecks(&out, stateDir, store, nil, DoctorChecks{Port80Available: func() bool {
+		return false
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail port 80 blocked\n  Try: stop the process using port 80, then run gohere again.\n") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
 func TestDoctorWithStoreTreatsHealthyRouterAsPort80OK(t *testing.T) {
 	var out strings.Builder
 

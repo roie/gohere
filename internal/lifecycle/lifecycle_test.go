@@ -177,6 +177,19 @@ func TestStopCurrentReportsMissingRoute(t *testing.T) {
 	}
 }
 
+func TestFormatDoctorShowsHintsForFailedChecks(t *testing.T) {
+	out := FormatDoctor([]DoctorCheck{{
+		Name:   "port 80",
+		OK:     false,
+		Detail: "blocked",
+		Hint:   "Try: gohere doctor",
+	}})
+
+	if !strings.Contains(out, "fail port 80 blocked\n  Try: gohere doctor\n") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
 func TestTasklistContainsPID(t *testing.T) {
 	output := `"node.exe","26312","Console","1","30,000 K"` + "\r\n"
 

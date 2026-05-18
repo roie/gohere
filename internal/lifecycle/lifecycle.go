@@ -207,6 +207,9 @@ func FormatDoctor(checks []DoctorCheck) string {
 			fmt.Fprintf(&out, " %s", check.Detail)
 		}
 		out.WriteByte('\n')
+		if !check.OK && check.Hint != "" {
+			fmt.Fprintf(&out, "  %s\n", check.Hint)
+		}
 	}
 	return out.String()
 }
@@ -215,6 +218,7 @@ type DoctorCheck struct {
 	Name   string
 	OK     bool
 	Detail string
+	Hint   string
 }
 
 func RoutePIDDetail(pid int) string {
