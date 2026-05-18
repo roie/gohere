@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build Linux x64 binary
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          mkdir -p vendor/linux-x64
+          GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.version=${version}" -o vendor/linux-x64/gohere ./cmd/gohere
+
+      - name: Generate npm package files
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          mkdir -p bin
+          cat > package.json <<EOF
+          {
+            "name": "gohere",
+            "version": "${version}",
+            "description": "Tiny local dev URL launcher for .localhost projects.",
+            "bin": {
+              "gohere": "bin/gohere.js"
+            },
+            "files": [
+              "bin/",
+              "vendor/"
+            ],
+            "license": "Apache-2.0",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/roie/gohere.git"
+            },
+            "bugs": {
+              "url": "https://github.com/roie/gohere/issues"
+            },
+            "homepage": "https://github.com/roie/gohere#readme",
+            "keywords": [
+              "localhost",
+              "dev-server",
+              "cli"
+            ],
+            "os": [
+              "linux"
+            ],
+            "cpu": [
+              "x64"
+            ]
+          }
+          EOF
+          cat > bin/gohere.js <<'EOF'
+          #!/usr/bin/env node
+
+          const { spawnSync } = require("node:child_process");
+          const path = require("node:path");
+
+          const platform = process.platform;
+          const arch = process.arch;
+          const exe = platform === "win32" ? "gohere.exe" : "gohere";
+          const binary = path.join(__dirname, "..", "vendor", `${platform}-${arch}`, exe);
+
+          const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
+
+          if (result.error) {
+            console.error(`gohere binary not available for ${platform}-${arch}`);
+            console.error(result.error.message);
+            process.exit(1);
+          }
+
+          if (result.signal) {
+            process.kill(process.pid, result.signal);
+          }
+
+          process.exit(result.status ?? 1);
+          EOF
+          chmod +x bin/gohere.js
+
+      - name: Pack npm package
+        run: npm pack --dry-run
+
+      - name: Publish npm package
+        run: npm publish --access public
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" vendor/linux-x64/gohere --title "$TAG" --generate-notes
