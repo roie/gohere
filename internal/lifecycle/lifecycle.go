@@ -141,6 +141,10 @@ func isDefinitiveConnectionFailure(err error) bool {
 }
 
 func stopPID(pid int) {
+	StopPID(pid)
+}
+
+func StopPID(pid int) {
 	if pid <= 0 {
 		return
 	}

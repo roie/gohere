@@ -588,7 +588,22 @@ func setupForGOOS(ctx context.Context, goos string) error {
 }
 
 func List(stdout io.Writer, verbose bool) error {
-	return ListWithStore(stdout, defaultStore(), verbose)
+	manager, err := resolveRouteManager(context.Background())
+	if err != nil {
+		return err
+	}
+	if manager.Client != nil {
+		routes, err := manager.Client.Routes(context.Background())
+		if err != nil {
+			if errors.Is(err, admin.ErrUnauthorized) {
+				return staleRouterTokenError()
+			}
+			return err
+		}
+		printRoutes(stdout, routes, verbose)
+		return nil
+	}
+	return ListWithStore(stdout, manager.Store, verbose)
 }
 
 func ListWithStore(stdout io.Writer, store router.Store, verbose bool) error {
@@ -596,17 +611,32 @@ func ListWithStore(stdout io.Writer, store router.Store, verbose bool) error {
 	if err != nil {
 		return err
 	}
-	statuses := lifecycle.RouteStatuses(routes)
-	if verbose {
-		fmt.Fprint(stdout, lifecycle.FormatRoutesVerbose(statuses))
-		return nil
-	}
-	fmt.Fprint(stdout, lifecycle.FormatRoutes(statuses))
+	printRoutes(stdout, routes, verbose)
 	return nil
 }
 
+func printRoutes(stdout io.Writer, routes []router.Route, verbose bool) {
+	statuses := lifecycle.RouteStatuses(routes)
+	if verbose {
+		fmt.Fprint(stdout, lifecycle.FormatRoutesVerbose(statuses))
+		return
+	}
+	fmt.Fprint(stdout, lifecycle.FormatRoutes(statuses))
+}
+
 func Clean(stdout io.Writer) error {
-	removed, err := lifecycle.Clean(defaultStore())
+	manager, err := resolveRouteManager(context.Background())
+	if err != nil {
+		return err
+	}
+	if manager.Client != nil {
+		removed, err := cleanAdminRoutes(context.Background(), manager.Client)
+		if err != nil {
+			return err
+		}
+		return printCleanResult(stdout, removed)
+	}
+	removed, err := lifecycle.Clean(manager.Store)
 	if err != nil {
 		return err
 	}
@@ -626,7 +656,17 @@ func printCleanResult(stdout io.Writer, removed int) error {
 }
 
 func Stop(cwd string, stdout io.Writer) error {
-	host, stopped, err := lifecycle.StopCurrent(defaultStore(), cwd)
+	manager, err := resolveRouteManager(context.Background())
+	if err != nil {
+		return err
+	}
+	var host string
+	var stopped bool
+	if manager.Client != nil {
+		host, stopped, err = stopAdminCurrent(context.Background(), manager.Client, cwd)
+	} else {
+		host, stopped, err = lifecycle.StopCurrent(manager.Store, cwd)
+	}
 	if err != nil {
 		if host != "" {
 			return fmt.Errorf("gohere error: could not stop %s.\nTry:\n  gohere doctor", host)
@@ -635,6 +675,88 @@ func Stop(cwd string, stdout io.Writer) error {
 	}
 	printStopResult(stdout, host, stopped)
 	return nil
+}
+
+type routeManager struct {
+	Client adminClient
+	Store  router.Store
+}
+
+func resolveRouteManager(ctx context.Context) (routeManager, error) {
+	if !detectWSLFunc() {
+		return routeManager{Store: defaultStore()}, nil
+	}
+	if err := windowsRouterHealthFunc(ctx); err != nil {
+		return routeManager{Store: defaultStore()}, nil
+	}
+	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
+	if err != nil {
+		return routeManager{}, windowsTokenError(err)
+	}
+	client := newWindowsAdminClientFunc(token)
+	if _, err := client.Routes(ctx); err != nil {
+		if errors.Is(err, admin.ErrUnauthorized) {
+			return routeManager{}, windowsTokenError(err)
+		}
+		return routeManager{}, err
+	}
+	return routeManager{Client: client}, nil
+}
+
+func cleanAdminRoutes(ctx context.Context, client adminClient) (int, error) {
+	routes, err := client.Routes(ctx)
+	if err != nil {
+		if errors.Is(err, admin.ErrUnauthorized) {
+			return 0, staleRouterTokenError()
+		}
+		return 0, err
+	}
+	removed := 0
+	for _, status := range lifecycle.RouteStatuses(routes) {
+		if status.Status != lifecycle.RouteStatusDead {
+			continue
+		}
+		if err := client.DeleteRoute(ctx, status.Route.Host); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+func stopAdminCurrent(ctx context.Context, client adminClient, cwd string) (string, bool, error) {
+	routes, err := client.Routes(ctx)
+	if err != nil {
+		if errors.Is(err, admin.ErrUnauthorized) {
+			return "", false, staleRouterTokenError()
+		}
+		return "", false, err
+	}
+	absCWD, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", false, err
+	}
+	for _, route := range routes {
+		routeCWD := route.OwnerCWD
+		if routeCWD == "" {
+			routeCWD = route.CWD
+		}
+		absRouteCWD, err := filepath.Abs(routeCWD)
+		if err != nil || absRouteCWD != absCWD {
+			continue
+		}
+		if route.OwnerEnv != "" && route.OwnerEnv != "wsl" {
+			continue
+		}
+		if route.PID > 0 && lifecycle.PIDAlive(route.PID) {
+			lifecycle.StopPID(route.PID)
+		}
+		if err := client.DeleteRoute(ctx, route.Host); err != nil {
+			return route.Host, false, err
+		}
+		return route.Host, true, nil
+	}
+	return "", false, nil
 }
 
 func printStopResult(stdout io.Writer, host string, stopped bool) {

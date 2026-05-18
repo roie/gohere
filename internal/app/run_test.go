@@ -1001,6 +1001,82 @@ func TestStopOutput(t *testing.T) {
 	}
 }
 
+func TestListUsesWindowsRouterFromWSL(t *testing.T) {
+	admin := &recordingAdminClient{routes: []router.Route{{
+		Host:   "web.localhost",
+		Target: "http://172.20.10.2:5173",
+		CWD:    "/home/roie/dev/web",
+	}}}
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL: true,
+		token: "windows-token",
+		admin: admin,
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := List(&out, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "web.localhost") {
+		t.Fatalf("list output = %q", out.String())
+	}
+}
+
+func TestCleanUsesWindowsRouterFromWSL(t *testing.T) {
+	admin := &recordingAdminClient{routes: []router.Route{{
+		Host:   "dead.localhost",
+		Target: "http://127.0.0.1:1",
+		PID:    999999,
+		CWD:    "/home/roie/dev/dead",
+	}}}
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL: true,
+		token: "windows-token",
+		admin: admin,
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := Clean(&out); err != nil {
+		t.Fatal(err)
+	}
+	if admin.deleted != "dead.localhost" {
+		t.Fatalf("deleted = %q, want dead.localhost", admin.deleted)
+	}
+	if out.String() != "Removed 1 dead route.\n" {
+		t.Fatalf("clean output = %q", out.String())
+	}
+}
+
+func TestStopUsesWindowsRouterFromWSL(t *testing.T) {
+	cwd := "/home/roie/dev/web"
+	admin := &recordingAdminClient{routes: []router.Route{{
+		Host:     "web.localhost",
+		Target:   "http://172.20.10.2:5173",
+		CWD:      cwd,
+		OwnerCWD: cwd,
+		OwnerEnv: "wsl",
+	}}}
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL: true,
+		token: "windows-token",
+		admin: admin,
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := Stop(cwd, &out); err != nil {
+		t.Fatal(err)
+	}
+	if admin.deleted != "web.localhost" {
+		t.Fatalf("deleted = %q, want web.localhost", admin.deleted)
+	}
+	if out.String() != "Stopped web.localhost.\n" {
+		t.Fatalf("stop output = %q", out.String())
+	}
+}
+
 func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "router.pid"), []byte("12345\n"), 0600); err != nil {
@@ -1213,6 +1289,7 @@ func (staleTokenAdminClient) DeleteRoute(context.Context, string) error {
 type recordingAdminClient struct {
 	upserted chan struct{}
 	route    router.Route
+	routes   []router.Route
 	deleted  string
 }
 
@@ -1221,7 +1298,7 @@ func (c *recordingAdminClient) Health(context.Context) error {
 }
 
 func (c *recordingAdminClient) Routes(context.Context) ([]router.Route, error) {
-	return nil, nil
+	return c.routes, nil
 }
 
 func (c *recordingAdminClient) UpsertRoute(ctx context.Context, route router.Route) error {
