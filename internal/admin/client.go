@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/roie/gohere/internal/router"
 )
+
+var ErrUnauthorized = errors.New("gohere admin API unauthorized")
 
 type Client struct {
 	baseURL string
@@ -60,6 +63,9 @@ func (c *Client) Routes(ctx context.Context) ([]router.Route, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, ErrUnauthorized
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET /routes returned %s", resp.Status)
 	}
@@ -84,6 +90,9 @@ func (c *Client) UpsertRoute(ctx context.Context, route router.Route) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return ErrUnauthorized
+	}
 	if resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("POST /routes returned %s", resp.Status)
 	}
@@ -100,6 +109,9 @@ func (c *Client) DeleteRoute(ctx context.Context, host string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return ErrUnauthorized
+	}
 	if resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("DELETE /routes/%s returned %s", host, resp.Status)
 	}

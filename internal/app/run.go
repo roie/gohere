@@ -194,6 +194,9 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command, plan RunPlan, port, pid int, stdout, stderr io.Writer) (func(), error) {
 	routes, err := adminClient.Routes(ctx)
 	if err != nil {
+		if errors.Is(err, admin.ErrUnauthorized) {
+			return nil, staleRouterTokenError()
+		}
 		return nil, err
 	}
 	plan.Host = resolveRouteHost(plan, toRegisteredRoutes(routes))
@@ -206,6 +209,9 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		StartedAt: time.Now().UTC(),
 	}
 	if err := adminClient.UpsertRoute(ctx, route); err != nil {
+		if errors.Is(err, admin.ErrUnauthorized) {
+			return nil, staleRouterTokenError()
+		}
 		return nil, err
 	}
 
@@ -218,6 +224,10 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 	return func() {
 		adminClient.DeleteRoute(context.Background(), route.Host)
 	}, nil
+}
+
+func staleRouterTokenError() error {
+	return errors.New("gohere found a router from a previous gohere install, but this install cannot control it.\nStop the old router, then run gohere again.\nTry:\n  systemctl --user stop gohere-router\n\nIf that does not work, stop the process using ports 80 and 39399.")
 }
 
 type registeredRoute struct {
@@ -464,7 +474,10 @@ func printStopResult(stdout io.Writer, host string, stopped bool) {
 
 func Doctor(stdout io.Writer) error {
 	stateDir := router.DefaultStateDir()
-	client, _ := defaultAdminClientFunc()
+	client, err := defaultAdminClientFunc()
+	if err != nil {
+		client = nil
+	}
 	return DoctorWithStore(stdout, stateDir, defaultStore(), client)
 }
 

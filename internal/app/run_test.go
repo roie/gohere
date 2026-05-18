@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/roie/gohere/internal/admin"
 	"github.com/roie/gohere/internal/cli"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/runner"
@@ -463,6 +464,36 @@ func TestRunEnsuresRouterBeforeStartingProject(t *testing.T) {
 	}
 }
 
+func TestRunReportsStaleRouterToken(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return staleTokenAdminClient{}, nil
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		return &runner.Result{Port: 5173}, nil
+	}
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite"}}`,
+	})
+
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected stale router token error")
+	}
+	if !strings.Contains(err.Error(), "previous gohere install") {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "GET /routes returned 401") {
+		t.Fatalf("error leaked raw admin API response: %q", err.Error())
+	}
+}
+
 func TestRunSuppressesChildOutputOnSuccessfulStartup(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
@@ -811,6 +842,23 @@ func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
 	}
 }
 
+func TestDoctorDoesNotPanicWhenAdminClientCannotBeCreated(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		var client *admin.Client
+		return client, errors.New("token unavailable")
+	}
+	var out strings.Builder
+
+	if err := Doctor(&out); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDoctorWithStoreReportsPort80Availability(t *testing.T) {
 	stateDir := t.TempDir()
 	store := router.NewMemoryStore()
@@ -913,6 +961,24 @@ func (fakeAdminClient) UpsertRoute(context.Context, router.Route) error {
 
 func (fakeAdminClient) DeleteRoute(context.Context, string) error {
 	return nil
+}
+
+type staleTokenAdminClient struct{}
+
+func (staleTokenAdminClient) Health(context.Context) error {
+	return nil
+}
+
+func (staleTokenAdminClient) Routes(context.Context) ([]router.Route, error) {
+	return nil, admin.ErrUnauthorized
+}
+
+func (staleTokenAdminClient) UpsertRoute(context.Context, router.Route) error {
+	return admin.ErrUnauthorized
+}
+
+func (staleTokenAdminClient) DeleteRoute(context.Context, string) error {
+	return admin.ErrUnauthorized
 }
 
 type recordingAdminClient struct {

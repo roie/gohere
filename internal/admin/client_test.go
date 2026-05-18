@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -70,6 +71,17 @@ func TestClientRejectsNonGohereHealthResponse(t *testing.T) {
 
 	if err := NewClient(httpSrv.URL, "secret").Health(t.Context()); err == nil {
 		t.Fatal("expected health body error")
+	}
+}
+
+func TestClientReportsUnauthorizedRoutes(t *testing.T) {
+	srv := router.NewServer(router.Config{Token: "server-token", Store: router.NewMemoryStore()})
+	httpSrv := httptest.NewServer(srv.AdminHandler())
+	defer httpSrv.Close()
+
+	_, err := NewClient(httpSrv.URL, "client-token").Routes(t.Context())
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("Routes error = %v, want ErrUnauthorized", err)
 	}
 }
 
