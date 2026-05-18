@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +12,8 @@ import (
 	"github.com/roie/gohere/internal/cli"
 	"github.com/roie/gohere/internal/router"
 )
+
+var version = "dev"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -73,6 +76,8 @@ func main() {
 		waitForRouter(ctx)
 	case cli.CommandHelp:
 		printUsage(os.Stdout, cmd.HelpTopic)
+	case cli.CommandVersion:
+		printVersion(os.Stdout)
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command")
 		os.Exit(2)
@@ -96,6 +101,10 @@ Examples:
   gohere
   gohere dev:web
   gohere pages/about.html
-  gohere --target 5173 -- npm run dev
+ gohere --target 5173 -- npm run dev
 `)
+}
+
+func printVersion(out io.Writer) {
+	fmt.Fprintf(out, "gohere %s\n", version)
 }

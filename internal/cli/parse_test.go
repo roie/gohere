@@ -22,6 +22,30 @@ func TestParseScriptRun(t *testing.T) {
 	}
 }
 
+func TestParseVersionScriptRun(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "version"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandRun || cmd.Script != "version" {
+		t.Fatalf("Parse version script = %#v", cmd)
+	}
+}
+
+func TestParseVersionFlags(t *testing.T) {
+	for _, arg := range []string{"--version", "-v"} {
+		t.Run(arg, func(t *testing.T) {
+			cmd, err := Parse([]string{"gohere", arg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cmd.Kind != CommandVersion {
+				t.Fatalf("Parse version flag = %#v", cmd)
+			}
+		})
+	}
+}
+
 func TestParseFileTargetRun(t *testing.T) {
 	cmd, err := Parse([]string{"gohere", "pages/about.html"})
 	if err != nil {

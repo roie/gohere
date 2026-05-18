@@ -10,15 +10,16 @@ import (
 type CommandKind string
 
 const (
-	CommandRun    CommandKind = "run"
-	CommandRaw    CommandKind = "raw"
-	CommandList   CommandKind = "list"
-	CommandStop   CommandKind = "stop"
-	CommandClean  CommandKind = "clean"
-	CommandDoctor CommandKind = "doctor"
-	CommandRouter CommandKind = "router"
-	CommandSetup  CommandKind = "setup"
-	CommandHelp   CommandKind = "help"
+	CommandRun     CommandKind = "run"
+	CommandRaw     CommandKind = "raw"
+	CommandList    CommandKind = "list"
+	CommandStop    CommandKind = "stop"
+	CommandClean   CommandKind = "clean"
+	CommandDoctor  CommandKind = "doctor"
+	CommandRouter  CommandKind = "router"
+	CommandSetup   CommandKind = "setup"
+	CommandHelp    CommandKind = "help"
+	CommandVersion CommandKind = "version"
 )
 
 type Command struct {
@@ -72,6 +73,10 @@ func Parse(args []string) (Command, error) {
 			rest = rest[1:]
 		case "--help", "-h", "help":
 			cmd.Kind = CommandHelp
+			cmd.Script = ""
+			return cmd, nil
+		case "--version", "-v":
+			cmd.Kind = CommandVersion
 			cmd.Script = ""
 			return cmd, nil
 		case "list":
