@@ -17,6 +17,11 @@ import (
 	"github.com/roie/gohere/internal/setup"
 )
 
+func TestMain(m *testing.M) {
+	detectWSLFunc = func() bool { return false }
+	os.Exit(m.Run())
+}
+
 func TestPrepareScriptRun(t *testing.T) {
 	dir := tempProject(t, map[string]string{
 		"package.json":   `{"scripts":{"dev":"vite --clearScreen false"}}`,
@@ -783,6 +788,84 @@ func TestRunVerboseOutputIncludesCleanURLAndMetadata(t *testing.T) {
 	}
 }
 
+func TestRunUsesWindowsRouterBridgeFromWSL(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:      true,
+		token:      "windows-token",
+		wslIP:      "172.20.10.2",
+		reachable:  true,
+		admin:      &recordingAdminClient{},
+		localAdmin: fakeAdminClient{},
+	})
+	defer restore()
+
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		startRunnerFunc = oldStartRunner
+	}()
+	var gotEnv []string
+	var gotCommand []string
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		gotEnv = cfg.Env
+		gotCommand = cfg.Command
+		return &runner.Result{Port: 5173}, nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite"}}`,
+	})
+	var stdout strings.Builder
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev", Verbose: true}, dir, &stdout, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEnv(t, gotEnv, "HOST", "0.0.0.0")
+	if !strings.Contains(strings.Join(gotCommand, " "), "--host 0.0.0.0") {
+		t.Fatalf("command = %#v, want bridge host injection", gotCommand)
+	}
+	if !strings.Contains(stdout.String(), "\ntarget: http://172.20.10.2:5173\n") ||
+		!strings.Contains(stdout.String(), "router: Windows\n") {
+		t.Fatalf("verbose stdout = %q", stdout.String())
+	}
+}
+
+func TestResolveRunRouterFallsBackWhenWindowsRouterAbsent(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:      true,
+		healthErr:  errors.New("connection refused"),
+		localAdmin: fakeAdminClient{},
+	})
+	defer restore()
+
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
+		t.Fatalf("runRouter = %#v", runRouter)
+	}
+}
+
+func TestResolveRunRouterStopsWhenWindowsRouterCannotReachWSL(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:     true,
+		token:     "windows-token",
+		wslIP:     "172.20.10.2",
+		reachable: false,
+		admin:     &recordingAdminClient{},
+	})
+	defer restore()
+
+	_, err := resolveRunRouter(context.Background(), io.Discard)
+	if err == nil {
+		t.Fatal("expected bridge reachability error")
+	}
+	if !strings.Contains(err.Error(), "Windows gohere router is running, but cannot reach WSL dev servers") ||
+		!strings.Contains(err.Error(), "networkingMode=mirrored") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
 func TestRunTreatsStartupContextCancelAsCleanShutdown(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
@@ -1105,6 +1188,10 @@ func (fakeAdminClient) DeleteRoute(context.Context, string) error {
 	return nil
 }
 
+func (fakeAdminClient) ProbeTarget(context.Context, string) (bool, error) {
+	return true, nil
+}
+
 type staleTokenAdminClient struct{}
 
 func (staleTokenAdminClient) Health(context.Context) error {
@@ -1151,6 +1238,10 @@ func (c *recordingAdminClient) DeleteRoute(ctx context.Context, host string) err
 	return nil
 }
 
+func (c *recordingAdminClient) ProbeTarget(context.Context, string) (bool, error) {
+	return true, nil
+}
+
 func (c *recordingAdminClient) waitForUpsert(t *testing.T) {
 	t.Helper()
 	if c.upserted == nil {
@@ -1160,6 +1251,71 @@ func (c *recordingAdminClient) waitForUpsert(t *testing.T) {
 	case <-c.upserted:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for route registration")
+	}
+}
+
+type bridgeStub struct {
+	isWSL      bool
+	healthErr  error
+	token      string
+	wslIP      string
+	reachable  bool
+	admin      bridgeAdminClient
+	localAdmin adminClient
+}
+
+func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
+	t.Helper()
+	oldDetectWSL := detectWSLFunc
+	oldWindowsHealth := windowsRouterHealthFunc
+	oldDiscoverToken := discoverWindowsTokenFunc
+	oldNewWindowsAdminClient := newWindowsAdminClientFunc
+	oldCurrentWSLIP := currentWSLIPFunc
+	oldProbeBridge := probeBridgeFunc
+	oldDefaultAdminClient := defaultAdminClientFunc
+
+	detectWSLFunc = func() bool {
+		return stub.isWSL
+	}
+	windowsRouterHealthFunc = func(ctx context.Context) error {
+		return stub.healthErr
+	}
+	discoverWindowsTokenFunc = func(string) (string, string, error) {
+		if stub.token == "" {
+			return "", "", errors.New("no token")
+		}
+		return stub.token, "/mnt/c/Users/Jessa/.gohere/token", nil
+	}
+	newWindowsAdminClientFunc = func(string) bridgeAdminClient {
+		if stub.admin == nil {
+			return fakeAdminClient{}
+		}
+		return stub.admin
+	}
+	currentWSLIPFunc = func(context.Context) (string, error) {
+		if stub.wslIP == "" {
+			return "", errors.New("no wsl ip")
+		}
+		return stub.wslIP, nil
+	}
+	probeBridgeFunc = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
+		return stub.reachable, "http://" + wslIP + ":49231", nil
+	}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		if stub.localAdmin == nil {
+			return nil, errors.New("local admin not expected")
+		}
+		return stub.localAdmin, nil
+	}
+
+	return func() {
+		detectWSLFunc = oldDetectWSL
+		windowsRouterHealthFunc = oldWindowsHealth
+		discoverWindowsTokenFunc = oldDiscoverToken
+		newWindowsAdminClientFunc = oldNewWindowsAdminClient
+		currentWSLIPFunc = oldCurrentWSLIP
+		probeBridgeFunc = oldProbeBridge
+		defaultAdminClientFunc = oldDefaultAdminClient
 	}
 }
 

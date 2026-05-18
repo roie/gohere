@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/roie/gohere/internal/admin"
+	"github.com/roie/gohere/internal/bridge"
 	"github.com/roie/gohere/internal/cli"
 	"github.com/roie/gohere/internal/lifecycle"
 	"github.com/roie/gohere/internal/project"
@@ -36,7 +37,15 @@ var (
 	defaultAdminClientFunc func() (adminClient, error) = func() (adminClient, error) {
 		return defaultAdminClient()
 	}
-	startRunnerFunc = runner.Start
+	startRunnerFunc           = runner.Start
+	detectWSLFunc             = bridge.DetectWSL
+	windowsRouterHealthFunc   = func(ctx context.Context) error { return admin.NewClient(windowsAdminBaseURL, "").Health(ctx) }
+	discoverWindowsTokenFunc  = bridge.DiscoverWindowsToken
+	newWindowsAdminClientFunc = func(token string) bridgeAdminClient { return admin.NewClient(windowsAdminBaseURL, token) }
+	currentWSLIPFunc          = bridge.CurrentWSLIP
+	probeBridgeFunc           = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
+		return bridge.ProbeBridge(ctx, client, wslIP)
+	}
 )
 
 type adminClient interface {
@@ -44,6 +53,30 @@ type adminClient interface {
 	Routes(context.Context) ([]router.Route, error)
 	UpsertRoute(context.Context, router.Route) error
 	DeleteRoute(context.Context, string) error
+}
+
+type bridgeProbeClient interface {
+	ProbeTarget(context.Context, string) (bool, error)
+}
+
+type bridgeAdminClient interface {
+	adminClient
+	bridgeProbeClient
+}
+
+const (
+	windowsAdminBaseURL = "http://127.0.0.1:39399"
+	windowsUsersRoot    = "/mnt/c/Users"
+)
+
+type runRouter struct {
+	Client          adminClient
+	RouteTargetHost string
+	ChildHost       string
+	RouteSource     string
+	OwnerEnv        string
+	RouterLabel     string
+	Bridge          bool
 }
 
 type RunPlan struct {
@@ -57,6 +90,10 @@ type RunPlan struct {
 	Static              bool
 	URLPath             string
 	RequireDetectedPort bool
+	RouteTargetHost     string
+	RouteSource         string
+	OwnerEnv            string
+	RouterLabel         string
 }
 
 func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
@@ -143,13 +180,12 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		return err
 	}
 
-	adminClient, err := defaultAdminClientFunc()
+	runRouter, err := resolveRunRouter(ctx, stderr)
 	if err != nil {
 		return err
 	}
-	if err := ensureRouter(ctx, stderr, adminClient.Health); err != nil {
-		return err
-	}
+	adminClient := runRouter.Client
+	applyRunRouter(&plan, runRouter)
 
 	if plan.Static {
 		staticServer, err := staticserver.Start(ctx, plan.CWD, plan.Port)
@@ -206,10 +242,13 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 	plan.Host = resolveRouteHost(plan, toRegisteredRoutes(routes))
 	route := router.Route{
 		Host:      plan.Host,
-		Target:    fmt.Sprintf("http://127.0.0.1:%d", port),
+		Target:    routeTarget(plan.RouteTargetHost, port),
 		PID:       pid,
 		CWD:       plan.CWD,
 		Name:      plan.Name,
+		Source:    plan.RouteSource,
+		OwnerCWD:  plan.CWD,
+		OwnerEnv:  plan.OwnerEnv,
 		StartedAt: time.Now().UTC(),
 	}
 	if err := adminClient.UpsertRoute(ctx, route); err != nil {
@@ -221,16 +260,124 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 
 	fmt.Fprint(stdout, runSuccessOutput(cmd, route.Host, plan.URLPath))
 	if cmd.Verbose {
-		fmt.Fprintf(stdout, "\ntarget: http://127.0.0.1:%d\n", port)
+		fmt.Fprintf(stdout, "\ntarget: %s\n", route.Target)
 		if plan.ProjectRoot != "" {
 			fmt.Fprintf(stdout, "project root: %s\n", plan.ProjectRoot)
 		}
 		fmt.Fprintf(stdout, "command: %s\n", strings.Join(plan.Command, " "))
-		fmt.Fprintln(stdout, "router: running")
+		routerLabel := plan.RouterLabel
+		if routerLabel == "" {
+			routerLabel = "running"
+		}
+		fmt.Fprintf(stdout, "router: %s\n", routerLabel)
 	}
 	return func() {
 		adminClient.DeleteRoute(context.Background(), route.Host)
 	}, nil
+}
+
+func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) {
+	local := func() (runRouter, error) {
+		client, err := defaultAdminClientFunc()
+		if err != nil {
+			return runRouter{}, err
+		}
+		if err := ensureRouter(ctx, stderr, client.Health); err != nil {
+			return runRouter{}, err
+		}
+		return runRouter{
+			Client:          client,
+			RouteTargetHost: "127.0.0.1",
+			ChildHost:       "127.0.0.1",
+			RouterLabel:     "running",
+		}, nil
+	}
+
+	if !detectWSLFunc() {
+		return local()
+	}
+	if err := windowsRouterHealthFunc(ctx); err != nil {
+		return local()
+	}
+
+	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
+	if err != nil {
+		return runRouter{}, windowsTokenError(err)
+	}
+	client := newWindowsAdminClientFunc(token)
+	if _, err := client.Routes(ctx); err != nil {
+		if errors.Is(err, admin.ErrUnauthorized) {
+			return runRouter{}, windowsTokenError(err)
+		}
+		return runRouter{}, err
+	}
+	wslIP, err := currentWSLIPFunc(ctx)
+	if err != nil {
+		return runRouter{}, err
+	}
+	reachable, _, err := probeBridgeFunc(ctx, client, wslIP)
+	if err != nil {
+		return runRouter{}, err
+	}
+	if !reachable {
+		return runRouter{}, windowsRouterCannotReachWSLError()
+	}
+	return runRouter{
+		Client:          client,
+		RouteTargetHost: wslIP,
+		ChildHost:       "0.0.0.0",
+		RouteSource:     "wsl",
+		OwnerEnv:        "wsl",
+		RouterLabel:     "Windows",
+		Bridge:          true,
+	}, nil
+}
+
+func applyRunRouter(plan *RunPlan, rr runRouter) {
+	if rr.RouteTargetHost != "" {
+		plan.RouteTargetHost = rr.RouteTargetHost
+	}
+	if rr.RouteSource != "" {
+		plan.RouteSource = rr.RouteSource
+	}
+	if rr.OwnerEnv != "" {
+		plan.OwnerEnv = rr.OwnerEnv
+	}
+	if rr.RouterLabel != "" {
+		plan.RouterLabel = rr.RouterLabel
+	}
+	if rr.ChildHost != "" && !plan.Static {
+		plan.Env = runner.ChildEnvForHost(os.Environ(), plan.Port, rr.ChildHost)
+		plan.Command = withHost(plan.Command, rr.ChildHost)
+	}
+}
+
+func withHost(command []string, host string) []string {
+	if host == "" || host == "127.0.0.1" {
+		return command
+	}
+	out := append([]string(nil), command...)
+	for i := range out {
+		if out[i] == "127.0.0.1" {
+			out[i] = host
+		}
+	}
+	return out
+}
+
+func routeTarget(host string, port int) string {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, fmt.Sprint(port))
+}
+
+func windowsTokenError(err error) error {
+	return errors.New("Windows gohere router found, but WSL could not read or use its token.\nRun gohere from Windows or use the WSL router.\n\nIf you use gohere in both Windows and WSL, run gohere uninstall in the side where the old router is running.")
+}
+
+func windowsRouterCannotReachWSLError() error {
+	return errors.New("Windows gohere router is running, but cannot reach WSL dev servers.\nTry enabling mirrored networking in %USERPROFILE%\\.wslconfig:\n  [wsl2]\n  networkingMode=mirrored\nThen run:\n  wsl --shutdown")
 }
 
 func staleRouterTokenError() error {

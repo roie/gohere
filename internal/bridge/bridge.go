@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -77,6 +78,14 @@ func FirstIPv4(output string) (string, error) {
 		return candidate, nil
 	}
 	return "", ErrWSLIPNotFound
+}
+
+func CurrentWSLIP(ctx context.Context) (string, error) {
+	output, err := exec.CommandContext(ctx, "hostname", "-I").Output()
+	if err != nil {
+		return "", err
+	}
+	return FirstIPv4(string(output))
 }
 
 func StartProbeServer(ctx context.Context) (*ProbeServer, error) {
