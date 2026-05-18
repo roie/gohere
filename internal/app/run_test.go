@@ -569,8 +569,17 @@ func TestRunReportsStaleRouterToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected stale router token error")
 	}
-	if !strings.Contains(err.Error(), "previous gohere install") {
+	if !strings.Contains(err.Error(), "gohere found a router it cannot control") {
 		t.Fatalf("error = %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "gohere uninstall") {
+		t.Fatalf("error should recommend gohere uninstall: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Windows and WSL") {
+		t.Fatalf("error should mention Windows/WSL split: %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "systemctl") {
+		t.Fatalf("error should not lead with systemd internals: %q", err.Error())
 	}
 	if strings.Contains(err.Error(), "GET /routes returned 401") {
 		t.Fatalf("error leaked raw admin API response: %q", err.Error())

@@ -234,7 +234,7 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 }
 
 func staleRouterTokenError() error {
-	return errors.New("gohere found a router from a previous gohere install, but this install cannot control it.\nStop the old router, then run gohere again.\nTry:\n  systemctl --user stop gohere-router\n\nIf that does not work, stop the process using ports 80 and 39399.")
+	return errors.New("gohere found a router it cannot control.\n\nThis usually means another gohere install is already running, or Windows and WSL are each using a different gohere token.\n\nStop the old router, then run gohere again.\nTry:\n  gohere uninstall\n\nIf you use gohere in both Windows and WSL, run that command in the side where the old router is running. If that does not work, stop the process using ports 80 and 39399.")
 }
 
 type registeredRoute struct {
