@@ -139,6 +139,82 @@ func TestAdminAPIRequiresTokenForRoutes(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /health = %d", rec.Code)
 	}
+	if strings.TrimSpace(rec.Body.String()) != "gohere-router" {
+		t.Fatalf("GET /health body = %q", rec.Body.String())
+	}
+}
+
+func TestAdminAPIProbeTargetRequiresToken(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+
+	req := httptest.NewRequest(http.MethodPost, "/probe-target", strings.NewReader(`{"target":"http://127.0.0.1:1"}`))
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /probe-target without token = %d", rec.Code)
+	}
+}
+
+func TestAdminAPIProbeTargetReachable(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	}))
+	defer target.Close()
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+
+	req := httptest.NewRequest(http.MethodPost, "/probe-target", strings.NewReader(`{"target":`+fmt.Sprintf("%q", target.URL)+`}`))
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /probe-target = %d body %q", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Reachable bool `json:"reachable"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Reachable {
+		t.Fatalf("probe response = %#v", response)
+	}
+}
+
+func TestAdminAPIProbeTargetUnreachable(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+
+	req := httptest.NewRequest(http.MethodPost, "/probe-target", strings.NewReader(`{"target":"http://127.0.0.1:1"}`))
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /probe-target = %d body %q", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Reachable bool `json:"reachable"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Reachable {
+		t.Fatalf("probe response = %#v", response)
+	}
+}
+
+func TestAdminAPIProbeTargetRejectsNonHTTPURL(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+
+	req := httptest.NewRequest(http.MethodPost, "/probe-target", strings.NewReader(`{"target":"file:///etc/passwd"}`))
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /probe-target = %d body %q", rec.Code, rec.Body.String())
+	}
 }
 
 func TestAdminAPIRejectsRoutesWhenTokenIsEmpty(t *testing.T) {

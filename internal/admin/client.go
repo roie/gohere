@@ -47,7 +47,7 @@ func (c *Client) Health(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(string(body)) != "ok" {
+	if strings.TrimSpace(string(body)) != "gohere-router" {
 		return fmt.Errorf("router health returned unexpected body")
 	}
 	return nil

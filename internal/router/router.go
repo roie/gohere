@@ -7,6 +7,7 @@ import (
 	"errors"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -168,10 +169,11 @@ func (s *Server) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, "ok\n")
+		io.WriteString(w, "gohere-router\n")
 	})
 	mux.HandleFunc("/routes", s.handleRoutes)
 	mux.HandleFunc("/routes/", s.handleRoute)
+	mux.HandleFunc("/probe-target", s.handleProbeTarget)
 	return mux
 }
 
@@ -273,6 +275,51 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Target string `json:"target"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	target, err := url.Parse(body.Target)
+	if err != nil || target.Scheme == "" || target.Host == "" {
+		http.Error(w, "target must be an absolute URL", http.StatusBadRequest)
+		return
+	}
+	if target.Scheme != "http" && target.Scheme != "https" {
+		http.Error(w, "target must use http or https", http.StatusBadRequest)
+		return
+	}
+
+	client := http.Client{
+		Timeout: 500 * time.Millisecond,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{Timeout: 500 * time.Millisecond}).DialContext,
+		},
+	}
+	resp, err := client.Get(target.String())
+	reachable := err == nil
+	if resp != nil {
+		resp.Body.Close()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct {
+		Reachable bool `json:"reachable"`
+	}{Reachable: reachable})
 }
 
 func (s *Server) authorized(r *http.Request) bool {

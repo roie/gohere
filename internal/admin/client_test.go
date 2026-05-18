@@ -51,6 +51,18 @@ func TestClientHealthAndRoutes(t *testing.T) {
 	}
 }
 
+func TestClientRejectsLegacyHealthResponse(t *testing.T) {
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok\n"))
+	}))
+	defer httpSrv.Close()
+
+	if err := NewClient(httpSrv.URL, "secret").Health(t.Context()); err == nil {
+		t.Fatal("expected health body error")
+	}
+}
+
 func TestClientRejectsUnhealthyRouter(t *testing.T) {
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusServiceUnavailable)
