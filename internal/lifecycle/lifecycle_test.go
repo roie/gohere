@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -173,5 +174,33 @@ func TestStopCurrentReportsMissingRoute(t *testing.T) {
 	}
 	if stopped {
 		t.Fatal("expected no route")
+	}
+}
+
+func TestTasklistContainsPID(t *testing.T) {
+	output := `"node.exe","26312","Console","1","30,000 K"` + "\r\n"
+
+	if !tasklistContainsPID(output, 26312) {
+		t.Fatal("expected tasklist output to match PID")
+	}
+	if tasklistContainsPID(output, 26313) {
+		t.Fatal("did not expect tasklist output to match another PID")
+	}
+}
+
+func TestTasklistContainsPIDRejectsNoTasksOutput(t *testing.T) {
+	output := "INFO: No tasks are running which match the specified criteria.\r\n"
+
+	if tasklistContainsPID(output, 26312) {
+		t.Fatal("did not expect no-tasks output to match PID")
+	}
+}
+
+func TestTasklistContainsPIDHandlesCommaSeparatedMemory(t *testing.T) {
+	pid := 26312
+	output := `"node.exe","` + strconv.Itoa(pid) + `","Console","1","123,456 K"` + "\r\n"
+
+	if !tasklistContainsPID(output, pid) {
+		t.Fatal("expected CSV parsing to ignore comma inside memory field")
 	}
 }

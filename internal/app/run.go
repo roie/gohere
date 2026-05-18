@@ -151,7 +151,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 			return err
 		}
 		defer staticServer.Close()
-		cleanup, err := registerRoute(ctx, adminClient, cmd, plan, staticServer.Port(), 0, stdout, stderr)
+		cleanup, err := registerRoute(ctx, adminClient, cmd, plan, staticServer.Port(), os.Getpid(), stdout, stderr)
 		if err != nil {
 			return err
 		}
@@ -276,10 +276,7 @@ func prepareStaticFileTarget(cmd cli.Command, cwd string, port int) (RunPlan, er
 		return RunPlan{}, fmt.Errorf("File not found: %s", cmd.Script)
 	}
 
-	host, err := project.HostnameForProject(cwd)
-	if err != nil {
-		return RunPlan{}, err
-	}
+	host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
 	return RunPlan{
 		Port:    port,
 		Host:    host,
@@ -512,9 +509,14 @@ type DoctorChecks struct {
 	Port80Available      func() bool
 	SetcapEnabled        func(string) bool
 	SystemdUserServiceOK func() (bool, bool)
+	GOOS                 string
 }
 
 func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, client adminClient, extra DoctorChecks) error {
+	goos := extra.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
 	if extra.Port80Available == nil {
 		extra.Port80Available = port80Available
 	}
@@ -525,14 +527,14 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 		extra.SystemdUserServiceOK = systemdUserServiceOK
 	}
 	tokenPath := filepath.Join(stateDir, "token")
-	binaryPath := filepath.Join(stateDir, "bin", "gohere")
+	binaryPath := filepath.Join(stateDir, "bin", stableBinaryName(goos))
 	pidPath := filepath.Join(stateDir, "router.pid")
 	checks := []lifecycle.DoctorCheck{
 		{Name: "state dir", OK: exists(stateDir), Detail: stateDir},
 		{Name: "stable binary", OK: exists(binaryPath), Detail: binaryPath},
 		{Name: "token", OK: exists(tokenPath), Detail: tokenPath},
 	}
-	if info, err := os.Stat(tokenPath); err == nil {
+	if info, err := os.Stat(tokenPath); goos != "windows" && err == nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "token permissions", OK: info.Mode().Perm() == 0600, Detail: info.Mode().Perm().String()})
 	}
 	adminHealthy := false
@@ -559,18 +561,28 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 		}
 		checks = append(checks, lifecycle.DoctorCheck{Name: "port 80", OK: ok, Detail: detail})
 	}
-	if exists(binaryPath) {
+	if goos == "linux" && exists(binaryPath) {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "setcap", OK: extra.SetcapEnabled(binaryPath), Detail: "cap_net_bind_service"})
 	}
-	if applicable, ok := extra.SystemdUserServiceOK(); applicable {
-		detail := "inactive"
-		if ok {
-			detail = "active"
+	if goos == "linux" {
+		applicable, ok := extra.SystemdUserServiceOK()
+		if applicable {
+			detail := "inactive"
+			if ok {
+				detail = "active"
+			}
+			checks = append(checks, lifecycle.DoctorCheck{Name: "systemd user service", OK: ok, Detail: detail})
 		}
-		checks = append(checks, lifecycle.DoctorCheck{Name: "systemd user service", OK: ok, Detail: detail})
 	}
 	fmt.Fprint(stdout, lifecycle.FormatDoctor(checks))
 	return nil
+}
+
+func stableBinaryName(goos string) string {
+	if goos == "windows" {
+		return "gohere.exe"
+	}
+	return "gohere"
 }
 
 func Setup(ctx context.Context) error {

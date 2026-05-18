@@ -219,6 +219,27 @@ func TestPrepareStaticFileTargetWinsOverPackageScriptWhenFileExists(t *testing.T
 	}
 }
 
+func TestPrepareStaticFileTargetWinsOverParentPackageHostname(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json": `{"name":"parent-package","scripts":{}}`,
+	})
+	dir := filepath.Join(root, "site")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "about.html"), []byte("<h1>About</h1>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "about.html"}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Host != "site.localhost" {
+		t.Fatalf("host = %q, want site.localhost", plan.Host)
+	}
+}
+
 func TestPrepareFileTargetMissingDoesNotFallBackToPackageScript(t *testing.T) {
 	dir := tempProject(t, map[string]string{
 		"package.json": `{"scripts":{"about.html":"vite"}}`,
@@ -626,6 +647,9 @@ func TestRunStaticUsesPlainSuccessLabel(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+	if admin.route.PID == 0 {
+		t.Fatalf("static route PID = 0, want current gohere process PID")
+	}
 	want := "gohere \u2192 http://" + filepath.Base(dir) + ".localhost\n"
 	if stdout.String() != want {
 		t.Fatalf("static output = %q, want %q", stdout.String(), want)
@@ -955,6 +979,37 @@ func TestDoctorWithStoreReportsSetcapStatus(t *testing.T) {
 	}
 }
 
+func TestDoctorWithStoreUsesWindowsStableBinary(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, "bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	binaryPath := filepath.Join(stateDir, "bin", "gohere.exe")
+	if err := os.WriteFile(binaryPath, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "token"), []byte("token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+
+	if err := DoctorWithChecks(&out, stateDir, router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		GOOS: "windows",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "ok stable binary "+binaryPath) {
+		t.Fatalf("doctor output = %q", output)
+	}
+	if strings.Contains(output, "setcap") {
+		t.Fatalf("doctor output should not include setcap on Windows: %q", output)
+	}
+	if strings.Contains(output, "token permissions") {
+		t.Fatalf("doctor output should not include Unix token permissions on Windows: %q", output)
+	}
+}
+
 func TestDoctorWithStoreReportsSystemdStatus(t *testing.T) {
 	var out strings.Builder
 
@@ -1028,6 +1083,7 @@ func (staleTokenAdminClient) DeleteRoute(context.Context, string) error {
 
 type recordingAdminClient struct {
 	upserted chan struct{}
+	route    router.Route
 	deleted  string
 }
 
@@ -1040,6 +1096,7 @@ func (c *recordingAdminClient) Routes(context.Context) ([]router.Route, error) {
 }
 
 func (c *recordingAdminClient) UpsertRoute(ctx context.Context, route router.Route) error {
+	c.route = route
 	if c.upserted == nil {
 		c.upserted = make(chan struct{})
 	}

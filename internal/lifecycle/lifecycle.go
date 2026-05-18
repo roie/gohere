@@ -1,11 +1,14 @@
 package lifecycle
 
 import (
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -145,6 +148,10 @@ func stopPID(pid int) {
 	if err != nil {
 		return
 	}
+	if runtime.GOOS == "windows" {
+		process.Kill()
+		return
+	}
 	process.Signal(syscall.SIGTERM)
 }
 
@@ -152,11 +159,40 @@ func PIDAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
+	if runtime.GOOS == "windows" {
+		return windowsPIDAlive(pid)
+	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
 	return process.Signal(syscall.Signal(0)) == nil
+}
+
+func windowsPIDAlive(pid int) bool {
+	output, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH").Output()
+	if err != nil {
+		return false
+	}
+	return tasklistContainsPID(string(output), pid)
+}
+
+func tasklistContainsPID(output string, pid int) bool {
+	reader := csv.NewReader(strings.NewReader(output))
+	reader.FieldsPerRecord = -1
+	for {
+		record, err := reader.Read()
+		if err != nil {
+			return false
+		}
+		if len(record) < 2 {
+			continue
+		}
+		got, err := strconv.Atoi(strings.TrimSpace(record[1]))
+		if err == nil && got == pid {
+			return true
+		}
+	}
 }
 
 func FormatDoctor(checks []DoctorCheck) string {

@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/setup"
@@ -58,7 +60,7 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 		_ = cfg.ProcessSignal(pid)
 	}
 	for _, binary := range []string{"gohere", "gohere.exe"} {
-		if err := os.Remove(filepath.Join(cfg.StateDir, "bin", binary)); err != nil && !os.IsNotExist(err) {
+		if err := removeInstalledFile(filepath.Join(cfg.StateDir, "bin", binary)); err != nil {
 			return err
 		}
 	}
@@ -102,7 +104,41 @@ func signalProcess(pid int) error {
 	if err != nil {
 		return err
 	}
+	return terminateProcess(process, runtime.GOOS)
+}
+
+type terminableProcess interface {
+	Kill() error
+	Signal(os.Signal) error
+}
+
+func terminateProcess(process terminableProcess, goos string) error {
+	if goos == "windows" {
+		return process.Kill()
+	}
 	return process.Signal(syscall.SIGTERM)
+}
+
+func removeInstalledFile(path string) error {
+	return removePathWithRetry(path, os.Remove, 30, 100*time.Millisecond)
+}
+
+func removePathWithRetry(path string, remove func(string) error, attempts int, delay time.Duration) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		err := remove(path)
+		if err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		lastErr = err
+		if delay > 0 && i < attempts-1 {
+			time.Sleep(delay)
+		}
+	}
+	return lastErr
 }
 
 type uninstallRealRunner struct{}

@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -110,6 +112,65 @@ func TestUninstallRemovesWindowsStableBinary(t *testing.T) {
 	}
 }
 
+func TestTerminateProcessUsesKillOnWindows(t *testing.T) {
+	process := &fakeProcess{}
+
+	if err := terminateProcess(process, "windows"); err != nil {
+		t.Fatal(err)
+	}
+	if !process.killed {
+		t.Fatal("expected Windows process termination to use Kill")
+	}
+	if process.signaled != nil {
+		t.Fatalf("expected no signal, got %v", process.signaled)
+	}
+}
+
+func TestTerminateProcessUsesSigtermOnLinux(t *testing.T) {
+	process := &fakeProcess{}
+
+	if err := terminateProcess(process, "linux"); err != nil {
+		t.Fatal(err)
+	}
+	if process.killed {
+		t.Fatal("expected Linux process termination not to use Kill")
+	}
+	if process.signaled != syscall.SIGTERM {
+		t.Fatalf("signal = %v, want SIGTERM", process.signaled)
+	}
+}
+
+func TestRemovePathWithRetryRetriesTemporaryFailure(t *testing.T) {
+	attempts := 0
+	errBusy := errors.New("busy")
+
+	err := removePathWithRetry("binary", func(path string) error {
+		if path != "binary" {
+			t.Fatalf("path = %q", path)
+		}
+		attempts++
+		if attempts < 3 {
+			return errBusy
+		}
+		return nil
+	}, 3, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestRemovePathWithRetryIgnoresMissingPath(t *testing.T) {
+	err := removePathWithRetry("missing", func(string) error {
+		return os.ErrNotExist
+	}, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 type uninstallRecordingRunner struct {
 	commands [][]string
 }
@@ -144,6 +205,21 @@ func (p *uninstallRecordingProcess) saw(pid int) bool {
 		}
 	}
 	return false
+}
+
+type fakeProcess struct {
+	killed   bool
+	signaled os.Signal
+}
+
+func (p *fakeProcess) Kill() error {
+	p.killed = true
+	return nil
+}
+
+func (p *fakeProcess) Signal(signal os.Signal) error {
+	p.signaled = signal
+	return nil
 }
 
 func writeFile(t *testing.T, path, contents string) {
