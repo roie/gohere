@@ -715,7 +715,13 @@ func TestListVerboseOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := out.String()
-	if !strings.Contains(text, "cwd /tmp/vibe-oke") || !strings.Contains(text, "pid 123") || !strings.Contains(text, "backend") {
+	if !strings.Contains(text, "host") || !strings.Contains(text, "target") || !strings.Contains(text, "status") || !strings.Contains(text, "pid") || !strings.Contains(text, "cwd") {
+		t.Fatalf("verbose list output = %q", text)
+	}
+	if !strings.Contains(text, "vibe-oke.localhost") || !strings.Contains(text, "dead") || !strings.Contains(text, "123") || !strings.Contains(text, "/tmp/vibe-oke") {
+		t.Fatalf("verbose list output = %q", text)
+	}
+	if strings.Contains(text, "backend") || strings.Contains(text, "cwd /tmp/vibe-oke") || strings.Contains(text, "pid 123") {
 		t.Fatalf("verbose list output = %q", text)
 	}
 }

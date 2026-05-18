@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,9 +14,17 @@ import (
 	"github.com/roie/gohere/internal/router"
 )
 
+type RouteStatusKind string
+
+const (
+	RouteStatusReady   RouteStatusKind = "ready"
+	RouteStatusDead    RouteStatusKind = "dead"
+	RouteStatusUnknown RouteStatusKind = "unknown"
+)
+
 type RouteStatus struct {
-	Route     router.Route
-	Reachable bool
+	Route  router.Route
+	Status RouteStatusKind
 }
 
 func FormatRoutes(statuses []RouteStatus) string {
@@ -26,11 +35,7 @@ func FormatRoutes(statuses []RouteStatus) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "%-28s %-25s %s\n", "host", "target", "status")
 	for _, status := range statuses {
-		reachable := "unknown"
-		if status.Reachable {
-			reachable = "ready"
-		}
-		fmt.Fprintf(&out, "%-28s %-25s %s\n", status.Route.Host, status.Route.Target, reachable)
+		fmt.Fprintf(&out, "%-28s %-25s %s\n", status.Route.Host, status.Route.Target, status.Status)
 	}
 	return out.String()
 }
@@ -41,12 +46,9 @@ func FormatRoutesVerbose(statuses []RouteStatus) string {
 	}
 
 	var out strings.Builder
+	fmt.Fprintf(&out, "%-28s %-25s %-7s %-6s %s\n", "host", "target", "status", "pid", "cwd")
 	for _, status := range statuses {
-		reachable := "no"
-		if status.Reachable {
-			reachable = "yes"
-		}
-		fmt.Fprintf(&out, "%s -> %s cwd %s pid %d backend %s\n", status.Route.Host, status.Route.Target, status.Route.CWD, status.Route.PID, reachable)
+		fmt.Fprintf(&out, "%-28s %-25s %-7s %-6d %s\n", status.Route.Host, status.Route.Target, status.Status, status.Route.PID, status.Route.CWD)
 	}
 	return out.String()
 }
@@ -54,7 +56,7 @@ func FormatRoutesVerbose(statuses []RouteStatus) string {
 func RouteStatuses(routes []router.Route) []RouteStatus {
 	statuses := make([]RouteStatus, 0, len(routes))
 	for _, route := range routes {
-		statuses = append(statuses, RouteStatus{Route: route, Reachable: targetReachable(route.Target)})
+		statuses = append(statuses, RouteStatus{Route: route, Status: classifyRoute(route)})
 	}
 	return statuses
 }
@@ -68,23 +70,16 @@ func Clean(store router.Store) (int, error) {
 	kept := routes[:0]
 	removed := 0
 	for _, route := range routes {
-		if routeAlive(route) {
-			kept = append(kept, route)
-		} else {
+		if classifyRoute(route) == RouteStatusDead {
 			removed++
+		} else {
+			kept = append(kept, route)
 		}
 	}
 	if err := store.Save(kept); err != nil {
 		return 0, err
 	}
 	return removed, nil
-}
-
-func routeAlive(route router.Route) bool {
-	if route.PID > 0 && !PIDAlive(route.PID) {
-		return false
-	}
-	return targetReachable(route.Target)
 }
 
 func StopCurrent(store router.Store, cwd string) (string, bool, error) {
@@ -118,14 +113,28 @@ func StopCurrent(store router.Store, cwd string) (string, bool, error) {
 	return stoppedHost, stopped, nil
 }
 
-func targetReachable(target string) bool {
+func classifyRoute(route router.Route) RouteStatusKind {
+	if route.PID > 0 && !PIDAlive(route.PID) {
+		return RouteStatusDead
+	}
+	return targetStatus(route.Target)
+}
+
+func targetStatus(target string) RouteStatusKind {
 	client := http.Client{Timeout: 200 * time.Millisecond}
 	resp, err := client.Get(target)
 	if err != nil {
-		return false
+		if isDefinitiveConnectionFailure(err) {
+			return RouteStatusDead
+		}
+		return RouteStatusUnknown
 	}
 	resp.Body.Close()
-	return true
+	return RouteStatusReady
+}
+
+func isDefinitiveConnectionFailure(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED)
 }
 
 func stopPID(pid int) {
