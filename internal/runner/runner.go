@@ -76,12 +76,19 @@ func ChooseFreePort() (int, error) {
 }
 
 func ChildEnv(base []string, port int) []string {
+	return ChildEnvForHost(base, port, "127.0.0.1")
+}
+
+func ChildEnvForHost(base []string, port int, host string) []string {
+	if host == "" {
+		host = "127.0.0.1"
+	}
 	portValue := strconv.Itoa(port)
 	overrides := map[string]string{
 		"PORT":      portValue,
-		"HOST":      "127.0.0.1",
+		"HOST":      host,
 		"NUXT_PORT": portValue,
-		"NUXT_HOST": "127.0.0.1",
+		"NUXT_HOST": host,
 	}
 
 	out := make([]string, 0, len(base)+len(overrides))
@@ -124,6 +131,13 @@ func HasExplicitPortOrHostFlag(command string) bool {
 }
 
 func InjectPortArgs(command string, port int, portFlag string) []string {
+	return InjectPortArgsForHost(command, port, portFlag, "127.0.0.1")
+}
+
+func InjectPortArgsForHost(command string, port int, portFlag string, host string) []string {
+	if host == "" {
+		host = "127.0.0.1"
+	}
 	if HasExplicitPortOrHostFlag(command) {
 		return nil
 	}
@@ -137,11 +151,11 @@ func InjectPortArgs(command string, port int, portFlag string) []string {
 	switch {
 	case tool == "vite" || strings.Contains(command, "svelte-kit") || tool == "astro" || strings.HasPrefix(tool, "vp"):
 		// Vite-like tools get --strictPort because gohere already selected a free port.
-		return []string{"--", "--host", "127.0.0.1", "--port", portValue, "--strictPort"}
+		return []string{"--", "--host", host, "--port", portValue, "--strictPort"}
 	case tool == "next":
 		return []string{"--", "-p", portValue}
 	case tool == "nuxt":
-		return []string{"--", "--host", "127.0.0.1", "--port", portValue}
+		return []string{"--", "--host", host, "--port", portValue}
 	case tool == "wrangler":
 		return []string{"--", "--port", portValue}
 	default:

@@ -40,6 +40,16 @@ func TestChildEnvSetsHiddenPortAndHost(t *testing.T) {
 	assertEnv(t, env, "NUXT_HOST", "127.0.0.1")
 }
 
+func TestChildEnvForHostSetsCustomHost(t *testing.T) {
+	env := ChildEnvForHost([]string{"PATH=/bin", "HOST=127.0.0.1"}, 49231, "0.0.0.0")
+
+	assertEnv(t, env, "PATH", "/bin")
+	assertEnv(t, env, "PORT", "49231")
+	assertEnv(t, env, "HOST", "0.0.0.0")
+	assertEnv(t, env, "NUXT_PORT", "49231")
+	assertEnv(t, env, "NUXT_HOST", "0.0.0.0")
+}
+
 func TestPortFlagConflictDetection(t *testing.T) {
 	tests := []struct {
 		command string
@@ -87,6 +97,14 @@ func TestInjectPortArgs(t *testing.T) {
 				t.Fatalf("InjectPortArgs() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestInjectPortArgsForHost(t *testing.T) {
+	got := InjectPortArgsForHost("vite --clearScreen false", 49231, "", "0.0.0.0")
+	want := []string{"--", "--host", "0.0.0.0", "--port", "49231", "--strictPort"}
+	if !sameStrings(got, want) {
+		t.Fatalf("InjectPortArgsForHost() = %#v, want %#v", got, want)
 	}
 }
 
