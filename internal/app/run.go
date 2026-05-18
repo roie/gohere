@@ -366,11 +366,33 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 	if err := setupFunc(ctx); err != nil {
 		return err
 	}
-	if err := health(ctx); err != nil {
+	if err := waitForRouterHealth(ctx, health, 3*time.Second); err != nil {
 		return errors.New("gohere setup finished, but the router is still not reachable")
 	}
 	fmt.Fprintln(out)
 	return nil
+}
+
+func waitForRouterHealth(ctx context.Context, health func(context.Context) error, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if err := health(ctx); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			return lastErr
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func firstRunPrompt() string {

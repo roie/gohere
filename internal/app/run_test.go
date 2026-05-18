@@ -403,6 +403,36 @@ func TestEnsureRouterAddsBlankLineAfterSetup(t *testing.T) {
 	}
 }
 
+func TestEnsureRouterWaitsForRouterAfterSetup(t *testing.T) {
+	oldSetup := setupFunc
+	oldPromptInput := promptInput
+	defer func() {
+		setupFunc = oldSetup
+		promptInput = oldPromptInput
+	}()
+
+	setupFunc = func(ctx context.Context) error {
+		return nil
+	}
+	promptInput = strings.NewReader("\n")
+	healthCalls := 0
+	var out strings.Builder
+
+	err := ensureRouter(context.Background(), &out, func(context.Context) error {
+		healthCalls++
+		if healthCalls < 3 {
+			return errors.New("router still starting")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if healthCalls != 3 {
+		t.Fatalf("health calls = %d, want 3", healthCalls)
+	}
+}
+
 func TestRunEnsuresRouterBeforeStartingProject(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
