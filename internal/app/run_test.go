@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/roie/gohere/internal/admin"
+	"github.com/roie/gohere/internal/bridge"
 	"github.com/roie/gohere/internal/cli"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/runner"
@@ -846,6 +847,23 @@ func TestResolveRunRouterFallsBackWhenWindowsRouterAbsent(t *testing.T) {
 	}
 }
 
+func TestResolveRunRouterFallsBackWhenWindowsTokenNotFound(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:      true,
+		tokenErr:   bridge.ErrWindowsTokenNotFound,
+		localAdmin: fakeAdminClient{},
+	})
+	defer restore()
+
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
+		t.Fatalf("runRouter = %#v", runRouter)
+	}
+}
+
 func TestResolveRunRouterStopsWhenWindowsRouterCannotReachWSL(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:     true,
@@ -1355,6 +1373,7 @@ type bridgeStub struct {
 	isWSL      bool
 	healthErr  error
 	token      string
+	tokenErr   error
 	wslIP      string
 	reachable  bool
 	admin      bridgeAdminClient
@@ -1378,6 +1397,9 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 		return stub.healthErr
 	}
 	discoverWindowsTokenFunc = func(string) (string, string, error) {
+		if stub.tokenErr != nil {
+			return "", "", stub.tokenErr
+		}
 		if stub.token == "" {
 			return "", "", errors.New("no token")
 		}

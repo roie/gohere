@@ -302,6 +302,9 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 
 	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
 	if err != nil {
+		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
+			return local()
+		}
 		return runRouter{}, windowsTokenError(err)
 	}
 	client := newWindowsAdminClientFunc(token)
@@ -691,6 +694,9 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 	}
 	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
 	if err != nil {
+		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
+			return routeManager{Store: defaultStore()}, nil
+		}
 		return routeManager{}, windowsTokenError(err)
 	}
 	client := newWindowsAdminClientFunc(token)
@@ -864,6 +870,9 @@ func bridgeDoctorChecks(ctx context.Context) []lifecycle.DoctorCheck {
 	}
 	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
 	if err != nil {
+		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
+			return checks
+		}
 		return append(checks, lifecycle.DoctorCheck{Name: "windows router", OK: false, Detail: "token unavailable", Hint: "Try: run gohere from Windows or stop the Windows router."})
 	}
 	client := newWindowsAdminClientFunc(token)
