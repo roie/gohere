@@ -77,12 +77,13 @@ func TestParseRawCommand(t *testing.T) {
 
 func TestParseFixedCommands(t *testing.T) {
 	tests := map[string]CommandKind{
-		"list":   CommandList,
-		"stop":   CommandStop,
-		"clean":  CommandClean,
-		"doctor": CommandDoctor,
-		"router": CommandRouter,
-		"setup":  CommandSetup,
+		"list":      CommandList,
+		"stop":      CommandStop,
+		"clean":     CommandClean,
+		"doctor":    CommandDoctor,
+		"router":    CommandRouter,
+		"setup":     CommandSetup,
+		"uninstall": CommandUninstall,
 	}
 
 	for arg, want := range tests {

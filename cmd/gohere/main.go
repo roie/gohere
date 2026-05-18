@@ -66,6 +66,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case cli.CommandUninstall:
+		if err := app.Uninstall(ctx, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case cli.CommandRouter:
 		running, err := router.Start(ctx, router.StartConfig{})
 		if err != nil {
@@ -95,7 +100,7 @@ func printUsage(out io.Writer, topic string) {
 	fmt.Fprint(out, `Usage:
   gohere [script|file] [--verbose] [--target PORT] [--port-flag FLAG]
   gohere --target PORT -- command [args...]
-  gohere list|stop|clean|doctor|setup
+  gohere list|stop|clean|doctor|setup|uninstall
 
 Examples:
   gohere

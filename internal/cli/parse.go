@@ -10,16 +10,17 @@ import (
 type CommandKind string
 
 const (
-	CommandRun     CommandKind = "run"
-	CommandRaw     CommandKind = "raw"
-	CommandList    CommandKind = "list"
-	CommandStop    CommandKind = "stop"
-	CommandClean   CommandKind = "clean"
-	CommandDoctor  CommandKind = "doctor"
-	CommandRouter  CommandKind = "router"
-	CommandSetup   CommandKind = "setup"
-	CommandHelp    CommandKind = "help"
-	CommandVersion CommandKind = "version"
+	CommandRun       CommandKind = "run"
+	CommandRaw       CommandKind = "raw"
+	CommandList      CommandKind = "list"
+	CommandStop      CommandKind = "stop"
+	CommandClean     CommandKind = "clean"
+	CommandDoctor    CommandKind = "doctor"
+	CommandRouter    CommandKind = "router"
+	CommandSetup     CommandKind = "setup"
+	CommandUninstall CommandKind = "uninstall"
+	CommandHelp      CommandKind = "help"
+	CommandVersion   CommandKind = "version"
 )
 
 type Command struct {
@@ -169,6 +170,21 @@ func Parse(args []string) (Command, error) {
 			cmd.Kind = CommandSetup
 			cmd.Script = ""
 			return cmd, nil
+		case "uninstall":
+			if sawScript {
+				cmd.Kind = CommandRun
+				cmd.Script = arg
+				continue
+			}
+			if helpRequested(rest) {
+				return helpCommand(arg), nil
+			}
+			if verboseRequested(rest) {
+				cmd.Verbose = true
+			}
+			cmd.Kind = CommandUninstall
+			cmd.Script = ""
+			return cmd, nil
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return Command{}, unknownOptionError(arg)
@@ -199,11 +215,12 @@ func verboseRequested(args []string) bool {
 
 func unknownOptionError(arg string) error {
 	suggestions := map[string]string{
-		"--clean":  "clean",
-		"--doctor": "doctor",
-		"--list":   "list",
-		"--setup":  "setup",
-		"--stop":   "stop",
+		"--clean":     "clean",
+		"--doctor":    "doctor",
+		"--list":      "list",
+		"--setup":     "setup",
+		"--stop":      "stop",
+		"--uninstall": "uninstall",
 	}
 	if command, ok := suggestions[arg]; ok {
 		return fmt.Errorf("gohere error: unknown option %q\nTry:\n  gohere %s", arg, command)

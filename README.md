@@ -12,6 +12,8 @@ No script edits. No port memorization. No repo config.
 
 ## Install
 
+Global install is recommended:
+
 ```bash
 npm i -g gohere
 ```
@@ -71,11 +73,23 @@ gohere list --verbose
 gohere stop
 gohere clean
 gohere doctor
+gohere uninstall
 ```
 
 `gohere list --verbose` shows host, target, status, PID, and working directory.
 
 Route status can be `ready`, `dead`, or `unknown`. `clean` removes only routes that are confidently dead.
+
+## Uninstall
+
+Clean up the copied router binary and service before removing the npm package:
+
+```bash
+gohere uninstall
+npm uninstall -g gohere
+```
+
+`gohere uninstall` removes the local router install and asks before deleting routes, logs, and token state.
 
 ## How it works
 
