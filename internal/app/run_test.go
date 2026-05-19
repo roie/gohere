@@ -656,6 +656,79 @@ func TestRunSuccessOutputLabelsExplicitScriptInNormalMode(t *testing.T) {
 	}
 }
 
+func TestRunOpenLaunchesBrowserAfterRouteRegistration(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	oldOpenBrowser := openBrowserFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+		openBrowserFunc = oldOpenBrowser
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return fakeAdminClient{}, nil
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		return &runner.Result{Port: 5173}, nil
+	}
+	var opened string
+	openBrowserFunc = func(ctx context.Context, url string) error {
+		opened = url
+		return nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite"}}`,
+	})
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev", Open: true}, dir, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantURL := "http://" + filepath.Base(dir) + ".localhost"
+	if opened != wantURL {
+		t.Fatalf("opened = %q, want %q", opened, wantURL)
+	}
+	if stdout.String() != "gohere \u2192 "+wantURL+"\n" || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestRunOpenFailureKeepsServerRunning(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	oldOpenBrowser := openBrowserFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+		openBrowserFunc = oldOpenBrowser
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return fakeAdminClient{}, nil
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		return &runner.Result{Port: 5173}, nil
+	}
+	openBrowserFunc = func(ctx context.Context, url string) error {
+		return errors.New("open failed")
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite"}}`,
+	})
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev", Open: true}, dir, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantURL := "http://" + filepath.Base(dir) + ".localhost"
+	if !strings.Contains(stderr.String(), "Could not open browser automatically.\nOpen manually: "+wantURL+"\n") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestRunStaticUsesPlainSuccessLabel(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	defer func() {

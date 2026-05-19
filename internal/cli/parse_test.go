@@ -75,6 +75,37 @@ func TestParseRawCommand(t *testing.T) {
 	}
 }
 
+func TestParseOpenFlag(t *testing.T) {
+	tests := [][]string{
+		{"gohere", "--open"},
+		{"gohere", "-o"},
+		{"gohere", "dev:web", "--open"},
+		{"gohere", "dev:web", "-o"},
+	}
+
+	for _, args := range tests {
+		t.Run(args[len(args)-1], func(t *testing.T) {
+			cmd, err := Parse(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !cmd.Open {
+				t.Fatalf("Open = false for args %#v", args)
+			}
+		})
+	}
+}
+
+func TestParseRawCommandOpenFlag(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "--open", "--", "npm", "run", "dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandRaw || !cmd.Open || !sameStrings(cmd.Raw, []string{"npm", "run", "dev"}) {
+		t.Fatalf("Parse raw open = %#v", cmd)
+	}
+}
+
 func TestParseFixedCommands(t *testing.T) {
 	tests := map[string]CommandKind{
 		"list":      CommandList,
@@ -142,6 +173,17 @@ func TestParseVerboseAfterFixedCommand(t *testing.T) {
 	}
 	if cmd.Kind != CommandList || !cmd.Verbose {
 		t.Fatalf("Parse list --verbose = %#v", cmd)
+	}
+}
+
+func TestParseRejectsOpenAfterFixedCommand(t *testing.T) {
+	_, err := Parse([]string{"gohere", "list", "--open"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: --open is only supported when running a project"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}
 }
 

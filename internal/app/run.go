@@ -20,6 +20,7 @@ import (
 	"github.com/roie/gohere/internal/bridge"
 	"github.com/roie/gohere/internal/cli"
 	"github.com/roie/gohere/internal/lifecycle"
+	"github.com/roie/gohere/internal/opener"
 	"github.com/roie/gohere/internal/project"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/runner"
@@ -45,6 +46,9 @@ var (
 	currentWSLIPFunc          = bridge.CurrentWSLIP
 	probeBridgeFunc           = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
 		return bridge.ProbeBridge(ctx, client, wslIP)
+	}
+	openBrowserFunc = func(ctx context.Context, url string) error {
+		return opener.Open(ctx, runtime.GOOS, detectWSLFunc(), url)
 	}
 )
 
@@ -258,7 +262,13 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		return nil, err
 	}
 
+	publicURL := publicRouteURL(route.Host, plan.URLPath)
 	fmt.Fprint(stdout, runSuccessOutput(cmd, route.Host, plan.URLPath))
+	if cmd.Open {
+		if err := openBrowserFunc(ctx, publicURL); err != nil {
+			fmt.Fprintf(stderr, "Could not open browser automatically.\nOpen manually: %s\n", publicURL)
+		}
+	}
 	if cmd.Verbose {
 		fmt.Fprintf(stdout, "\ntarget: %s\n", route.Target)
 		if plan.ProjectRoot != "" {
@@ -432,6 +442,10 @@ func runSuccessOutput(cmd cli.Command, host, urlPath string) string {
 		label += " " + cmd.Script
 	}
 	return fmt.Sprintf("%s \u2192 http://%s%s\n", label, host, escapedURLPath(urlPath))
+}
+
+func publicRouteURL(host, urlPath string) string {
+	return fmt.Sprintf("http://%s%s", host, escapedURLPath(urlPath))
 }
 
 func isFileTarget(cmd cli.Command) bool {

@@ -98,12 +98,13 @@ func printUsage(out io.Writer, topic string) {
 		fmt.Fprintf(out, "Usage: gohere %s\n\n", topic)
 	}
 	fmt.Fprint(out, `Usage:
-  gohere [script|file] [--verbose] [--target PORT] [--port-flag FLAG]
+  gohere [script|file] [--open] [--verbose] [--target PORT] [--port-flag FLAG]
   gohere --target PORT -- command [args...]
   gohere list|stop|prune|doctor|setup|uninstall
 
 Examples:
   gohere
+  gohere --open
   gohere dev:web
   gohere pages/about.html
   gohere --target 5173 -- npm run dev

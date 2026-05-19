@@ -28,6 +28,7 @@ type Command struct {
 	Script     string
 	Raw        []string
 	Verbose    bool
+	Open       bool
 	TargetPort int
 	PortFlag   string
 	HelpTopic  string
@@ -56,6 +57,8 @@ func Parse(args []string) (Command, error) {
 			return cmd, nil
 		case "--verbose":
 			cmd.Verbose = true
+		case "--open", "-o":
+			cmd.Open = true
 		case "--target":
 			if len(rest) == 0 {
 				return Command{}, errors.New("--target requires a port")
@@ -92,6 +95,9 @@ func Parse(args []string) (Command, error) {
 			if verboseRequested(rest) {
 				cmd.Verbose = true
 			}
+			if openRequested(rest) {
+				return Command{}, openAfterFixedCommandError()
+			}
 			cmd.Kind = CommandList
 			cmd.Script = ""
 			return cmd, nil
@@ -106,6 +112,9 @@ func Parse(args []string) (Command, error) {
 			}
 			if verboseRequested(rest) {
 				cmd.Verbose = true
+			}
+			if openRequested(rest) {
+				return Command{}, openAfterFixedCommandError()
 			}
 			cmd.Kind = CommandStop
 			cmd.Script = ""
@@ -122,6 +131,9 @@ func Parse(args []string) (Command, error) {
 			if verboseRequested(rest) {
 				cmd.Verbose = true
 			}
+			if openRequested(rest) {
+				return Command{}, openAfterFixedCommandError()
+			}
 			cmd.Kind = CommandPrune
 			cmd.Script = ""
 			return cmd, nil
@@ -136,6 +148,9 @@ func Parse(args []string) (Command, error) {
 			}
 			if verboseRequested(rest) {
 				cmd.Verbose = true
+			}
+			if openRequested(rest) {
+				return Command{}, openAfterFixedCommandError()
 			}
 			cmd.Kind = CommandDoctor
 			cmd.Script = ""
@@ -152,6 +167,9 @@ func Parse(args []string) (Command, error) {
 			if verboseRequested(rest) {
 				cmd.Verbose = true
 			}
+			if openRequested(rest) {
+				return Command{}, openAfterFixedCommandError()
+			}
 			cmd.Kind = CommandRouter
 			cmd.Script = ""
 			return cmd, nil
@@ -167,6 +185,9 @@ func Parse(args []string) (Command, error) {
 			if verboseRequested(rest) {
 				cmd.Verbose = true
 			}
+			if openRequested(rest) {
+				return Command{}, openAfterFixedCommandError()
+			}
 			cmd.Kind = CommandSetup
 			cmd.Script = ""
 			return cmd, nil
@@ -181,6 +202,9 @@ func Parse(args []string) (Command, error) {
 			}
 			if verboseRequested(rest) {
 				cmd.Verbose = true
+			}
+			if openRequested(rest) {
+				return Command{}, openAfterFixedCommandError()
 			}
 			cmd.Kind = CommandUninstall
 			cmd.Script = ""
@@ -211,6 +235,14 @@ func helpCommand(topic string) Command {
 
 func verboseRequested(args []string) bool {
 	return len(args) == 1 && args[0] == "--verbose"
+}
+
+func openRequested(args []string) bool {
+	return len(args) == 1 && (args[0] == "--open" || args[0] == "-o")
+}
+
+func openAfterFixedCommandError() error {
+	return errors.New("gohere error: --open is only supported when running a project")
 }
 
 func unknownOptionError(arg string) error {

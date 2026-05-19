@@ -52,6 +52,12 @@ Route to a known target port:
 gohere --target 5173 -- npm run dev
 ```
 
+Open the project URL in your browser:
+
+```bash
+gohere --open
+```
+
 For static folders, `gohere` serves `index.html`. You can also open a specific file, for example `gohere about.html`, which routes to `http://myproject.localhost/about.html`.
 
 CSS, images, and scripts are served normally.
@@ -125,7 +131,7 @@ The npm package currently targets Linux x64 and Windows x64.
 - no LAN sharing
 - no custom TLDs
 - no project config files
-- no browser auto-open yet
+- no browser auto-open by default
 
 ## License
 
