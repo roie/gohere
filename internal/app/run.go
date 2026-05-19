@@ -318,22 +318,43 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 	if err != nil {
 		return runRouter{}, err
 	}
-	reachable, _, err := probeBridgeFunc(ctx, client, wslIP)
+	targetHost, err := bridgeTargetHost(ctx, client, wslIP)
 	if err != nil {
 		return runRouter{}, err
 	}
-	if !reachable {
-		return runRouter{}, windowsRouterCannotReachWSLError()
-	}
 	return runRouter{
 		Client:          client,
-		RouteTargetHost: wslIP,
+		RouteTargetHost: targetHost,
 		ChildHost:       "0.0.0.0",
 		RouteSource:     "wsl",
 		OwnerEnv:        "wsl",
 		RouterLabel:     "Windows",
 		Bridge:          true,
 	}, nil
+}
+
+func bridgeTargetHost(ctx context.Context, client bridgeProbeClient, wslIP string) (string, error) {
+	for _, candidate := range bridgeTargetCandidates(wslIP) {
+		reachable, _, err := probeBridgeFunc(ctx, client, candidate)
+		if err != nil {
+			return "", err
+		}
+		if reachable {
+			return candidate, nil
+		}
+	}
+	return "", windowsRouterCannotReachWSLError()
+}
+
+func bridgeTargetCandidates(wslIP string) []string {
+	candidates := []string{}
+	if wslIP != "" {
+		candidates = append(candidates, wslIP)
+	}
+	if wslIP != "127.0.0.1" {
+		candidates = append(candidates, "127.0.0.1")
+	}
+	return candidates
 }
 
 func applyRunRouter(plan *RunPlan, rr runRouter) {

@@ -884,6 +884,28 @@ func TestResolveRunRouterStopsWhenWindowsRouterCannotReachWSL(t *testing.T) {
 	}
 }
 
+func TestResolveRunRouterUsesLoopbackForwardingWhenWSLIPUnreachable(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL: true,
+		token: "windows-token",
+		wslIP: "172.20.10.2",
+		probeReachable: map[string]bool{
+			"172.20.10.2": false,
+			"127.0.0.1":   true,
+		},
+		admin: &recordingAdminClient{},
+	})
+	defer restore()
+
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runRouter.RouteTargetHost != "127.0.0.1" || runRouter.ChildHost != "0.0.0.0" || runRouter.RouterLabel != "Windows" {
+		t.Fatalf("runRouter = %#v", runRouter)
+	}
+}
+
 func TestRunTreatsStartupContextCancelAsCleanShutdown(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
@@ -1370,14 +1392,15 @@ func (c *recordingAdminClient) waitForUpsert(t *testing.T) {
 }
 
 type bridgeStub struct {
-	isWSL      bool
-	healthErr  error
-	token      string
-	tokenErr   error
-	wslIP      string
-	reachable  bool
-	admin      bridgeAdminClient
-	localAdmin adminClient
+	isWSL          bool
+	healthErr      error
+	token          string
+	tokenErr       error
+	wslIP          string
+	reachable      bool
+	probeReachable map[string]bool
+	admin          bridgeAdminClient
+	localAdmin     adminClient
 }
 
 func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
@@ -1418,6 +1441,9 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 		return stub.wslIP, nil
 	}
 	probeBridgeFunc = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
+		if stub.probeReachable != nil {
+			return stub.probeReachable[wslIP], "http://" + wslIP + ":49231", nil
+		}
 		return stub.reachable, "http://" + wslIP + ":49231", nil
 	}
 	defaultAdminClientFunc = func() (adminClient, error) {
