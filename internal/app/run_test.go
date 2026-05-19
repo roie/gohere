@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1713,10 +1714,12 @@ func (staleTokenAdminClient) DeleteRoute(context.Context, string) error {
 }
 
 type recordingAdminClient struct {
-	upserted chan struct{}
-	route    router.Route
-	routes   []router.Route
-	deleted  string
+	mu             sync.Mutex
+	upserted       chan struct{}
+	upsertedClosed bool
+	route          router.Route
+	routes         []router.Route
+	deleted        string
 }
 
 func (c *recordingAdminClient) Health(context.Context) error {
@@ -1724,19 +1727,28 @@ func (c *recordingAdminClient) Health(context.Context) error {
 }
 
 func (c *recordingAdminClient) Routes(context.Context) ([]router.Route, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.routes, nil
 }
 
 func (c *recordingAdminClient) UpsertRoute(ctx context.Context, route router.Route) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.route = route
 	if c.upserted == nil {
 		c.upserted = make(chan struct{})
 	}
-	close(c.upserted)
+	if !c.upsertedClosed {
+		close(c.upserted)
+		c.upsertedClosed = true
+	}
 	return nil
 }
 
 func (c *recordingAdminClient) DeleteRoute(ctx context.Context, host string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.deleted = host
 	return nil
 }
@@ -1747,11 +1759,14 @@ func (c *recordingAdminClient) ProbeTarget(context.Context, string) (bool, error
 
 func (c *recordingAdminClient) waitForUpsert(t *testing.T) {
 	t.Helper()
+	c.mu.Lock()
 	if c.upserted == nil {
 		c.upserted = make(chan struct{})
 	}
+	upserted := c.upserted
+	c.mu.Unlock()
 	select {
-	case <-c.upserted:
+	case <-upserted:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for route registration")
 	}
