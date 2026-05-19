@@ -383,15 +383,20 @@ func TestShouldRunSetupFromAnswer(t *testing.T) {
 func TestEnsureRouterPromptsAndRunsSetup(t *testing.T) {
 	oldSetup := setupFunc
 	oldPromptInput := promptInput
+	oldStartInstalledRouter := startInstalledRouterFunc
 	defer func() {
 		setupFunc = oldSetup
 		promptInput = oldPromptInput
+		startInstalledRouterFunc = oldStartInstalledRouter
 	}()
 
 	calls := 0
 	setupFunc = func(ctx context.Context) error {
 		calls++
 		return nil
+	}
+	startInstalledRouterFunc = func(context.Context) error {
+		return os.ErrNotExist
 	}
 	promptInput = strings.NewReader("\n")
 	var out strings.Builder
@@ -414,17 +419,63 @@ func TestEnsureRouterPromptsAndRunsSetup(t *testing.T) {
 	}
 }
 
-func TestEnsureRouterDeclinePrintsCalmMessage(t *testing.T) {
+func TestEnsureRouterRestartsInstalledRouterWithoutPrompt(t *testing.T) {
 	oldSetup := setupFunc
 	oldPromptInput := promptInput
+	oldStartInstalledRouter := startInstalledRouterFunc
 	defer func() {
 		setupFunc = oldSetup
 		promptInput = oldPromptInput
+		startInstalledRouterFunc = oldStartInstalledRouter
+	}()
+
+	setupFunc = func(ctx context.Context) error {
+		t.Fatal("setup should not run when installed router restarts")
+		return nil
+	}
+	promptInput = strings.NewReader("n\n")
+	restarted := false
+	startInstalledRouterFunc = func(context.Context) error {
+		restarted = true
+		return nil
+	}
+	healthCalls := 0
+	var out strings.Builder
+
+	err := ensureRouter(context.Background(), &out, func(context.Context) error {
+		healthCalls++
+		if !restarted {
+			return errors.New("router unavailable")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restarted {
+		t.Fatal("installed router was not restarted")
+	}
+	if out.String() != "" {
+		t.Fatalf("prompt output = %q, want empty", out.String())
+	}
+}
+
+func TestEnsureRouterDeclinePrintsCalmMessage(t *testing.T) {
+	oldSetup := setupFunc
+	oldPromptInput := promptInput
+	oldStartInstalledRouter := startInstalledRouterFunc
+	defer func() {
+		setupFunc = oldSetup
+		promptInput = oldPromptInput
+		startInstalledRouterFunc = oldStartInstalledRouter
 	}()
 
 	setupFunc = func(ctx context.Context) error {
 		t.Fatal("setup should not run after decline")
 		return nil
+	}
+	startInstalledRouterFunc = func(context.Context) error {
+		return os.ErrNotExist
 	}
 	promptInput = strings.NewReader("n\n")
 	var out strings.Builder
@@ -447,15 +498,20 @@ func TestEnsureRouterDeclinePrintsCalmMessage(t *testing.T) {
 func TestEnsureRouterAddsBlankLineAfterSetup(t *testing.T) {
 	oldSetup := setupFunc
 	oldPromptInput := promptInput
+	oldStartInstalledRouter := startInstalledRouterFunc
 	defer func() {
 		setupFunc = oldSetup
 		promptInput = oldPromptInput
+		startInstalledRouterFunc = oldStartInstalledRouter
 	}()
 
 	calls := 0
 	setupFunc = func(ctx context.Context) error {
 		calls++
 		return nil
+	}
+	startInstalledRouterFunc = func(context.Context) error {
+		return os.ErrNotExist
 	}
 	promptInput = strings.NewReader("\n")
 	var out strings.Builder
@@ -477,13 +533,18 @@ func TestEnsureRouterAddsBlankLineAfterSetup(t *testing.T) {
 func TestEnsureRouterWaitsForRouterAfterSetup(t *testing.T) {
 	oldSetup := setupFunc
 	oldPromptInput := promptInput
+	oldStartInstalledRouter := startInstalledRouterFunc
 	defer func() {
 		setupFunc = oldSetup
 		promptInput = oldPromptInput
+		startInstalledRouterFunc = oldStartInstalledRouter
 	}()
 
 	setupFunc = func(ctx context.Context) error {
 		return nil
+	}
+	startInstalledRouterFunc = func(context.Context) error {
+		return os.ErrNotExist
 	}
 	promptInput = strings.NewReader("\n")
 	healthCalls := 0

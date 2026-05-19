@@ -33,9 +33,10 @@ var (
 	setupFunc   = func(ctx context.Context) error {
 		return setupForGOOS(ctx, runtime.GOOS)
 	}
-	setupLinuxFunc                                     = setup.Linux
-	setupWindowsFunc                                   = setup.Windows
-	defaultAdminClientFunc func() (adminClient, error) = func() (adminClient, error) {
+	setupLinuxFunc                                       = setup.Linux
+	setupWindowsFunc                                     = setup.Windows
+	startInstalledRouterFunc                             = startInstalledRouter
+	defaultAdminClientFunc   func() (adminClient, error) = func() (adminClient, error) {
 		return defaultAdminClient()
 	}
 	startRunnerFunc           = runner.Start
@@ -552,6 +553,11 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 	if err := health(ctx); err == nil {
 		return nil
 	}
+	if err := startInstalledRouterFunc(ctx); err == nil {
+		if err := waitForRouterHealth(ctx, health, 3*time.Second); err == nil {
+			return nil
+		}
+	}
 
 	fmt.Fprint(out, firstRunPrompt())
 	answer, _ := bufio.NewReader(promptInput).ReadString('\n')
@@ -567,6 +573,10 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 	}
 	fmt.Fprintln(out)
 	return nil
+}
+
+func startInstalledRouter(ctx context.Context) error {
+	return setup.StartInstalledRouter(ctx, setup.Config{}, stableBinaryName(runtime.GOOS))
 }
 
 func waitForRouterHealth(ctx context.Context, health func(context.Context) error, timeout time.Duration) error {

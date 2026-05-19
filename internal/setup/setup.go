@@ -126,6 +126,30 @@ func Windows(ctx context.Context, cfg Config) error {
 	return nil
 }
 
+func StartInstalledRouter(ctx context.Context, cfg Config, binaryName string) error {
+	if cfg.StateDir == "" {
+		cfg.StateDir = router.DefaultStateDir()
+	}
+	if cfg.CommandRunner == nil {
+		cfg.CommandRunner = realRunner{}
+	}
+	stableBinary := filepath.Join(cfg.StateDir, "bin", binaryName)
+	if _, err := os.Stat(stableBinary); err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, "token")); err != nil {
+		return err
+	}
+	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "router")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, "router.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
+		return err
+	}
+	return nil
+}
+
 func startDetached(ctx context.Context, runner CommandRunner, command string, args ...string) (int, error) {
 	if detached, ok := runner.(DetachedRunner); ok {
 		return detached.StartDetached(ctx, command, args...)
@@ -186,10 +210,14 @@ func (realRunner) Run(ctx context.Context, command string, args ...string) error
 }
 
 func (realRunner) StartDetached(ctx context.Context, command string, args ...string) (int, error) {
-	cmd := exec.CommandContext(ctx, command, args...)
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	cmd := exec.Command(command, args...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Stdin = nil
+	cmd.SysProcAttr = detachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
