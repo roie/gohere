@@ -308,13 +308,18 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 	if !detectWSLFunc() {
 		return local()
 	}
-	if err := windowsRouterHealthFunc(ctx); err != nil {
-		return local()
-	}
 
 	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
 	if err != nil {
+		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
+			if healthErr := windowsRouterHealthFunc(ctx); healthErr != nil {
+				return local()
+			}
+		}
 		return runRouter{}, windowsTokenError(err)
+	}
+	if err := windowsRouterHealthFunc(ctx); err != nil {
+		return runRouter{}, windowsRouterUnavailableError()
 	}
 	client := newWindowsAdminClientFunc(token)
 	if _, err := client.Routes(ctx); err != nil {
@@ -407,6 +412,10 @@ func routeTarget(host string, port int) string {
 
 func windowsTokenError(err error) error {
 	return errors.New("Windows gohere router found, but WSL could not read or use its token.\nRun gohere from Windows or use the WSL router.\n\nIf you use gohere in both Windows and WSL, run gohere uninstall in the side where the old router is running.")
+}
+
+func windowsRouterUnavailableError() error {
+	return errors.New("Windows gohere is installed, but its router is not running.\nRun gohere from Windows first, or run gohere uninstall from Windows to use the WSL router.")
 }
 
 func windowsRouterCannotReachWSLError() error {
@@ -657,20 +666,28 @@ func List(stdout io.Writer, verbose bool) error {
 		printRoutes(stdout, routes, verbose)
 		return nil
 	}
-	return ListWithStore(stdout, manager.Store, verbose)
+	return ListWithStoreRouterReady(stdout, manager.Store, verbose, manager.RouterReady)
 }
 
 func ListWithStore(stdout io.Writer, store router.Store, verbose bool) error {
+	return ListWithStoreRouterReady(stdout, store, verbose, true)
+}
+
+func ListWithStoreRouterReady(stdout io.Writer, store router.Store, verbose bool, routerReady bool) error {
 	routes, err := store.Load()
 	if err != nil {
 		return err
 	}
-	printRoutes(stdout, routes, verbose)
+	printRoutesWithRouterReady(stdout, routes, verbose, routerReady)
 	return nil
 }
 
 func printRoutes(stdout io.Writer, routes []router.Route, verbose bool) {
-	statuses := lifecycle.RouteStatuses(routes)
+	printRoutesWithRouterReady(stdout, routes, verbose, true)
+}
+
+func printRoutesWithRouterReady(stdout io.Writer, routes []router.Route, verbose bool, routerReady bool) {
+	statuses := lifecycle.RouteStatusesWithRouterReady(routes, routerReady)
 	if verbose {
 		fmt.Fprint(stdout, lifecycle.FormatRoutesVerbose(statuses))
 		return
@@ -690,7 +707,7 @@ func Prune(stdout io.Writer) error {
 		}
 		return printPruneResult(stdout, removed)
 	}
-	removed, err := lifecycle.Prune(manager.Store)
+	removed, err := lifecycle.PruneWithRouterReady(manager.Store, manager.RouterReady)
 	if err != nil {
 		return err
 	}
@@ -732,20 +749,35 @@ func Stop(cwd string, stdout io.Writer) error {
 }
 
 type routeManager struct {
-	Client adminClient
-	Store  router.Store
+	Client      adminClient
+	Store       router.Store
+	RouterReady bool
 }
 
 func resolveRouteManager(ctx context.Context) (routeManager, error) {
-	if !detectWSLFunc() {
-		return routeManager{Store: defaultStore()}, nil
+	local := func() routeManager {
+		manager := routeManager{Store: defaultStore()}
+		client, err := defaultAdminClientFunc()
+		if err == nil && client.Health(ctx) == nil {
+			manager.Client = client
+			manager.RouterReady = true
+		}
+		return manager
 	}
-	if err := windowsRouterHealthFunc(ctx); err != nil {
-		return routeManager{Store: defaultStore()}, nil
+	if !detectWSLFunc() {
+		return local(), nil
 	}
 	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
 	if err != nil {
+		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
+			if healthErr := windowsRouterHealthFunc(ctx); healthErr != nil {
+				return local(), nil
+			}
+		}
 		return routeManager{}, windowsTokenError(err)
+	}
+	if err := windowsRouterHealthFunc(ctx); err != nil {
+		return routeManager{}, windowsRouterUnavailableError()
 	}
 	client := newWindowsAdminClientFunc(token)
 	if _, err := client.Routes(ctx); err != nil {
@@ -754,7 +786,7 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 		}
 		return routeManager{}, err
 	}
-	return routeManager{Client: client}, nil
+	return routeManager{Client: client, RouterReady: true}, nil
 }
 
 func pruneAdminRoutes(ctx context.Context, client adminClient) (int, error) {

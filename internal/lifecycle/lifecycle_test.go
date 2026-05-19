@@ -58,6 +58,20 @@ func TestFormatRoutesUsesSharedStatusSemantics(t *testing.T) {
 	}
 }
 
+func TestRouteStatusesAreUnknownWhenRouterIsNotReady(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+
+	statuses := RouteStatusesWithRouterReady([]router.Route{{
+		Host:   "web.localhost",
+		Target: backend.URL,
+	}}, false)
+
+	if len(statuses) != 1 || statuses[0].Status != RouteStatusUnknown {
+		t.Fatalf("statuses = %#v, want unknown", statuses)
+	}
+}
+
 func TestPruneRemovesDeadRoutes(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{
@@ -74,6 +88,23 @@ func TestPruneRemovesDeadRoutes(t *testing.T) {
 	}
 	routes, _ := store.Load()
 	if len(routes) != 1 || routes[0].Host != "unknown.localhost" {
+		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestPruneKeepsRoutesWhenRouterIsNotReady(t *testing.T) {
+	store := router.NewMemoryStore()
+	store.Save([]router.Route{{Host: "dead.localhost", Target: "http://127.0.0.1:1", PID: 999999}})
+
+	removed, err := PruneWithRouterReady(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d, want 0", removed)
+	}
+	routes, _ := store.Load()
+	if len(routes) != 1 || routes[0].Host != "dead.localhost" {
 		t.Fatalf("routes = %#v", routes)
 	}
 }

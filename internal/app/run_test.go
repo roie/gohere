@@ -1010,6 +1010,7 @@ func TestResolveRunRouterFallsBackWhenWindowsRouterAbsent(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:      true,
 		healthErr:  errors.New("connection refused"),
+		tokenErr:   bridge.ErrWindowsTokenNotFound,
 		localAdmin: fakeAdminClient{},
 	})
 	defer restore()
@@ -1020,6 +1021,23 @@ func TestResolveRunRouterFallsBackWhenWindowsRouterAbsent(t *testing.T) {
 	}
 	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
 		t.Fatalf("runRouter = %#v", runRouter)
+	}
+}
+
+func TestResolveRunRouterStopsWhenWindowsRouterInstalledButNotRunning(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:     true,
+		token:     "windows-token",
+		healthErr: errors.New("connection refused"),
+	})
+	defer restore()
+
+	_, err := resolveRunRouter(context.Background(), io.Discard)
+	if err == nil {
+		t.Fatal("expected windows router unavailable error")
+	}
+	if !strings.Contains(err.Error(), "Windows gohere is installed, but its router is not running") {
+		t.Fatalf("error = %q", err.Error())
 	}
 }
 
@@ -1212,6 +1230,28 @@ func TestListVerboseOutput(t *testing.T) {
 	}
 }
 
+func TestListShowsUnknownWhenRouterIsNotReady(t *testing.T) {
+	store := router.NewMemoryStore()
+	store.Save([]router.Route{{
+		Host:   "web.localhost",
+		Target: "http://127.0.0.1:46563",
+		CWD:    "/tmp/web",
+		PID:    123,
+	}})
+	var out strings.Builder
+
+	if err := ListWithStoreRouterReady(&out, store, false, false); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "web.localhost") || !strings.Contains(text, "unknown") {
+		t.Fatalf("list output = %q", text)
+	}
+	if strings.Contains(text, "ready") || strings.Contains(text, "dead") {
+		t.Fatalf("list output should not show target status while router is down: %q", text)
+	}
+}
+
 func TestPruneOutput(t *testing.T) {
 	tests := map[int]string{
 		0: "No dead routes.\n",
@@ -1307,6 +1347,23 @@ func TestRouteManagerStopsWhenWindowsRouterExistsButTokenNotFound(t *testing.T) 
 		t.Fatal("expected windows token error")
 	}
 	if !strings.Contains(err.Error(), "Windows gohere router found") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestRouteManagerStopsWhenWindowsRouterInstalledButNotRunning(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:     true,
+		token:     "windows-token",
+		healthErr: errors.New("connection refused"),
+	})
+	defer restore()
+
+	_, err := resolveRouteManager(context.Background())
+	if err == nil {
+		t.Fatal("expected windows router unavailable error")
+	}
+	if !strings.Contains(err.Error(), "Windows gohere is installed, but its router is not running") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }

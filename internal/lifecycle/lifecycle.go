@@ -59,14 +59,26 @@ func FormatRoutesVerbose(statuses []RouteStatus) string {
 }
 
 func RouteStatuses(routes []router.Route) []RouteStatus {
+	return RouteStatusesWithRouterReady(routes, true)
+}
+
+func RouteStatusesWithRouterReady(routes []router.Route, routerReady bool) []RouteStatus {
 	statuses := make([]RouteStatus, 0, len(routes))
 	for _, route := range routes {
+		if !routerReady {
+			statuses = append(statuses, RouteStatus{Route: route, Status: RouteStatusUnknown})
+			continue
+		}
 		statuses = append(statuses, RouteStatus{Route: route, Status: classifyRoute(route)})
 	}
 	return statuses
 }
 
 func Prune(store router.Store) (int, error) {
+	return PruneWithRouterReady(store, true)
+}
+
+func PruneWithRouterReady(store router.Store, routerReady bool) (int, error) {
 	routes, err := store.Load()
 	if err != nil {
 		return 0, err
@@ -75,7 +87,11 @@ func Prune(store router.Store) (int, error) {
 	kept := routes[:0]
 	removed := 0
 	for _, route := range routes {
-		if classifyRoute(route) == RouteStatusDead {
+		status := RouteStatusUnknown
+		if routerReady {
+			status = classifyRoute(route)
+		}
+		if status == RouteStatusDead {
 			removed++
 		} else {
 			kept = append(kept, route)
