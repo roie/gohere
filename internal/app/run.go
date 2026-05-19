@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/roie/gohere/internal/admin"
@@ -882,11 +883,18 @@ func Doctor(stdout io.Writer) error {
 }
 
 func DoctorWithStore(stdout io.Writer, stateDir string, store router.Store, client adminClient) error {
-	return DoctorWithChecks(stdout, stateDir, store, client, DoctorChecks{Port80Available: port80Available})
+	return DoctorWithChecks(stdout, stateDir, store, client, DoctorChecks{Port80Status: port80Status})
+}
+
+type Port80Status struct {
+	OK     bool
+	Detail string
+	Hint   string
 }
 
 type DoctorChecks struct {
 	Port80Available      func() bool
+	Port80Status         func() Port80Status
 	SetcapEnabled        func(string) bool
 	SystemdUserServiceOK func() (bool, bool)
 	GOOS                 string
@@ -930,7 +938,18 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 	if routes, err := store.Load(); err == nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "active routes", OK: true, Detail: fmt.Sprintf("%d", len(routes))})
 	}
-	if extra.Port80Available != nil {
+	if extra.Port80Status != nil {
+		status := extra.Port80Status()
+		ok := status.OK
+		detail := status.Detail
+		hint := status.Hint
+		if !ok && adminHealthy {
+			ok = true
+			detail = "used by gohere router"
+			hint = ""
+		}
+		checks = append(checks, lifecycle.DoctorCheck{Name: "port 80", OK: ok, Detail: detail, Hint: hint})
+	} else if extra.Port80Available != nil {
 		detail := "blocked"
 		ok := extra.Port80Available()
 		if ok {
@@ -1029,6 +1048,36 @@ func port80Available() bool {
 	}
 	ln.Close()
 	return true
+}
+
+func port80Status() Port80Status {
+	ln, err := net.Listen("tcp", "127.0.0.1:80")
+	if err == nil {
+		ln.Close()
+		return Port80Status{OK: true, Detail: "available"}
+	}
+	if isPermissionBindError(err) {
+		return Port80Status{OK: false, Detail: "permission required", Hint: "Try: gohere setup"}
+	}
+	if isAddressInUseError(err) {
+		return Port80Status{OK: false, Detail: "already in use", Hint: "Try: stop the process using port 80, then run gohere again."}
+	}
+	return Port80Status{OK: false, Detail: "bind failed", Hint: fmt.Sprintf("Bind error: %v", err)}
+}
+
+func isPermissionBindError(err error) bool {
+	if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "permission denied") || strings.Contains(msg, "access is denied")
+}
+
+func isAddressInUseError(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "address already in use")
 }
 
 func setcapEnabled(path string) bool {

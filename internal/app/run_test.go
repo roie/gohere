@@ -1540,6 +1540,36 @@ func TestDoctorWithStoreShowsHintWhenPort80Blocked(t *testing.T) {
 	}
 }
 
+func TestDoctorWithStoreShowsPermissionHintWhenPort80NeedsSetup(t *testing.T) {
+	stateDir := t.TempDir()
+	store := router.NewMemoryStore()
+	var out strings.Builder
+
+	if err := DoctorWithChecks(&out, stateDir, store, nil, DoctorChecks{Port80Status: func() Port80Status {
+		return Port80Status{OK: false, Detail: "permission required", Hint: "Try: gohere setup"}
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail port 80 permission required\n  Try: gohere setup\n") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorWithStoreShowsInUseHintWhenPort80IsOwned(t *testing.T) {
+	stateDir := t.TempDir()
+	store := router.NewMemoryStore()
+	var out strings.Builder
+
+	if err := DoctorWithChecks(&out, stateDir, store, nil, DoctorChecks{Port80Status: func() Port80Status {
+		return Port80Status{OK: false, Detail: "already in use", Hint: "Try: stop the process using port 80, then run gohere again."}
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail port 80 already in use\n  Try: stop the process using port 80, then run gohere again.\n") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
 func TestDoctorWithStoreTreatsHealthyRouterAsPort80OK(t *testing.T) {
 	var out strings.Builder
 
