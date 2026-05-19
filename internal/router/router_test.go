@@ -336,6 +336,9 @@ func TestProxyRoutesByHostHeader(t *testing.T) {
 	if rec.Body.String() != "proxied response" {
 		t.Fatalf("proxy body = %q", rec.Body.String())
 	}
+	if rec.Header().Get("X-Backend-Host") != "eventca.localhost" {
+		t.Fatalf("backend Host = %q, want eventca.localhost", rec.Header().Get("X-Backend-Host"))
+	}
 }
 
 func TestProxyHostMatchIsCaseInsensitive(t *testing.T) {
