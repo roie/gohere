@@ -41,8 +41,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-	case cli.CommandClean:
-		if err := app.Clean(os.Stdout); err != nil {
+	case cli.CommandPrune:
+		if err := app.Prune(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -100,7 +100,7 @@ func printUsage(out io.Writer, topic string) {
 	fmt.Fprint(out, `Usage:
   gohere [script|file] [--verbose] [--target PORT] [--port-flag FLAG]
   gohere --target PORT -- command [args...]
-  gohere list|stop|clean|doctor|setup|uninstall
+  gohere list|stop|prune|doctor|setup|uninstall
 
 Examples:
   gohere

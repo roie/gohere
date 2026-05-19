@@ -645,26 +645,26 @@ func printRoutes(stdout io.Writer, routes []router.Route, verbose bool) {
 	fmt.Fprint(stdout, lifecycle.FormatRoutes(statuses))
 }
 
-func Clean(stdout io.Writer) error {
+func Prune(stdout io.Writer) error {
 	manager, err := resolveRouteManager(context.Background())
 	if err != nil {
 		return err
 	}
 	if manager.Client != nil {
-		removed, err := cleanAdminRoutes(context.Background(), manager.Client)
+		removed, err := pruneAdminRoutes(context.Background(), manager.Client)
 		if err != nil {
 			return err
 		}
-		return printCleanResult(stdout, removed)
+		return printPruneResult(stdout, removed)
 	}
-	removed, err := lifecycle.Clean(manager.Store)
+	removed, err := lifecycle.Prune(manager.Store)
 	if err != nil {
 		return err
 	}
-	return printCleanResult(stdout, removed)
+	return printPruneResult(stdout, removed)
 }
 
-func printCleanResult(stdout io.Writer, removed int) error {
+func printPruneResult(stdout io.Writer, removed int) error {
 	switch removed {
 	case 0:
 		fmt.Fprintln(stdout, "No dead routes.")
@@ -727,7 +727,7 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 	return routeManager{Client: client}, nil
 }
 
-func cleanAdminRoutes(ctx context.Context, client adminClient) (int, error) {
+func pruneAdminRoutes(ctx context.Context, client adminClient) (int, error) {
 	routes, err := client.Routes(ctx)
 	if err != nil {
 		if errors.Is(err, admin.ErrUnauthorized) {

@@ -79,7 +79,7 @@ func TestParseFixedCommands(t *testing.T) {
 	tests := map[string]CommandKind{
 		"list":      CommandList,
 		"stop":      CommandStop,
-		"clean":     CommandClean,
+		"prune":     CommandPrune,
 		"doctor":    CommandDoctor,
 		"router":    CommandRouter,
 		"setup":     CommandSetup,
@@ -96,6 +96,16 @@ func TestParseFixedCommands(t *testing.T) {
 				t.Fatalf("kind = %v, want %v", cmd.Kind, want)
 			}
 		})
+	}
+}
+
+func TestCleanIsParsedAsScript(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "clean"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandRun || cmd.Script != "clean" {
+		t.Fatalf("Parse clean = %#v", cmd)
 	}
 }
 

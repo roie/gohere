@@ -71,14 +71,14 @@ about.html     -> http://myproject.localhost/about.html
 gohere list
 gohere list --verbose
 gohere stop
-gohere clean
+gohere prune
 gohere doctor
 gohere uninstall
 ```
 
 `gohere list --verbose` shows host, target, status, PID, and working directory.
 
-Route status can be `ready`, `dead`, or `unknown`. `clean` removes only routes that are confidently dead.
+Route status can be `ready`, `dead`, or `unknown`. `prune` removes only routes that are confidently dead.
 
 ## Uninstall
 
@@ -107,7 +107,7 @@ On Linux/WSL, first-time setup may ask for permission so the router can bind to 
 
 On Windows, first-time setup starts the local router directly on `127.0.0.1:80`.
 
-When used from WSL with a Windows gohere router available, `gohere` uses the Windows router automatically.
+When used from WSL, `gohere` reuses a running Windows router automatically.
 
 ## Platform support
 

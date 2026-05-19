@@ -1020,7 +1020,7 @@ func TestListVerboseOutput(t *testing.T) {
 	}
 }
 
-func TestCleanOutput(t *testing.T) {
+func TestPruneOutput(t *testing.T) {
 	tests := map[int]string{
 		0: "No dead routes.\n",
 		1: "Removed 1 dead route.\n",
@@ -1030,11 +1030,11 @@ func TestCleanOutput(t *testing.T) {
 	for removed, want := range tests {
 		t.Run(want, func(t *testing.T) {
 			var out strings.Builder
-			if err := printCleanResult(&out, removed); err != nil {
+			if err := printPruneResult(&out, removed); err != nil {
 				t.Fatal(err)
 			}
 			if out.String() != want {
-				t.Fatalf("clean output = %q, want %q", out.String(), want)
+				t.Fatalf("prune output = %q, want %q", out.String(), want)
 			}
 		})
 	}
@@ -1077,7 +1077,7 @@ func TestListUsesWindowsRouterFromWSL(t *testing.T) {
 	}
 }
 
-func TestCleanUsesWindowsRouterFromWSL(t *testing.T) {
+func TestPruneUsesWindowsRouterFromWSL(t *testing.T) {
 	admin := &recordingAdminClient{routes: []router.Route{{
 		Host:   "dead.localhost",
 		Target: "http://127.0.0.1:1",
@@ -1092,14 +1092,14 @@ func TestCleanUsesWindowsRouterFromWSL(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := Clean(&out); err != nil {
+	if err := Prune(&out); err != nil {
 		t.Fatal(err)
 	}
 	if admin.deleted != "dead.localhost" {
 		t.Fatalf("deleted = %q, want dead.localhost", admin.deleted)
 	}
 	if out.String() != "Removed 1 dead route.\n" {
-		t.Fatalf("clean output = %q", out.String())
+		t.Fatalf("prune output = %q", out.String())
 	}
 }
 

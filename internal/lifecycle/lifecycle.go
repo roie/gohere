@@ -64,7 +64,7 @@ func RouteStatuses(routes []router.Route) []RouteStatus {
 	return statuses
 }
 
-func Clean(store router.Store) (int, error) {
+func Prune(store router.Store) (int, error) {
 	routes, err := store.Load()
 	if err != nil {
 		return 0, err

@@ -58,14 +58,14 @@ func TestFormatRoutesUsesSharedStatusSemantics(t *testing.T) {
 	}
 }
 
-func TestCleanRemovesDeadRoutes(t *testing.T) {
+func TestPruneRemovesDeadRoutes(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{
 		{Host: "unknown.localhost", Target: "://bad-url"},
 		{Host: "dead.localhost", Target: "http://127.0.0.1:5173", PID: 999999},
 	})
 
-	removed, err := Clean(store)
+	removed, err := Prune(store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,13 +78,13 @@ func TestCleanRemovesDeadRoutes(t *testing.T) {
 	}
 }
 
-func TestCleanRemovesDeadPIDRouteEvenIfTargetReachable(t *testing.T) {
+func TestPruneRemovesDeadPIDRouteEvenIfTargetReachable(t *testing.T) {
 	store := router.NewMemoryStore()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer backend.Close()
 	store.Save([]router.Route{{Host: "dead-pid.localhost", Target: backend.URL, PID: 999999}})
 
-	removed, err := Clean(store)
+	removed, err := Prune(store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,11 +97,11 @@ func TestCleanRemovesDeadPIDRouteEvenIfTargetReachable(t *testing.T) {
 	}
 }
 
-func TestCleanKeepsUnknownRoutes(t *testing.T) {
+func TestPruneKeepsUnknownRoutes(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{{Host: "unknown.localhost", Target: "://bad-url"}})
 
-	removed, err := Clean(store)
+	removed, err := Prune(store)
 	if err != nil {
 		t.Fatal(err)
 	}

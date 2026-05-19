@@ -14,7 +14,7 @@ const (
 	CommandRaw       CommandKind = "raw"
 	CommandList      CommandKind = "list"
 	CommandStop      CommandKind = "stop"
-	CommandClean     CommandKind = "clean"
+	CommandPrune     CommandKind = "prune"
 	CommandDoctor    CommandKind = "doctor"
 	CommandRouter    CommandKind = "router"
 	CommandSetup     CommandKind = "setup"
@@ -110,7 +110,7 @@ func Parse(args []string) (Command, error) {
 			cmd.Kind = CommandStop
 			cmd.Script = ""
 			return cmd, nil
-		case "clean":
+		case "prune":
 			if sawScript {
 				cmd.Kind = CommandRun
 				cmd.Script = arg
@@ -122,7 +122,7 @@ func Parse(args []string) (Command, error) {
 			if verboseRequested(rest) {
 				cmd.Verbose = true
 			}
-			cmd.Kind = CommandClean
+			cmd.Kind = CommandPrune
 			cmd.Script = ""
 			return cmd, nil
 		case "doctor":
@@ -215,9 +215,9 @@ func verboseRequested(args []string) bool {
 
 func unknownOptionError(arg string) error {
 	suggestions := map[string]string{
-		"--clean":     "clean",
 		"--doctor":    "doctor",
 		"--list":      "list",
+		"--prune":     "prune",
 		"--setup":     "setup",
 		"--stop":      "stop",
 		"--uninstall": "uninstall",
