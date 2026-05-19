@@ -17,6 +17,8 @@ import (
 	"github.com/roie/gohere/internal/router"
 )
 
+var currentIsWSL = detectCurrentWSL
+
 type RouteStatusKind string
 
 const (
@@ -117,10 +119,36 @@ func StopCurrent(store router.Store, cwd string) (string, bool, error) {
 }
 
 func classifyRoute(route router.Route) RouteStatusKind {
-	if route.PID > 0 && !PIDAlive(route.PID) {
+	if route.PID > 0 && routePIDIsLocal(route) && !PIDAlive(route.PID) {
 		return RouteStatusDead
 	}
 	return targetStatus(route.Target)
+}
+
+func routePIDIsLocal(route router.Route) bool {
+	if isWSLRoute(route) && !currentIsWSL() {
+		return false
+	}
+	return true
+}
+
+func isWSLRoute(route router.Route) bool {
+	return route.OwnerEnv == "wsl" || route.Source == "wsl"
+}
+
+func detectCurrentWSL() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	if os.Getenv("WSL_DISTRO_NAME") != "" || os.Getenv("WSL_INTEROP") != "" {
+		return true
+	}
+	data, err := os.ReadFile("/proc/version")
+	if err != nil {
+		return false
+	}
+	version := strings.ToLower(string(data))
+	return strings.Contains(version, "microsoft") || strings.Contains(version, "wsl")
 }
 
 func targetStatus(target string) RouteStatusKind {

@@ -48,7 +48,14 @@ func Handler(root string) http.Handler {
 }
 
 func Start(ctx context.Context, dir string, port int) (*Server, error) {
-	addr := "127.0.0.1:"
+	return StartWithHost(ctx, dir, port, "127.0.0.1")
+}
+
+func StartWithHost(ctx context.Context, dir string, port int, host string) (*Server, error) {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	addr := host + ":"
 	if port != 0 {
 		addr += strconv.Itoa(port)
 	}

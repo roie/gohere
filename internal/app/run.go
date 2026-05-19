@@ -99,6 +99,7 @@ type RunPlan struct {
 	RouteSource         string
 	OwnerEnv            string
 	RouterLabel         string
+	StaticBindHost      string
 }
 
 func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
@@ -193,7 +194,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	applyRunRouter(&plan, runRouter)
 
 	if plan.Static {
-		staticServer, err := staticserver.Start(ctx, plan.CWD, plan.Port)
+		staticServer, err := staticserver.StartWithHost(ctx, plan.CWD, plan.Port, plan.StaticBindHost)
 		if err != nil {
 			return err
 		}
@@ -313,9 +314,6 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 
 	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
 	if err != nil {
-		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
-			return local()
-		}
 		return runRouter{}, windowsTokenError(err)
 	}
 	client := newWindowsAdminClientFunc(token)
@@ -377,6 +375,9 @@ func applyRunRouter(plan *RunPlan, rr runRouter) {
 	}
 	if rr.RouterLabel != "" {
 		plan.RouterLabel = rr.RouterLabel
+	}
+	if rr.ChildHost != "" && plan.Static {
+		plan.StaticBindHost = rr.ChildHost
 	}
 	if rr.ChildHost != "" && !plan.Static {
 		plan.Env = runner.ChildEnvForHost(os.Environ(), plan.Port, rr.ChildHost)
@@ -736,9 +737,6 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 	}
 	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
 	if err != nil {
-		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
-			return routeManager{Store: defaultStore()}, nil
-		}
 		return routeManager{}, windowsTokenError(err)
 	}
 	client := newWindowsAdminClientFunc(token)

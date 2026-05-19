@@ -981,20 +981,20 @@ func TestResolveRunRouterFallsBackWhenWindowsRouterAbsent(t *testing.T) {
 	}
 }
 
-func TestResolveRunRouterFallsBackWhenWindowsTokenNotFound(t *testing.T) {
+func TestResolveRunRouterStopsWhenWindowsRouterExistsButTokenNotFound(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL:      true,
-		tokenErr:   bridge.ErrWindowsTokenNotFound,
-		localAdmin: fakeAdminClient{},
+		isWSL:     true,
+		tokenErr:  bridge.ErrWindowsTokenNotFound,
+		healthErr: nil,
 	})
 	defer restore()
 
-	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
-	if err != nil {
-		t.Fatal(err)
+	_, err := resolveRunRouter(context.Background(), io.Discard)
+	if err == nil {
+		t.Fatal("expected windows token error")
 	}
-	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
-		t.Fatalf("runRouter = %#v", runRouter)
+	if !strings.Contains(err.Error(), "Windows gohere router found") {
+		t.Fatalf("error = %q", err.Error())
 	}
 }
 
@@ -1051,6 +1051,22 @@ func TestBridgeTargetCandidatesPreferLoopbackThenLocalhostThenWSLIP(t *testing.T
 	want := []string{"127.0.0.1", "localhost", "172.20.10.2"}
 	if !sameStrings(got, want) {
 		t.Fatalf("bridgeTargetCandidates() = %#v, want %#v", got, want)
+	}
+}
+
+func TestApplyRunRouterSetsStaticBridgeBindHost(t *testing.T) {
+	plan := RunPlan{Static: true}
+
+	applyRunRouter(&plan, runRouter{
+		RouteTargetHost: "172.20.10.2",
+		ChildHost:       "0.0.0.0",
+		RouteSource:     "wsl",
+		OwnerEnv:        "wsl",
+		RouterLabel:     "Windows",
+	})
+
+	if plan.StaticBindHost != "0.0.0.0" {
+		t.Fatalf("StaticBindHost = %q, want 0.0.0.0", plan.StaticBindHost)
 	}
 }
 
@@ -1234,6 +1250,22 @@ func TestPruneUsesWindowsRouterFromWSL(t *testing.T) {
 	}
 	if out.String() != "Removed 1 dead route.\n" {
 		t.Fatalf("prune output = %q", out.String())
+	}
+}
+
+func TestRouteManagerStopsWhenWindowsRouterExistsButTokenNotFound(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:    true,
+		tokenErr: bridge.ErrWindowsTokenNotFound,
+	})
+	defer restore()
+
+	_, err := resolveRouteManager(context.Background())
+	if err == nil {
+		t.Fatal("expected windows token error")
+	}
+	if !strings.Contains(err.Error(), "Windows gohere router found") {
+		t.Fatalf("error = %q", err.Error())
 	}
 }
 

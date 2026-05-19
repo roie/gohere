@@ -97,6 +97,51 @@ func TestPruneRemovesDeadPIDRouteEvenIfTargetReachable(t *testing.T) {
 	}
 }
 
+func TestRouteStatusesDoNotUseWSLPIDOutsideWSL(t *testing.T) {
+	oldCurrentIsWSL := currentIsWSL
+	defer func() {
+		currentIsWSL = oldCurrentIsWSL
+	}()
+	currentIsWSL = func() bool { return false }
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+
+	statuses := RouteStatuses([]router.Route{{
+		Host:   "web.localhost",
+		Target: backend.URL,
+		PID:    999999,
+		Source: "wsl",
+	}})
+
+	if len(statuses) != 1 || statuses[0].Status != RouteStatusReady {
+		t.Fatalf("statuses = %#v, want ready", statuses)
+	}
+}
+
+func TestPruneKeepsReachableWSLRouteWithForeignPID(t *testing.T) {
+	oldCurrentIsWSL := currentIsWSL
+	defer func() {
+		currentIsWSL = oldCurrentIsWSL
+	}()
+	currentIsWSL = func() bool { return false }
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+	store := router.NewMemoryStore()
+	store.Save([]router.Route{{Host: "web.localhost", Target: backend.URL, PID: 999999, OwnerEnv: "wsl"}})
+
+	removed, err := Prune(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d, want 0", removed)
+	}
+	routes, _ := store.Load()
+	if len(routes) != 1 || routes[0].Host != "web.localhost" {
+		t.Fatalf("routes = %#v", routes)
+	}
+}
+
 func TestPruneKeepsUnknownRoutes(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{{Host: "unknown.localhost", Target: "://bad-url"}})
