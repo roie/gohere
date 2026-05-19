@@ -1294,15 +1294,21 @@ func TestPruneOutput(t *testing.T) {
 func TestStopOutput(t *testing.T) {
 	var out strings.Builder
 
-	printStopResult(&out, "vibe-oke.localhost", true)
+	printStopResult(&out, "vibe-oke.localhost", true, "")
 	if out.String() != "Stopped vibe-oke.localhost.\n" {
 		t.Fatalf("stop output = %q", out.String())
 	}
 
 	out.Reset()
-	printStopResult(&out, "", false)
+	printStopResult(&out, "", false, "")
 	if out.String() != "No running gohere app found for this folder.\n" {
 		t.Fatalf("stop missing output = %q", out.String())
+	}
+
+	out.Reset()
+	printStopResult(&out, "vibe-oke.localhost", false, "Could not verify the original gohere process. Not stopping PID 123.")
+	if out.String() != "Could not verify the original gohere process. Not stopping PID 123.\n" {
+		t.Fatalf("stop warning output = %q", out.String())
 	}
 }
 

@@ -737,10 +737,11 @@ func Stop(cwd string, stdout io.Writer) error {
 	}
 	var host string
 	var stopped bool
+	var warning string
 	if manager.Client != nil {
-		host, stopped, err = stopAdminCurrent(context.Background(), manager.Client, cwd)
+		host, stopped, warning, err = stopAdminCurrent(context.Background(), manager.Client, cwd)
 	} else {
-		host, stopped, err = lifecycle.StopCurrent(manager.Store, cwd)
+		host, stopped, warning, err = lifecycle.StopCurrent(manager.Store, cwd)
 	}
 	if err != nil {
 		if host != "" {
@@ -748,7 +749,7 @@ func Stop(cwd string, stdout io.Writer) error {
 		}
 		return fmt.Errorf("gohere error: %w", err)
 	}
-	printStopResult(stdout, host, stopped)
+	printStopResult(stdout, host, stopped, warning)
 	return nil
 }
 
@@ -817,17 +818,17 @@ func pruneAdminRoutes(ctx context.Context, client adminClient) (int, error) {
 	return removed, nil
 }
 
-func stopAdminCurrent(ctx context.Context, client adminClient, cwd string) (string, bool, error) {
+func stopAdminCurrent(ctx context.Context, client adminClient, cwd string) (string, bool, string, error) {
 	routes, err := client.Routes(ctx)
 	if err != nil {
 		if errors.Is(err, admin.ErrUnauthorized) {
-			return "", false, staleRouterTokenError()
+			return "", false, "", staleRouterTokenError()
 		}
-		return "", false, err
+		return "", false, "", err
 	}
 	absCWD, err := filepath.Abs(cwd)
 	if err != nil {
-		return "", false, err
+		return "", false, "", err
 	}
 	for _, route := range routes {
 		routeCWD := route.OwnerCWD
@@ -841,19 +842,30 @@ func stopAdminCurrent(ctx context.Context, client adminClient, cwd string) (stri
 		if route.OwnerEnv != "" && route.OwnerEnv != "wsl" {
 			continue
 		}
-		if route.PID > 0 && lifecycle.PIDAlive(route.PID) {
+		if !lifecycle.PIDAlive(route.PID) || lifecycle.RouteStatuses([]router.Route{route})[0].Status == lifecycle.RouteStatusDead {
+			if err := client.DeleteRoute(ctx, route.Host); err != nil {
+				return route.Host, false, "", err
+			}
+			return route.Host, false, "", nil
+		}
+		if lifecycle.RouteProcessVerified(route) {
 			lifecycle.StopPID(route.PID)
+			if err := client.DeleteRoute(ctx, route.Host); err != nil {
+				return route.Host, false, "", err
+			}
+			return route.Host, true, "", nil
 		}
-		if err := client.DeleteRoute(ctx, route.Host); err != nil {
-			return route.Host, false, err
-		}
-		return route.Host, true, nil
+		return route.Host, false, lifecycle.UnverifiedProcessWarning(route.PID), nil
 	}
-	return "", false, nil
+	return "", false, "", nil
 }
 
-func printStopResult(stdout io.Writer, host string, stopped bool) {
-	if !stopped {
+func printStopResult(stdout io.Writer, host string, stopped bool, warning string) {
+	if warning != "" {
+		fmt.Fprintln(stdout, warning)
+		return
+	}
+	if host == "" {
 		fmt.Fprintln(stdout, "No running gohere app found for this folder.")
 		return
 	}

@@ -18,6 +18,8 @@ import (
 )
 
 var currentIsWSL = detectCurrentWSL
+var processStartTime = realProcessStartTime
+var stopPID = StopPID
 
 type RouteStatusKind string
 
@@ -103,35 +105,49 @@ func PruneWithRouterReady(store router.Store, routerReady bool) (int, error) {
 	return removed, nil
 }
 
-func StopCurrent(store router.Store, cwd string) (string, bool, error) {
+func StopCurrent(store router.Store, cwd string) (string, bool, string, error) {
 	routes, err := store.Load()
 	if err != nil {
-		return "", false, err
+		return "", false, "", err
 	}
 	absCWD, err := filepath.Abs(cwd)
 	if err != nil {
-		return "", false, err
+		return "", false, "", err
 	}
 
 	stopped := false
 	stoppedHost := ""
+	warning := ""
 	kept := routes[:0]
 	for _, route := range routes {
 		routeCWD, err := filepath.Abs(route.CWD)
 		if err == nil && routeCWD == absCWD {
 			stoppedHost = route.Host
-			if PIDAlive(route.PID) {
+			if !PIDAlive(route.PID) || targetStatus(route.Target) == RouteStatusDead {
+				continue
+			}
+			if RouteProcessVerified(route) {
 				stopPID(route.PID)
 				stopped = true
+				continue
 			}
+			warning = UnverifiedProcessWarning(route.PID)
+			kept = append(kept, route)
 			continue
 		}
 		kept = append(kept, route)
 	}
 	if err := store.Save(kept); err != nil {
-		return stoppedHost, false, err
+		return stoppedHost, false, warning, err
 	}
-	return stoppedHost, stopped, nil
+	return stoppedHost, stopped, warning, nil
+}
+
+func UnverifiedProcessWarning(pid int) string {
+	if pid <= 0 {
+		return "Could not verify the original gohere process. Not stopping PID."
+	}
+	return fmt.Sprintf("Could not verify the original gohere process. Not stopping PID %d.", pid)
 }
 
 func classifyRoute(route router.Route) RouteStatusKind {
@@ -184,10 +200,6 @@ func isDefinitiveConnectionFailure(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED)
 }
 
-func stopPID(pid int) {
-	StopPID(pid)
-}
-
 func StopPID(pid int) {
 	if pid <= 0 {
 		return
@@ -203,6 +215,17 @@ func StopPID(pid int) {
 	process.Signal(syscall.SIGTERM)
 }
 
+func RouteProcessVerified(route router.Route) bool {
+	if route.PID <= 0 || route.StartedAt.IsZero() {
+		return false
+	}
+	startedAt, ok := processStartTime(route.PID)
+	if !ok {
+		return false
+	}
+	return !startedAt.After(route.StartedAt)
+}
+
 func PIDAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -215,6 +238,73 @@ func PIDAlive(pid int) bool {
 		return false
 	}
 	return process.Signal(syscall.Signal(0)) == nil
+}
+
+func realProcessStartTime(pid int) (time.Time, bool) {
+	if runtime.GOOS != "linux" || pid <= 0 {
+		return time.Time{}, false
+	}
+	ticks, ok := linuxProcessStartTicks(pid)
+	if !ok {
+		return time.Time{}, false
+	}
+	bootTime, ok := linuxBootTime()
+	if !ok {
+		return time.Time{}, false
+	}
+	hz := linuxClockTicks()
+	if hz <= 0 {
+		return time.Time{}, false
+	}
+	return bootTime.Add(time.Duration(ticks) * time.Second / time.Duration(hz)), true
+}
+
+func linuxProcessStartTicks(pid int) (uint64, bool) {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, false
+	}
+	stat := string(data)
+	idx := strings.LastIndex(stat, ") ")
+	if idx == -1 {
+		return 0, false
+	}
+	fields := strings.Fields(stat[idx+2:])
+	if len(fields) <= 19 {
+		return 0, false
+	}
+	ticks, err := strconv.ParseUint(fields[19], 10, 64)
+	return ticks, err == nil
+}
+
+func linuxBootTime() (time.Time, bool) {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return time.Time{}, false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "btime ") {
+			continue
+		}
+		seconds, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "btime ")), 10, 64)
+		if err != nil {
+			return time.Time{}, false
+		}
+		return time.Unix(seconds, 0), true
+	}
+	return time.Time{}, false
+}
+
+func linuxClockTicks() int64 {
+	output, err := exec.Command("getconf", "CLK_TCK").Output()
+	if err != nil {
+		return 100
+	}
+	ticks, err := strconv.ParseInt(strings.TrimSpace(string(output)), 10, 64)
+	if err != nil || ticks <= 0 {
+		return 100
+	}
+	return ticks
 }
 
 func windowsPIDAlive(pid int) bool {

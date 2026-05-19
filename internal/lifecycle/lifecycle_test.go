@@ -197,7 +197,7 @@ func TestStopCurrentFolderRemovesStaleRouteAndReportsNotStopped(t *testing.T) {
 		{Host: "api.localhost", CWD: "/tmp/api", PID: 999998, StartedAt: time.Now()},
 	})
 
-	host, stopped, err := StopCurrent(store, "/tmp/app")
+	host, stopped, warning, err := StopCurrent(store, "/tmp/app")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,13 +207,16 @@ func TestStopCurrentFolderRemovesStaleRouteAndReportsNotStopped(t *testing.T) {
 	if stopped {
 		t.Fatal("stale PID should not be reported as stopped")
 	}
+	if warning != "" {
+		t.Fatalf("warning = %q", warning)
+	}
 	routes, _ := store.Load()
 	if len(routes) != 1 || routes[0].Host != "api.localhost" {
 		t.Fatalf("routes = %#v", routes)
 	}
 }
 
-func TestStopCurrentFolderStopsLiveProcess(t *testing.T) {
+func TestStopCurrentFolderDoesNotStopLiveProcessWithoutIdentityVerification(t *testing.T) {
 	cmd := exec.Command("sleep", "30")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -221,9 +224,55 @@ func TestStopCurrentFolderStopsLiveProcess(t *testing.T) {
 	defer cmd.Process.Kill()
 
 	store := router.NewMemoryStore()
+	store.Save([]router.Route{{Host: "app.localhost", CWD: "/tmp/app", PID: cmd.Process.Pid}})
+
+	host, stopped, warning, err := StopCurrent(store, "/tmp/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "app.localhost" {
+		t.Fatalf("host = %q", host)
+	}
+	if stopped {
+		t.Fatal("PID-only process should not be stopped")
+	}
+	if !strings.Contains(warning, "Could not verify the original gohere process. Not stopping PID") {
+		t.Fatalf("warning = %q", warning)
+	}
+	routes, _ := store.Load()
+	if len(routes) != 1 {
+		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestStopCurrentFolderStopsVerifiedLiveProcess(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Process.Kill()
+
+	oldProcessStartTime := processStartTime
+	oldStopPID := stopPID
+	stoppedPID := 0
+	t.Cleanup(func() {
+		processStartTime = oldProcessStartTime
+		stopPID = oldStopPID
+	})
+	processStartTime = func(pid int) (time.Time, bool) {
+		if pid != cmd.Process.Pid {
+			return time.Time{}, false
+		}
+		return time.Now().Add(-time.Second), true
+	}
+	stopPID = func(pid int) {
+		stoppedPID = pid
+	}
+
+	store := router.NewMemoryStore()
 	store.Save([]router.Route{{Host: "app.localhost", CWD: "/tmp/app", PID: cmd.Process.Pid, StartedAt: time.Now()}})
 
-	host, stopped, err := StopCurrent(store, "/tmp/app")
+	host, stopped, warning, err := StopCurrent(store, "/tmp/app")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +280,42 @@ func TestStopCurrentFolderStopsLiveProcess(t *testing.T) {
 		t.Fatalf("host = %q", host)
 	}
 	if !stopped {
-		t.Fatal("expected live process to be stopped")
+		t.Fatal("expected verified process to be stopped")
+	}
+	if warning != "" {
+		t.Fatalf("warning = %q", warning)
+	}
+	if stoppedPID != cmd.Process.Pid {
+		t.Fatalf("stopped PID = %d, want %d", stoppedPID, cmd.Process.Pid)
+	}
+	routes, _ := store.Load()
+	if len(routes) != 0 {
+		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestStopCurrentFolderRemovesDeadRouteWithoutStoppingUnverifiedPID(t *testing.T) {
+	store := router.NewMemoryStore()
+	store.Save([]router.Route{{
+		Host:      "app.localhost",
+		CWD:       "/tmp/app",
+		PID:       999999,
+		Target:    "http://127.0.0.1:1",
+		StartedAt: time.Now(),
+	}})
+
+	host, stopped, warning, err := StopCurrent(store, "/tmp/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "app.localhost" {
+		t.Fatalf("host = %q", host)
+	}
+	if stopped {
+		t.Fatal("dead unverified route should not report a stopped process")
+	}
+	if warning != "" {
+		t.Fatalf("warning = %q", warning)
 	}
 	routes, _ := store.Load()
 	if len(routes) != 0 {
@@ -241,7 +325,7 @@ func TestStopCurrentFolderStopsLiveProcess(t *testing.T) {
 
 func TestStopCurrentReportsMissingRoute(t *testing.T) {
 	store := router.NewMemoryStore()
-	host, stopped, err := StopCurrent(store, "/tmp/app")
+	host, stopped, warning, err := StopCurrent(store, "/tmp/app")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,6 +334,9 @@ func TestStopCurrentReportsMissingRoute(t *testing.T) {
 	}
 	if stopped {
 		t.Fatal("expected no route")
+	}
+	if warning != "" {
+		t.Fatalf("warning = %q", warning)
 	}
 }
 
