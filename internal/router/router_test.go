@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -33,6 +34,38 @@ func TestTokenGeneratedWith0600Permissions(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0600 {
 		t.Fatalf("token permissions = %v, want 0600", got)
+	}
+}
+
+func TestReadTokenDoesNotCreateMissingTokenFile(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := ReadToken(dir)
+	if err == nil {
+		t.Fatal("expected missing token error")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "token")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("token file stat err = %v, want not exist", statErr)
+	}
+}
+
+func TestReadTokenRejectsInvalidTokenFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token")
+	if err := os.WriteFile(path, []byte("short\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ReadToken(dir)
+	if err == nil {
+		t.Fatal("expected invalid token error")
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "short\n" {
+		t.Fatalf("token file = %q, want unchanged invalid token", string(data))
 	}
 }
 

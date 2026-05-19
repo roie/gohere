@@ -1001,7 +1001,7 @@ func defaultStore() router.Store {
 }
 
 func defaultAdminClient() (*admin.Client, error) {
-	token, err := router.EnsureToken(router.DefaultStateDir())
+	token, err := router.ReadToken(router.DefaultStateDir())
 	if err != nil {
 		return nil, err
 	}

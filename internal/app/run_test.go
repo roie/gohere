@@ -47,6 +47,19 @@ func TestPrepareScriptRun(t *testing.T) {
 	assertEnv(t, plan.Env, "HOST", "127.0.0.1")
 }
 
+func TestDefaultAdminClientDoesNotCreateMissingToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	_, err := defaultAdminClient()
+	if err == nil {
+		t.Fatal("expected missing token error")
+	}
+	if _, statErr := os.Stat(filepath.Join(home, ".gohere", "token")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("token file stat err = %v, want not exist", statErr)
+	}
+}
+
 func TestPrepareRunUsesTargetPortOverride(t *testing.T) {
 	dir := tempProject(t, map[string]string{
 		"package.json": `{"scripts":{"dev":"next dev"}}`,

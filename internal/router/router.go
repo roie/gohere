@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"io"
 	"net"
@@ -74,6 +75,22 @@ func EnsureToken(stateDir string) (string, error) {
 	}
 
 	return writeToken(path)
+}
+
+func ReadToken(stateDir string) (string, error) {
+	path := filepath.Join(stateDir, "token")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	token := strings.TrimSpace(string(data))
+	if !validToken(token) {
+		return "", fmt.Errorf("invalid gohere token")
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 func writeToken(path string) (string, error) {
