@@ -557,7 +557,11 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 	if err := startInstalledRouterFunc(ctx); err == nil {
 		if err := waitForRouterHealth(ctx, health, 3*time.Second); err == nil {
 			return nil
+		} else {
+			return installedRouterUnavailableError(err)
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return installedRouterUnavailableError(err)
 	}
 
 	fmt.Fprint(out, firstRunPrompt())
@@ -574,6 +578,10 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 	}
 	fmt.Fprintln(out)
 	return nil
+}
+
+func installedRouterUnavailableError(err error) error {
+	return fmt.Errorf("installed gohere router is not reachable.\nTry:\n  gohere doctor\n\nDetails: %w", err)
 }
 
 func startInstalledRouter(ctx context.Context) error {

@@ -460,6 +460,48 @@ func TestEnsureRouterRestartsInstalledRouterWithoutPrompt(t *testing.T) {
 	}
 }
 
+func TestEnsureRouterDoesNotPromptWhenInstalledRouterRestartFails(t *testing.T) {
+	oldSetup := setupFunc
+	oldPromptInput := promptInput
+	oldStartInstalledRouter := startInstalledRouterFunc
+	defer func() {
+		setupFunc = oldSetup
+		promptInput = oldPromptInput
+		startInstalledRouterFunc = oldStartInstalledRouter
+	}()
+
+	setupFunc = func(ctx context.Context) error {
+		t.Fatal("setup should not run when installed router restart fails")
+		return nil
+	}
+	promptInput = strings.NewReader("y\n")
+	startInstalledCalls := 0
+	startInstalledRouterFunc = func(context.Context) error {
+		startInstalledCalls++
+		return errors.New("port already in use")
+	}
+	var out strings.Builder
+
+	err := ensureRouter(context.Background(), &out, func(context.Context) error {
+		return errors.New("router unavailable")
+	})
+	if err == nil {
+		t.Fatal("expected installed router restart error")
+	}
+	if !strings.Contains(err.Error(), "installed gohere router is not reachable") {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "gohere doctor") {
+		t.Fatalf("error should point to doctor, got %q", err.Error())
+	}
+	if startInstalledCalls != 1 {
+		t.Fatalf("installed router restart calls = %d, want 1", startInstalledCalls)
+	}
+	if out.String() != "" {
+		t.Fatalf("prompt output = %q, want empty", out.String())
+	}
+}
+
 func TestEnsureRouterDeclinePrintsCalmMessage(t *testing.T) {
 	oldSetup := setupFunc
 	oldPromptInput := promptInput

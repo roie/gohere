@@ -29,6 +29,18 @@ func TestIsWSLVersion(t *testing.T) {
 	}
 }
 
+func TestIsWSLEnvironmentOnlyAllowsLinux(t *testing.T) {
+	if IsWSLEnvironment("windows", "Ubuntu", "/run/WSL/1_interop", "Linux version microsoft") {
+		t.Fatal("windows build should not detect WSL even with WSL environment variables")
+	}
+	if IsWSLEnvironment("darwin", "Ubuntu", "/run/WSL/1_interop", "Linux version microsoft") {
+		t.Fatal("darwin build should not detect WSL even with WSL environment variables")
+	}
+	if !IsWSLEnvironment("linux", "Ubuntu", "", "") {
+		t.Fatal("linux build should detect WSL distro environment")
+	}
+}
+
 func TestDiscoverWindowsTokenFindsSingleToken(t *testing.T) {
 	root := t.TempDir()
 	tokenPath := filepath.Join(root, "Jessa", ".gohere", "token")

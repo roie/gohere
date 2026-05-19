@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
@@ -35,15 +36,23 @@ func IsWSLVersion(version string) bool {
 	return strings.Contains(version, "microsoft") || strings.Contains(version, "wsl")
 }
 
-func DetectWSL() bool {
-	if os.Getenv("WSL_DISTRO_NAME") != "" || os.Getenv("WSL_INTEROP") != "" {
-		return true
-	}
-	data, err := os.ReadFile("/proc/version")
-	if err != nil {
+func IsWSLEnvironment(goos, distroName, interop, version string) bool {
+	if goos != "linux" {
 		return false
 	}
-	return IsWSLVersion(string(data))
+	if distroName != "" || interop != "" {
+		return true
+	}
+	return IsWSLVersion(version)
+}
+
+func DetectWSL() bool {
+	data, err := os.ReadFile("/proc/version")
+	version := ""
+	if err == nil {
+		version = string(data)
+	}
+	return IsWSLEnvironment(runtime.GOOS, os.Getenv("WSL_DISTRO_NAME"), os.Getenv("WSL_INTEROP"), version)
 }
 
 func DiscoverWindowsToken(usersRoot string) (string, string, error) {
