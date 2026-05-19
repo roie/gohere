@@ -347,12 +347,9 @@ func bridgeTargetHost(ctx context.Context, client bridgeProbeClient, wslIP strin
 }
 
 func bridgeTargetCandidates(wslIP string) []string {
-	candidates := []string{}
-	if wslIP != "" {
+	candidates := []string{"127.0.0.1", "localhost"}
+	if wslIP != "" && wslIP != "127.0.0.1" && wslIP != "localhost" {
 		candidates = append(candidates, wslIP)
-	}
-	if wslIP != "127.0.0.1" {
-		candidates = append(candidates, "127.0.0.1")
 	}
 	return candidates
 }

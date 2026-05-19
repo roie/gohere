@@ -824,7 +824,7 @@ func TestRunUsesWindowsRouterBridgeFromWSL(t *testing.T) {
 	if !strings.Contains(strings.Join(gotCommand, " "), "--host 0.0.0.0") {
 		t.Fatalf("command = %#v, want bridge host injection", gotCommand)
 	}
-	if !strings.Contains(stdout.String(), "\ntarget: http://172.20.10.2:5173\n") ||
+	if !strings.Contains(stdout.String(), "\ntarget: http://127.0.0.1:5173\n") ||
 		!strings.Contains(stdout.String(), "router: Windows\n") {
 		t.Fatalf("verbose stdout = %q", stdout.String())
 	}
@@ -885,6 +885,7 @@ func TestResolveRunRouterStopsWhenWindowsRouterCannotReachWSL(t *testing.T) {
 }
 
 func TestResolveRunRouterUsesLoopbackForwardingWhenWSLIPUnreachable(t *testing.T) {
+	var probes []string
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL: true,
 		token: "windows-token",
@@ -893,7 +894,8 @@ func TestResolveRunRouterUsesLoopbackForwardingWhenWSLIPUnreachable(t *testing.T
 			"172.20.10.2": false,
 			"127.0.0.1":   true,
 		},
-		admin: &recordingAdminClient{},
+		probeHosts: &probes,
+		admin:      &recordingAdminClient{},
 	})
 	defer restore()
 
@@ -903,6 +905,18 @@ func TestResolveRunRouterUsesLoopbackForwardingWhenWSLIPUnreachable(t *testing.T
 	}
 	if runRouter.RouteTargetHost != "127.0.0.1" || runRouter.ChildHost != "0.0.0.0" || runRouter.RouterLabel != "Windows" {
 		t.Fatalf("runRouter = %#v", runRouter)
+	}
+	wantProbes := []string{"127.0.0.1"}
+	if !sameStrings(probes, wantProbes) {
+		t.Fatalf("probes = %#v, want %#v", probes, wantProbes)
+	}
+}
+
+func TestBridgeTargetCandidatesPreferLoopbackThenLocalhostThenWSLIP(t *testing.T) {
+	got := bridgeTargetCandidates("172.20.10.2")
+	want := []string{"127.0.0.1", "localhost", "172.20.10.2"}
+	if !sameStrings(got, want) {
+		t.Fatalf("bridgeTargetCandidates() = %#v, want %#v", got, want)
 	}
 }
 
@@ -1399,6 +1413,7 @@ type bridgeStub struct {
 	wslIP          string
 	reachable      bool
 	probeReachable map[string]bool
+	probeHosts     *[]string
 	admin          bridgeAdminClient
 	localAdmin     adminClient
 }
@@ -1441,6 +1456,9 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 		return stub.wslIP, nil
 	}
 	probeBridgeFunc = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
+		if stub.probeHosts != nil {
+			*stub.probeHosts = append(*stub.probeHosts, wslIP)
+		}
 		if stub.probeReachable != nil {
 			return stub.probeReachable[wslIP], "http://" + wslIP + ":49231", nil
 		}
