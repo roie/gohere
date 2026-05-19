@@ -74,6 +74,11 @@ func DiscoverWindowsToken(usersRoot string) (string, string, error) {
 	}
 }
 
+func WindowsStableBinaryExists(usersRoot string) bool {
+	matches, err := filepath.Glob(filepath.Join(usersRoot, "*", ".gohere", "bin", "gohere.exe"))
+	return err == nil && len(matches) > 0
+}
+
 func FirstIPv4(output string) (string, error) {
 	re := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
 	for _, candidate := range re.FindAllString(output, -1) {

@@ -73,6 +73,21 @@ func TestDiscoverWindowsTokenReportsMultipleTokens(t *testing.T) {
 	}
 }
 
+func TestWindowsStableBinaryExists(t *testing.T) {
+	root := t.TempDir()
+	if WindowsStableBinaryExists(root) {
+		t.Fatal("stable binary should not exist")
+	}
+	writeFile(t, filepath.Join(root, "Jessa", ".gohere", "token"), "token\n")
+	if WindowsStableBinaryExists(root) {
+		t.Fatal("token alone should not count as installed binary")
+	}
+	writeFile(t, filepath.Join(root, "Jessa", ".gohere", "bin", "gohere.exe"), "binary")
+	if !WindowsStableBinaryExists(root) {
+		t.Fatal("stable binary should be detected")
+	}
+}
+
 func TestFirstIPv4(t *testing.T) {
 	got, err := FirstIPv4("172.20.10.2 10.255.255.1 fe80::1")
 	if err != nil {

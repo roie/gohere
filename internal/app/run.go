@@ -43,6 +43,7 @@ var (
 	detectWSLFunc             = bridge.DetectWSL
 	windowsRouterHealthFunc   = func(ctx context.Context) error { return admin.NewClient(windowsAdminBaseURL, "").Health(ctx) }
 	discoverWindowsTokenFunc  = bridge.DiscoverWindowsToken
+	windowsStableBinaryExists = bridge.WindowsStableBinaryExists
 	newWindowsAdminClientFunc = func(token string) bridgeAdminClient { return admin.NewClient(windowsAdminBaseURL, token) }
 	currentWSLIPFunc          = bridge.CurrentWSLIP
 	probeBridgeFunc           = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
@@ -319,6 +320,9 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 		return runRouter{}, windowsTokenError(err)
 	}
 	if err := windowsRouterHealthFunc(ctx); err != nil {
+		if !windowsStableBinaryExists(windowsUsersRoot) {
+			return local()
+		}
 		return runRouter{}, windowsRouterUnavailableError()
 	}
 	client := newWindowsAdminClientFunc(token)
@@ -777,6 +781,9 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 		return routeManager{}, windowsTokenError(err)
 	}
 	if err := windowsRouterHealthFunc(ctx); err != nil {
+		if !windowsStableBinaryExists(windowsUsersRoot) {
+			return local(), nil
+		}
 		return routeManager{}, windowsRouterUnavailableError()
 	}
 	client := newWindowsAdminClientFunc(token)

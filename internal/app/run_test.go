@@ -1026,9 +1026,10 @@ func TestResolveRunRouterFallsBackWhenWindowsRouterAbsent(t *testing.T) {
 
 func TestResolveRunRouterStopsWhenWindowsRouterInstalledButNotRunning(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL:     true,
-		token:     "windows-token",
-		healthErr: errors.New("connection refused"),
+		isWSL:         true,
+		token:         "windows-token",
+		healthErr:     errors.New("connection refused"),
+		windowsBinary: true,
 	})
 	defer restore()
 
@@ -1038,6 +1039,24 @@ func TestResolveRunRouterStopsWhenWindowsRouterInstalledButNotRunning(t *testing
 	}
 	if !strings.Contains(err.Error(), "Windows gohere is installed, but its router is not running") {
 		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestResolveRunRouterFallsBackWhenOnlyWindowsTokenRemains(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:      true,
+		token:      "windows-token",
+		healthErr:  errors.New("connection refused"),
+		localAdmin: fakeAdminClient{},
+	})
+	defer restore()
+
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
+		t.Fatalf("runRouter = %#v", runRouter)
 	}
 }
 
@@ -1353,9 +1372,10 @@ func TestRouteManagerStopsWhenWindowsRouterExistsButTokenNotFound(t *testing.T) 
 
 func TestRouteManagerStopsWhenWindowsRouterInstalledButNotRunning(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL:     true,
-		token:     "windows-token",
-		healthErr: errors.New("connection refused"),
+		isWSL:         true,
+		token:         "windows-token",
+		healthErr:     errors.New("connection refused"),
+		windowsBinary: true,
 	})
 	defer restore()
 
@@ -1365,6 +1385,24 @@ func TestRouteManagerStopsWhenWindowsRouterInstalledButNotRunning(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "Windows gohere is installed, but its router is not running") {
 		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestRouteManagerFallsBackWhenOnlyWindowsTokenRemains(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:      true,
+		token:      "windows-token",
+		healthErr:  errors.New("connection refused"),
+		localAdmin: fakeAdminClient{},
+	})
+	defer restore()
+
+	manager, err := resolveRouteManager(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manager.Client == nil || !manager.RouterReady {
+		t.Fatalf("manager = %#v, want local ready router manager", manager)
 	}
 }
 
@@ -1675,6 +1713,7 @@ type bridgeStub struct {
 	healthErr      error
 	token          string
 	tokenErr       error
+	windowsBinary  bool
 	wslIP          string
 	reachable      bool
 	probeReachable map[string]bool
@@ -1688,6 +1727,7 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 	oldDetectWSL := detectWSLFunc
 	oldWindowsHealth := windowsRouterHealthFunc
 	oldDiscoverToken := discoverWindowsTokenFunc
+	oldWindowsStableBinaryExists := windowsStableBinaryExists
 	oldNewWindowsAdminClient := newWindowsAdminClientFunc
 	oldCurrentWSLIP := currentWSLIPFunc
 	oldProbeBridge := probeBridgeFunc
@@ -1707,6 +1747,9 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 			return "", "", errors.New("no token")
 		}
 		return stub.token, "/mnt/c/Users/Jessa/.gohere/token", nil
+	}
+	windowsStableBinaryExists = func(string) bool {
+		return stub.windowsBinary
 	}
 	newWindowsAdminClientFunc = func(string) bridgeAdminClient {
 		if stub.admin == nil {
@@ -1740,6 +1783,7 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 		detectWSLFunc = oldDetectWSL
 		windowsRouterHealthFunc = oldWindowsHealth
 		discoverWindowsTokenFunc = oldDiscoverToken
+		windowsStableBinaryExists = oldWindowsStableBinaryExists
 		newWindowsAdminClientFunc = oldNewWindowsAdminClient
 		currentWSLIPFunc = oldCurrentWSLIP
 		probeBridgeFunc = oldProbeBridge
