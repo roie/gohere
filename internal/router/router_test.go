@@ -610,6 +610,88 @@ func TestCloseRemovesRouterPID(t *testing.T) {
 	}
 }
 
+func TestCloseAllowsInFlightRequestToFinish(t *testing.T) {
+	stateDir := t.TempDir()
+	store := NewRouteStore(filepath.Join(stateDir, "routes.json"))
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("done"))
+	}))
+	defer backend.Close()
+	if err := store.Save([]Route{{Host: "app.localhost", Target: backend.URL}}); err != nil {
+		t.Fatal(err)
+	}
+	running, err := Start(t.Context(), StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  stateDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	errc := make(chan error, 1)
+	go func() {
+		req, err := http.NewRequest(http.MethodGet, "http://"+running.HTTPAddr+"/", nil)
+		if err != nil {
+			errc <- err
+			return
+		}
+		req.Host = "app.localhost"
+		client := &http.Client{Timeout: 2 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			errc <- err
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			errc <- fmt.Errorf("status = %d", resp.StatusCode)
+			return
+		}
+		errc <- nil
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("request did not reach backend")
+	}
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- running.Close()
+	}()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before in-flight request completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight request did not finish")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not finish after in-flight request completed")
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "router.pid")); !os.IsNotExist(err) {
+		t.Fatalf("router.pid should be removed, stat err = %v", err)
+	}
+}
+
 func TestStartDoesNotLeavePIDWhenListenFails(t *testing.T) {
 	stateDir := t.TempDir()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

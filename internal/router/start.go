@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type StartConfig struct {
@@ -150,11 +151,18 @@ func (r *Running) Close() error {
 	if r == nil {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var firstErr error
 	if r.httpServer != nil {
-		r.httpServer.Close()
+		if err := r.httpServer.Shutdown(ctx); err != nil {
+			firstErr = err
+		}
 	}
 	if r.adminServer != nil {
-		r.adminServer.Close()
+		if err := r.adminServer.Shutdown(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	if r.httpLn != nil {
 		r.httpLn.Close()
@@ -168,7 +176,7 @@ func (r *Running) Close() error {
 	if r.logFile != nil {
 		r.logFile.Close()
 	}
-	return nil
+	return firstErr
 }
 
 func DefaultStateDir() string {
