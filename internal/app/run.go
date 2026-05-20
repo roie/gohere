@@ -322,6 +322,9 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
 	if err != nil {
 		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
+			if !windowsStableBinaryExists(windowsUsersRoot) {
+				return local()
+			}
 			if healthErr := windowsRouterHealthFunc(ctx); healthErr != nil {
 				return local()
 			}
@@ -784,6 +787,9 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
 	if err != nil {
 		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
+			if !windowsStableBinaryExists(windowsUsersRoot) {
+				return local(), nil
+			}
 			if healthErr := windowsRouterHealthFunc(ctx); healthErr != nil {
 				return local(), nil
 			}

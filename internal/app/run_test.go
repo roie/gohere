@@ -1124,9 +1124,10 @@ func TestResolveRunRouterRunsSetupBeforeReadingMissingToken(t *testing.T) {
 
 func TestResolveRunRouterStopsWhenWindowsRouterExistsButTokenNotFound(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL:     true,
-		tokenErr:  bridge.ErrWindowsTokenNotFound,
-		healthErr: nil,
+		isWSL:         true,
+		tokenErr:      bridge.ErrWindowsTokenNotFound,
+		healthErr:     nil,
+		windowsBinary: true,
 	})
 	defer restore()
 
@@ -1136,6 +1137,24 @@ func TestResolveRunRouterStopsWhenWindowsRouterExistsButTokenNotFound(t *testing
 	}
 	if !strings.Contains(err.Error(), "Windows gohere router found") {
 		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestResolveRunRouterFallsBackWhenOnlyWSLLocalRouterLooksHealthy(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:      true,
+		tokenErr:   bridge.ErrWindowsTokenNotFound,
+		healthErr:  nil,
+		localAdmin: fakeAdminClient{},
+	})
+	defer restore()
+
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
+		t.Fatalf("runRouter = %#v", runRouter)
 	}
 }
 
@@ -1424,8 +1443,9 @@ func TestPruneUsesWindowsRouterFromWSL(t *testing.T) {
 
 func TestRouteManagerStopsWhenWindowsRouterExistsButTokenNotFound(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL:    true,
-		tokenErr: bridge.ErrWindowsTokenNotFound,
+		isWSL:         true,
+		tokenErr:      bridge.ErrWindowsTokenNotFound,
+		windowsBinary: true,
 	})
 	defer restore()
 
@@ -1435,6 +1455,24 @@ func TestRouteManagerStopsWhenWindowsRouterExistsButTokenNotFound(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "Windows gohere router found") {
 		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestRouteManagerFallsBackWhenOnlyWSLLocalRouterLooksHealthy(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:      true,
+		tokenErr:   bridge.ErrWindowsTokenNotFound,
+		healthErr:  nil,
+		localAdmin: fakeAdminClient{},
+	})
+	defer restore()
+
+	manager, err := resolveRouteManager(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manager.Client == nil || !manager.RouterReady {
+		t.Fatalf("manager = %#v, want local ready router manager", manager)
 	}
 }
 
