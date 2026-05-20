@@ -1283,7 +1283,29 @@ func TestResolveRunRouterStopsWhenWindowsRouterCannotReachWSL(t *testing.T) {
 		t.Fatal("expected bridge reachability error")
 	}
 	if !strings.Contains(err.Error(), "Windows gohere service is running, but cannot reach WSL dev servers") ||
-		!strings.Contains(err.Error(), "networkingMode=mirrored") {
+		!strings.Contains(err.Error(), "networkingMode=mirrored") ||
+		!strings.Contains(err.Error(), "Windows Firewall") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestResolveRunRouterIncludesBridgeProbeError(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		wslIP:         "172.20.10.2",
+		probeErr:      errors.New("probe endpoint failed"),
+		windowsBinary: true,
+		admin:         &recordingAdminClient{},
+	})
+	defer restore()
+
+	_, err := resolveRunRouter(context.Background(), io.Discard)
+	if err == nil {
+		t.Fatal("expected bridge probe error")
+	}
+	if !strings.Contains(err.Error(), "probe endpoint failed") ||
+		!strings.Contains(err.Error(), "Windows Firewall") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
@@ -2133,6 +2155,7 @@ type bridgeStub struct {
 	windowsBinary  bool
 	wslIP          string
 	reachable      bool
+	probeErr       error
 	probeReachable map[string]bool
 	probeHosts     *[]string
 	admin          bridgeAdminClient
@@ -2183,6 +2206,9 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 	probeBridgeFunc = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
 		if stub.probeHosts != nil {
 			*stub.probeHosts = append(*stub.probeHosts, wslIP)
+		}
+		if stub.probeErr != nil {
+			return false, "http://" + wslIP + ":49231", stub.probeErr
 		}
 		if stub.probeReachable != nil {
 			return stub.probeReachable[wslIP], "http://" + wslIP + ":49231", nil

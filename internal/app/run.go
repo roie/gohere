@@ -372,13 +372,13 @@ func bridgeTargetHost(ctx context.Context, client bridgeProbeClient, wslIP strin
 	for _, candidate := range bridgeTargetCandidates(wslIP) {
 		reachable, _, err := probeBridgeFunc(ctx, client, candidate)
 		if err != nil {
-			return "", err
+			return "", windowsRouterCannotReachWSLError(err)
 		}
 		if reachable {
 			return candidate, nil
 		}
 	}
-	return "", windowsRouterCannotReachWSLError()
+	return "", windowsRouterCannotReachWSLError(nil)
 }
 
 func bridgeTargetCandidates(wslIP string) []string {
@@ -439,8 +439,12 @@ func windowsRouterUnavailableError() error {
 	return errors.New("Windows gohere is installed, but its service is not running.\nRun gohere from Windows first so WSL can use the Windows service.")
 }
 
-func windowsRouterCannotReachWSLError() error {
-	return errors.New("Windows gohere service is running, but cannot reach WSL dev servers.\nTry enabling mirrored networking in %USERPROFILE%\\.wslconfig:\n  [wsl2]\n  networkingMode=mirrored\nThen run:\n  wsl --shutdown")
+func windowsRouterCannotReachWSLError(cause error) error {
+	msg := "Windows gohere service is running, but cannot reach WSL dev servers.\n\nThis can happen if WSL networking is not mirrored, Windows Firewall blocks the probe, or WSL networking is still starting.\n\nTry enabling mirrored networking in %USERPROFILE%\\.wslconfig:\n  [wsl2]\n  networkingMode=mirrored\nThen run:\n  wsl --shutdown"
+	if cause != nil {
+		return fmt.Errorf("%s\n\nDetails: %w", msg, cause)
+	}
+	return errors.New(msg)
 }
 
 func staleRouterTokenError() error {
