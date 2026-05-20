@@ -181,6 +181,40 @@ func TestRunStreamsOutputAndDetectsPort(t *testing.T) {
 	}
 }
 
+func TestStartDoesNotDuplicateFullEnvironment(t *testing.T) {
+	t.Setenv("GOHERE_DUP_ENV", "parent")
+	env := ChildEnv(os.Environ(), 49231)
+	env = append(env, "GOHERE_HELPER_PROCESS=1")
+	server := &http.Server{Addr: "127.0.0.1:0"}
+	ln, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	go server.Serve(ln)
+	defer server.Close()
+	var stdout bytes.Buffer
+
+	result, err := Start(context.Background(), Config{
+		Command:        []string{os.Args[0], "-test.run=TestHelperProcess", "--", "print-env-count", "GOHERE_DUP_ENV"},
+		Env:            env,
+		ChosenPort:     port,
+		Stdout:         &stdout,
+		Stderr:         &bytes.Buffer{},
+		StartupTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := result.Stop(); err != nil {
+		t.Fatal(err)
+	}
+
+	if firstNonEmptyLine(stdout.String()) != "1" {
+		t.Fatalf("GOHERE_DUP_ENV count = %q, want 1", stdout.String())
+	}
+}
+
 func TestWaitTreatsContextCancelAsCleanShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	result, err := Start(ctx, Config{
@@ -277,10 +311,30 @@ func TestHelperProcess(t *testing.T) {
 		time.Sleep(2 * time.Second)
 	case "sleep":
 		time.Sleep(2 * time.Second)
+	case "print-env-count":
+		key := args[len(args)-1]
+		count := 0
+		for _, item := range os.Environ() {
+			if strings.HasPrefix(item, key+"=") {
+				count++
+			}
+		}
+		os.Stdout.WriteString(strconv.Itoa(count) + "\n")
+		time.Sleep(2 * time.Second)
 	default:
 		os.Exit(2)
 	}
 	os.Exit(0)
+}
+
+func firstNonEmptyLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func assertEnv(t *testing.T, env []string, key, want string) {

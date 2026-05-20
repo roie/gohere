@@ -309,7 +309,7 @@ func ResolveHostnameConflict(desiredHost, cwd string, active map[string]string) 
 }
 
 func conflictHost(parent, base string, suffix int) string {
-	label := parent + "-" + strings.TrimSuffix(base, ".localhost")
+	label := parent + "-" + base
 	if suffix > 0 {
 		suffixPart := "-" + strconv.Itoa(suffix)
 		label = NormalizeHostnameName(label)

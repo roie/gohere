@@ -204,7 +204,10 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.Command[0], cfg.Command[1:]...)
-	cmd.Env = append(os.Environ(), cfg.Env...)
+	cmd.Env = cfg.Env
+	if len(cmd.Env) == 0 {
+		cmd.Env = os.Environ()
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

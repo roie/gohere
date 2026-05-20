@@ -1341,6 +1341,25 @@ func TestApplyRunRouterSetsStaticBridgeBindHost(t *testing.T) {
 	}
 }
 
+func TestApplyRunRouterPreservesExistingEnvWhenRebindingHost(t *testing.T) {
+	plan := RunPlan{
+		Port:    49231,
+		Command: []string{"npm", "run", "dev", "--", "--host", "127.0.0.1"},
+		Env:     []string{"PATH=/bin", "CUSTOM=kept", "HOST=127.0.0.1", "PORT=3000"},
+	}
+
+	applyRunRouter(&plan, runRouter{
+		ChildHost: "0.0.0.0",
+	})
+
+	assertEnv(t, plan.Env, "CUSTOM", "kept")
+	assertEnv(t, plan.Env, "HOST", "0.0.0.0")
+	assertEnv(t, plan.Env, "PORT", "49231")
+	if !strings.Contains(strings.Join(plan.Command, " "), "--host 0.0.0.0") {
+		t.Fatalf("command = %#v, want bridge host replacement", plan.Command)
+	}
+}
+
 func TestRunTreatsStartupContextCancelAsCleanShutdown(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc

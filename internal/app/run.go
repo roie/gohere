@@ -406,7 +406,7 @@ func applyRunRouter(plan *RunPlan, rr runRouter) {
 		plan.StaticBindHost = rr.ChildHost
 	}
 	if rr.ChildHost != "" && !plan.Static {
-		plan.Env = runner.ChildEnvForHost(os.Environ(), plan.Port, rr.ChildHost)
+		plan.Env = runner.ChildEnvForHost(plan.Env, plan.Port, rr.ChildHost)
 		plan.Command = withHost(plan.Command, rr.ChildHost)
 	}
 }
