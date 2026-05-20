@@ -241,6 +241,18 @@ func TestResolveHostnameConflict(t *testing.T) {
 	if len(label) > 63 || !strings.HasSuffix(label, "-2") {
 		t.Fatalf("suffixed conflict label = %q length %d, want <= 63 and -2 suffix", label, len(label))
 	}
+
+	got = conflictHost(strings.Repeat("p", 31), strings.Repeat("b", 31), 0)
+	label = strings.TrimSuffix(got, ".localhost")
+	if len(label) != 63 {
+		t.Fatalf("unsuffixed 63-char conflict label length = %d for %q, want 63", len(label), label)
+	}
+
+	got = conflictHost(strings.Repeat("p", 31), strings.Repeat("b", 31), 2)
+	label = strings.TrimSuffix(got, ".localhost")
+	if len(label) != 63 || !strings.HasSuffix(label, "-2") {
+		t.Fatalf("suffixed 63-char conflict label = %q length %d, want 63 and -2 suffix", label, len(label))
+	}
 }
 
 func tempProject(t *testing.T, files map[string]string) string {

@@ -75,6 +75,8 @@ func Linux(ctx context.Context, cfg Config) error {
 		}
 		if err := cfg.CommandRunner.Run(ctx, "systemctl", "--user", "enable", "--now", "gohere-router"); err == nil {
 			return nil
+		} else {
+			fmt.Fprintf(cfg.Stderr, "gohere systemd start failed; falling back to detached service: %v\n", err)
 		}
 	}
 	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "service", "run")
@@ -190,6 +192,10 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
 		out.Close()
 		return err
 	}

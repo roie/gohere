@@ -188,7 +188,7 @@ func TestLinuxSetupFallsBackToDetachedWhenSystemdStartFails(t *testing.T) {
 	if !runner.saw(stable, "service", "run") {
 		t.Fatalf("detached fallback missing: %#v", runner.commands)
 	}
-	if stderr.String() != "" {
+	if !contains(stderr.String(), "systemd start failed; falling back to detached service") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
