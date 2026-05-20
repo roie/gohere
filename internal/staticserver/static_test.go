@@ -71,6 +71,29 @@ func TestHandlerServesDirectoryIndex(t *testing.T) {
 	}
 }
 
+func TestHandlerDoesNotServePathTraversalOutsideRoot(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "site")
+	if err := os.Mkdir(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<h1>Hello</h1>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "secret.txt"), []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler(root)
+
+	for _, path := range []string{"/../secret.txt", "/%2e%2e/secret.txt"} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("path %q response = %d %q", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestStartServesOnHiddenPort(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>Hello</h1>"), 0644)
