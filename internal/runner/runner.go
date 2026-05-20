@@ -274,7 +274,7 @@ func streamAndScan(r io.Reader, w io.Writer, detected chan<- int, wg *sync.WaitG
 
 func PortReachable(port int) bool {
 	client := http.Client{Timeout: 200 * time.Millisecond}
-	resp, err := client.Get("http://127.0.0.1:" + strconv.Itoa(port))
+	resp, err := client.Head("http://127.0.0.1:" + strconv.Itoa(port))
 	if err != nil {
 		return false
 	}

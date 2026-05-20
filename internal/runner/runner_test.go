@@ -264,6 +264,36 @@ func TestRunFallsBackToChosenPortWhenReachable(t *testing.T) {
 	}
 }
 
+func TestPortReachableUsesHEADWithoutGET(t *testing.T) {
+	methods := make(chan string, 1)
+	server := &http.Server{Addr: "127.0.0.1:0", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods <- r.Method
+		if r.Method == http.MethodGet {
+			t.Fatal("PortReachable should not use GET")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})}
+	ln, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	go server.Serve(ln)
+	defer server.Close()
+
+	if !PortReachable(port) {
+		t.Fatal("expected port to be reachable")
+	}
+	select {
+	case method := <-methods:
+		if method != http.MethodHead {
+			t.Fatalf("method = %q, want HEAD", method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive probe")
+	}
+}
+
 func TestRunCanRequireDetectedPort(t *testing.T) {
 	server := &http.Server{Addr: "127.0.0.1:0"}
 	ln, err := net.Listen("tcp", server.Addr)
