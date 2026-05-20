@@ -1017,17 +1017,33 @@ func bridgeDoctorChecks(ctx context.Context) []lifecycle.DoctorCheck {
 	}
 	checks := []lifecycle.DoctorCheck{{Name: "environment", OK: true, Detail: "WSL"}}
 	if !windowsStableBinaryExists(windowsUsersRoot) {
-		return checks
+		return append(checks, lifecycle.DoctorCheck{
+			Name:   "windows service install",
+			OK:     false,
+			Detail: "missing",
+			Hint:   "Run gohere from Windows first so WSL can use the Windows service.",
+		})
 	}
 	if err := windowsRouterHealthFunc(ctx); err != nil {
-		return checks
+		return append(checks, lifecycle.DoctorCheck{
+			Name:   "windows service health",
+			OK:     false,
+			Detail: "unavailable",
+			Hint:   "Run gohere from Windows first so WSL can use the Windows service.",
+		})
 	}
 	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
 	if err != nil {
+		detail := "unavailable"
 		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
-			return checks
+			detail = "missing"
 		}
-		return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: false, Detail: "token unavailable", Hint: "Try: run gohere from Windows or stop the Windows service."})
+		return append(checks, lifecycle.DoctorCheck{
+			Name:   "windows service token",
+			OK:     false,
+			Detail: detail,
+			Hint:   "Run gohere from Windows first so WSL can use the Windows service.",
+		})
 	}
 	client := newWindowsAdminClientFunc(token)
 	if _, err := client.Routes(ctx); err != nil {

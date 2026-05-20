@@ -1732,7 +1732,86 @@ func TestDoctorReportsWindowsRouterWhenWSLBridgeAvailable(t *testing.T) {
 	}
 }
 
-func TestDoctorIgnoresStaleWindowsTokenWithoutStableBinary(t *testing.T) {
+func TestDoctorReportsMissingWindowsServiceInstallFromWSL(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL: true,
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		Port80Available: func() bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok environment WSL") ||
+		!strings.Contains(out.String(), "fail windows service install missing") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorReportsWindowsServiceNotReachableFromWSL(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		windowsBinary: true,
+		healthErr:     errors.New("connection refused"),
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		Port80Available: func() bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail windows service health unavailable") ||
+		!strings.Contains(out.String(), "Run gohere from Windows first") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorReportsWindowsTokenMissingFromWSL(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		windowsBinary: true,
+		tokenErr:      bridge.ErrWindowsTokenNotFound,
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		Port80Available: func() bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail windows service token missing") ||
+		!strings.Contains(out.String(), "Run gohere from Windows first") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorReportsWindowsServiceAuthFailureFromWSL(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		windowsBinary: true,
+		admin:         unauthorizedBridgeAdminClient{},
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		Port80Available: func() bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail windows service auth failed") ||
+		!strings.Contains(out.String(), "gohere service stop") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorReportsMissingWindowsInstallEvenWhenStaleTokenExists(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:     true,
 		token:     "windows-token",
@@ -1747,11 +1826,9 @@ func TestDoctorIgnoresStaleWindowsTokenWithoutStableBinary(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "ok environment WSL") {
+	if !strings.Contains(out.String(), "ok environment WSL") ||
+		!strings.Contains(out.String(), "fail windows service install missing") {
 		t.Fatalf("doctor output = %q", out.String())
-	}
-	if strings.Contains(out.String(), "windows service") {
-		t.Fatalf("doctor should ignore stale Windows token without stable binary: %q", out.String())
 	}
 }
 
@@ -1979,6 +2056,14 @@ func (staleTokenAdminClient) UpsertRoute(context.Context, router.Route) error {
 
 func (staleTokenAdminClient) DeleteRoute(context.Context, string) error {
 	return admin.ErrUnauthorized
+}
+
+type unauthorizedBridgeAdminClient struct {
+	staleTokenAdminClient
+}
+
+func (unauthorizedBridgeAdminClient) ProbeTarget(context.Context, string) (bool, error) {
+	return false, admin.ErrUnauthorized
 }
 
 type recordingAdminClient struct {
