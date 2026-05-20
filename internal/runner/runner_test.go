@@ -6,6 +6,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -232,6 +235,49 @@ func TestWaitTreatsContextCancelAsCleanShutdown(t *testing.T) {
 	if err := result.Wait(); err != nil {
 		t.Fatalf("Wait after context cancel = %v, want nil", err)
 	}
+}
+
+func TestStopTerminatesChildProcessTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("covered by process tree command selection on Windows")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is required for process tree test")
+	}
+	dir := t.TempDir()
+	childPIDPath := filepath.Join(dir, "child.pid")
+	script := "sleep 30 & echo $! > " + childPIDPath + "; echo Local: http://127.0.0.1:47654; wait"
+	result, err := Start(context.Background(), Config{
+		Command:        []string{"sh", "-c", script},
+		Stdout:         &bytes.Buffer{},
+		Stderr:         &bytes.Buffer{},
+		StartupTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(childPIDPath)
+	if err != nil {
+		result.Stop()
+		t.Fatal(err)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		result.Stop()
+		t.Fatal(err)
+	}
+
+	if err := result.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processAlive(childPID) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("child process %d is still alive after Stop", childPID)
 }
 
 func TestRunFallsBackToChosenPortWhenReachable(t *testing.T) {

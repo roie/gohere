@@ -40,7 +40,7 @@ func (r *Result) Stop() error {
 	if r == nil || r.cmd == nil || r.cmd.Process == nil {
 		return nil
 	}
-	if err := r.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if err := terminateProcessTree(r.cmd); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
 	<-r.done
@@ -208,6 +208,10 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	if len(cmd.Env) == 0 {
 		cmd.Env = os.Environ()
 	}
+	configureProcessTree(cmd)
+	cmd.Cancel = func() error {
+		return terminateProcessTree(cmd)
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -250,7 +254,7 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 			result.Port = cfg.ChosenPort
 			return result, nil
 		}
-		cmd.Process.Kill()
+		terminateProcessTree(cmd)
 		<-done
 		return nil, errors.New("started dev script, but could not detect a local URL; try: gohere --target 5173")
 	}
