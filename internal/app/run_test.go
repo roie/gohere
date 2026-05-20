@@ -981,12 +981,13 @@ func TestRunVerboseOutputIncludesCleanURLAndMetadata(t *testing.T) {
 
 func TestRunUsesWindowsRouterBridgeFromWSL(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL:      true,
-		token:      "windows-token",
-		wslIP:      "172.20.10.2",
-		reachable:  true,
-		admin:      &recordingAdminClient{},
-		localAdmin: fakeAdminClient{},
+		isWSL:         true,
+		token:         "windows-token",
+		wslIP:         "172.20.10.2",
+		reachable:     true,
+		windowsBinary: true,
+		admin:         &recordingAdminClient{},
+		localAdmin:    fakeAdminClient{},
 	})
 	defer restore()
 
@@ -1074,6 +1075,24 @@ func TestResolveRunRouterFallsBackWhenOnlyWindowsTokenRemains(t *testing.T) {
 	}
 }
 
+func TestResolveRunRouterFallsBackWhenStaleWindowsTokenSeesWSLLocalRouter(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:      true,
+		token:      "windows-token",
+		healthErr:  nil,
+		localAdmin: fakeAdminClient{},
+	})
+	defer restore()
+
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
+		t.Fatalf("runRouter = %#v", runRouter)
+	}
+}
+
 func TestResolveRunRouterRunsSetupBeforeReadingMissingToken(t *testing.T) {
 	oldDetectWSL := detectWSLFunc
 	oldDefaultAdminClient := defaultAdminClientFunc
@@ -1122,6 +1141,61 @@ func TestResolveRunRouterRunsSetupBeforeReadingMissingToken(t *testing.T) {
 	}
 }
 
+func TestResolveRunRouterReportsUncontrolledRouterWhenTokenMissingAfterHealth(t *testing.T) {
+	oldDetectWSL := detectWSLFunc
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldRouterHealth := routerHealthFunc
+	defer func() {
+		detectWSLFunc = oldDetectWSL
+		defaultAdminClientFunc = oldDefaultAdminClient
+		routerHealthFunc = oldRouterHealth
+	}()
+
+	detectWSLFunc = func() bool { return false }
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return nil, os.ErrNotExist
+	}
+	routerHealthFunc = func(context.Context) error {
+		return nil
+	}
+
+	_, err := resolveRunRouter(context.Background(), io.Discard)
+	if err == nil {
+		t.Fatal("expected uncontrolled router error")
+	}
+	if !strings.Contains(err.Error(), "gohere found a router it cannot control") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestResolveRunRouterHandlesTypedNilAdminClientAfterHealth(t *testing.T) {
+	oldDetectWSL := detectWSLFunc
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldRouterHealth := routerHealthFunc
+	defer func() {
+		detectWSLFunc = oldDetectWSL
+		defaultAdminClientFunc = oldDefaultAdminClient
+		routerHealthFunc = oldRouterHealth
+	}()
+
+	detectWSLFunc = func() bool { return false }
+	defaultAdminClientFunc = func() (adminClient, error) {
+		var client *admin.Client
+		return client, os.ErrNotExist
+	}
+	routerHealthFunc = func(context.Context) error {
+		return nil
+	}
+
+	_, err := resolveRunRouter(context.Background(), io.Discard)
+	if err == nil {
+		t.Fatal("expected uncontrolled router error")
+	}
+	if !strings.Contains(err.Error(), "gohere found a router it cannot control") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
 func TestResolveRunRouterStopsWhenWindowsRouterExistsButTokenNotFound(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:         true,
@@ -1160,11 +1234,12 @@ func TestResolveRunRouterFallsBackWhenOnlyWSLLocalRouterLooksHealthy(t *testing.
 
 func TestResolveRunRouterStopsWhenWindowsRouterCannotReachWSL(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL:     true,
-		token:     "windows-token",
-		wslIP:     "172.20.10.2",
-		reachable: false,
-		admin:     &recordingAdminClient{},
+		isWSL:         true,
+		token:         "windows-token",
+		wslIP:         "172.20.10.2",
+		reachable:     false,
+		windowsBinary: true,
+		admin:         &recordingAdminClient{},
 	})
 	defer restore()
 
@@ -1181,9 +1256,10 @@ func TestResolveRunRouterStopsWhenWindowsRouterCannotReachWSL(t *testing.T) {
 func TestResolveRunRouterUsesLoopbackForwardingWhenWSLIPUnreachable(t *testing.T) {
 	var probes []string
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL: true,
-		token: "windows-token",
-		wslIP: "172.20.10.2",
+		isWSL:         true,
+		token:         "windows-token",
+		wslIP:         "172.20.10.2",
+		windowsBinary: true,
 		probeReachable: map[string]bool{
 			"172.20.10.2": false,
 			"127.0.0.1":   true,
@@ -1400,9 +1476,10 @@ func TestListUsesWindowsRouterFromWSL(t *testing.T) {
 		CWD:    "/home/roie/dev/web",
 	}}}
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL: true,
-		token: "windows-token",
-		admin: admin,
+		isWSL:         true,
+		token:         "windows-token",
+		windowsBinary: true,
+		admin:         admin,
 	})
 	defer restore()
 
@@ -1423,9 +1500,10 @@ func TestPruneUsesWindowsRouterFromWSL(t *testing.T) {
 		CWD:    "/home/roie/dev/dead",
 	}}}
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL: true,
-		token: "windows-token",
-		admin: admin,
+		isWSL:         true,
+		token:         "windows-token",
+		windowsBinary: true,
+		admin:         admin,
 	})
 	defer restore()
 
@@ -1512,6 +1590,24 @@ func TestRouteManagerFallsBackWhenOnlyWindowsTokenRemains(t *testing.T) {
 	}
 }
 
+func TestRouteManagerFallsBackWhenStaleWindowsTokenSeesWSLLocalRouter(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:      true,
+		token:      "windows-token",
+		healthErr:  nil,
+		localAdmin: fakeAdminClient{},
+	})
+	defer restore()
+
+	manager, err := resolveRouteManager(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manager.Client == nil || !manager.RouterReady {
+		t.Fatalf("manager = %#v, want local ready router manager", manager)
+	}
+}
+
 func TestStopUsesWindowsRouterFromWSL(t *testing.T) {
 	cwd := "/home/roie/dev/web"
 	admin := &recordingAdminClient{routes: []router.Route{{
@@ -1522,9 +1618,10 @@ func TestStopUsesWindowsRouterFromWSL(t *testing.T) {
 		OwnerEnv: "wsl",
 	}}}
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL: true,
-		token: "windows-token",
-		admin: admin,
+		isWSL:         true,
+		token:         "windows-token",
+		windowsBinary: true,
+		admin:         admin,
 	})
 	defer restore()
 
@@ -1562,9 +1659,10 @@ func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
 
 func TestDoctorReportsWindowsRouterWhenWSLBridgeAvailable(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL: true,
-		token: "windows-token",
-		admin: &recordingAdminClient{},
+		isWSL:         true,
+		token:         "windows-token",
+		windowsBinary: true,
+		admin:         &recordingAdminClient{},
 	})
 	defer restore()
 
@@ -1577,6 +1675,29 @@ func TestDoctorReportsWindowsRouterWhenWSLBridgeAvailable(t *testing.T) {
 	if !strings.Contains(out.String(), "ok environment WSL") ||
 		!strings.Contains(out.String(), "ok windows router available") {
 		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorIgnoresStaleWindowsTokenWithoutStableBinary(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:     true,
+		token:     "windows-token",
+		healthErr: nil,
+		admin:     &recordingAdminClient{},
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		Port80Available: func() bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok environment WSL") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+	if strings.Contains(out.String(), "windows router") {
+		t.Fatalf("doctor should ignore stale Windows token without stable binary: %q", out.String())
 	}
 }
 
@@ -1654,6 +1775,13 @@ func TestDoctorWithStoreShowsInUseHintWhenPort80IsOwned(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "fail port 80 already in use\n  Try: stop the process using port 80, then run gohere again.\n") {
 		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestAddressInUseDetectionHandlesWindowsBindMessage(t *testing.T) {
+	err := errors.New("listen tcp 127.0.0.1:80: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.")
+	if !isAddressInUseError(err) {
+		t.Fatal("expected Windows bind message to be classified as address in use")
 	}
 }
 

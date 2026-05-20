@@ -297,6 +297,8 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 		health := routerHealthFunc
 		if err == nil {
 			health = client.Health
+		} else {
+			client = nil
 		}
 		if err := ensureRouter(ctx, stderr, health); err != nil {
 			return runRouter{}, err
@@ -304,7 +306,7 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 		if client == nil {
 			client, err = defaultAdminClientFunc()
 			if err != nil {
-				return runRouter{}, err
+				return runRouter{}, staleRouterTokenError()
 			}
 		}
 		return runRouter{
@@ -330,6 +332,9 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 			}
 		}
 		return runRouter{}, windowsTokenError(err)
+	}
+	if !windowsStableBinaryExists(windowsUsersRoot) {
+		return local()
 	}
 	if err := windowsRouterHealthFunc(ctx); err != nil {
 		if !windowsStableBinaryExists(windowsUsersRoot) {
@@ -796,6 +801,9 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 		}
 		return routeManager{}, windowsTokenError(err)
 	}
+	if !windowsStableBinaryExists(windowsUsersRoot) {
+		return local(), nil
+	}
 	if err := windowsRouterHealthFunc(ctx); err != nil {
 		if !windowsStableBinaryExists(windowsUsersRoot) {
 			return local(), nil
@@ -997,6 +1005,9 @@ func bridgeDoctorChecks(ctx context.Context) []lifecycle.DoctorCheck {
 		return nil
 	}
 	checks := []lifecycle.DoctorCheck{{Name: "environment", OK: true, Detail: "WSL"}}
+	if !windowsStableBinaryExists(windowsUsersRoot) {
+		return checks
+	}
 	if err := windowsRouterHealthFunc(ctx); err != nil {
 		return checks
 	}
@@ -1091,7 +1102,9 @@ func isAddressInUseError(err error) bool {
 	if errors.Is(err, syscall.EADDRINUSE) {
 		return true
 	}
-	return strings.Contains(strings.ToLower(err.Error()), "address already in use")
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "only one usage of each socket address")
 }
 
 func setcapEnabled(path string) bool {
