@@ -50,6 +50,7 @@ type Server struct {
 	token    string
 	store    Store
 	shutdown func()
+	storeMu  sync.Mutex
 }
 
 func NewServer(cfg Config) *Server {
@@ -274,6 +275,8 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "host and target are required", http.StatusBadRequest)
 			return
 		}
+		s.storeMu.Lock()
+		defer s.storeMu.Unlock()
 		routes, err := s.store.Load()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -301,6 +304,8 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	host := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/routes/"))
+	s.storeMu.Lock()
+	defer s.storeMu.Unlock()
 	routes, err := s.store.Load()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

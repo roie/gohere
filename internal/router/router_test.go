@@ -371,6 +371,42 @@ func TestAdminAPIUpsertHostCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestAdminAPIConcurrentUpsertsDoNotLoseRoutes(t *testing.T) {
+	store := NewMemoryStore()
+	srv := NewServer(Config{Token: "secret", Store: store})
+	handler := srv.AdminHandler()
+	const count = 20
+	done := make(chan error, count)
+
+	for i := 0; i < count; i++ {
+		go func(i int) {
+			body := strings.NewReader(fmt.Sprintf(`{"host":"app-%d.localhost","target":"http://127.0.0.1:%d"}`, i, 40000+i))
+			req := httptest.NewRequest(http.MethodPost, "/routes", body)
+			req.Header.Set("X-Gohere-Token", "secret")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNoContent {
+				done <- fmt.Errorf("POST route %d = %d body %q", i, rec.Code, rec.Body.String())
+				return
+			}
+			done <- nil
+		}(i)
+	}
+
+	for i := 0; i < count; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	routes, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != count {
+		t.Fatalf("routes = %d, want %d: %#v", len(routes), count, routes)
+	}
+}
+
 func TestAdminAPIDeleteHostCaseInsensitive(t *testing.T) {
 	store := NewMemoryStore()
 	store.Save([]Route{{Host: "eventca.localhost", Target: "http://127.0.0.1:49231"}})
