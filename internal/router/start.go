@@ -64,7 +64,12 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		return nil, err
 	}
 	store := NewRouteStore(filepath.Join(cfg.StateDir, "routes.json"))
-	server := NewServer(Config{Token: token, Store: store})
+	var running *Running
+	server := NewServer(Config{Token: token, Store: store, Shutdown: func() {
+		if running != nil {
+			running.Close()
+		}
+	}})
 
 	httpLn, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
@@ -86,7 +91,7 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 	}
 	fmt.Fprintf(logFile, "gohere router started http=%s admin=%s\n", httpLn.Addr().String(), adminLn.Addr().String())
 
-	running := &Running{
+	running = &Running{
 		HTTPAddr:    httpLn.Addr().String(),
 		AdminAddr:   adminLn.Addr().String(),
 		httpServer:  &http.Server{Handler: server.HTTPHandler()},

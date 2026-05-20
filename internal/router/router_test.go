@@ -199,6 +199,41 @@ func TestAdminAPIProbeTargetRequiresToken(t *testing.T) {
 	}
 }
 
+func TestAdminAPIShutdownRequiresToken(t *testing.T) {
+	called := false
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore(), Shutdown: func() { called = true }})
+
+	req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /shutdown without token = %d", rec.Code)
+	}
+	if called {
+		t.Fatal("shutdown should not be called without token")
+	}
+}
+
+func TestAdminAPIShutdownCallsHandler(t *testing.T) {
+	called := make(chan struct{}, 1)
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore(), Shutdown: func() { called <- struct{}{} }})
+
+	req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST /shutdown = %d", rec.Code)
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown handler was not called")
+	}
+}
+
 func TestAdminAPIProbeTargetReachable(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "ok")

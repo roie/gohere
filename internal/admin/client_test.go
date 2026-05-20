@@ -97,6 +97,31 @@ func TestClientReportsUnauthorizedRoutes(t *testing.T) {
 	}
 }
 
+func TestClientShutdown(t *testing.T) {
+	called := false
+	srv := router.NewServer(router.Config{Token: "secret", Store: router.NewMemoryStore(), Shutdown: func() { called = true }})
+	httpSrv := httptest.NewServer(srv.AdminHandler())
+	defer httpSrv.Close()
+
+	if err := NewClient(httpSrv.URL, "secret").Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("shutdown handler was not called")
+	}
+}
+
+func TestClientShutdownReportsUnauthorized(t *testing.T) {
+	srv := router.NewServer(router.Config{Token: "server-token", Store: router.NewMemoryStore()})
+	httpSrv := httptest.NewServer(srv.AdminHandler())
+	defer httpSrv.Close()
+
+	err := NewClient(httpSrv.URL, "client-token").Shutdown(t.Context())
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("Shutdown error = %v, want ErrUnauthorized", err)
+	}
+}
+
 func TestClientProbeTarget(t *testing.T) {
 	srv := router.NewServer(router.Config{Token: "secret", Store: router.NewMemoryStore()})
 	httpSrv := httptest.NewServer(srv.AdminHandler())

@@ -118,6 +118,25 @@ func (c *Client) DeleteRoute(ctx context.Context, host string) error {
 	return nil
 }
 
+func (c *Client) Shutdown(ctx context.Context) error {
+	req, err := c.authedRequest(ctx, http.MethodPost, "/shutdown", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return ErrUnauthorized
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("POST /shutdown returned %s", resp.Status)
+	}
+	return nil
+}
+
 func (c *Client) ProbeTarget(ctx context.Context, target string) (bool, error) {
 	var body bytes.Buffer
 	if err := json.NewEncoder(&body).Encode(struct {

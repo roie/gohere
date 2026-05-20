@@ -21,9 +21,12 @@ func TestUninstallRemovesRouterInstallButKeepsStateByDefault(t *testing.T) {
 	runner := &uninstallRecordingRunner{}
 	process := &uninstallRecordingProcess{}
 	oldPromptInput := promptInput
+	oldAdminShutdown := adminShutdown
 	defer func() {
 		promptInput = oldPromptInput
+		adminShutdown = oldAdminShutdown
 	}()
+	adminShutdown = func(context.Context, string) error { return errors.New("service unavailable") }
 	promptInput = strings.NewReader("\n")
 
 	var out strings.Builder
@@ -32,6 +35,9 @@ func TestUninstallRemovesRouterInstallButKeepsStateByDefault(t *testing.T) {
 		ConfigDir:     configDir,
 		CommandRunner: runner,
 		ProcessSignal: process.Signal,
+		ProcessMatches: func(pid int, binary string) bool {
+			return pid == 12345 && strings.HasSuffix(binary, filepath.Join("bin", "gohere"))
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +81,11 @@ func TestServiceStopStopsRuntimeButKeepsInstallAndState(t *testing.T) {
 	writeFile(t, filepath.Join(configDir, "systemd", "user", "gohere-router.service"), "service")
 	runner := &uninstallRecordingRunner{}
 	process := &uninstallRecordingProcess{}
+	oldAdminShutdown := adminShutdown
+	defer func() {
+		adminShutdown = oldAdminShutdown
+	}()
+	adminShutdown = func(context.Context, string) error { return errors.New("service unavailable") }
 
 	var out strings.Builder
 	if err := ServiceStopWithConfig(context.Background(), &out, ServiceStopConfig{
@@ -82,6 +93,9 @@ func TestServiceStopStopsRuntimeButKeepsInstallAndState(t *testing.T) {
 		ConfigDir:     configDir,
 		CommandRunner: runner,
 		ProcessSignal: process.Signal,
+		ProcessMatches: func(pid int, binary string) bool {
+			return pid == 12345 && strings.HasSuffix(binary, filepath.Join("bin", "gohere"))
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -109,6 +123,78 @@ func TestServiceStopStopsRuntimeButKeepsInstallAndState(t *testing.T) {
 	}
 	if !process.saw(12345) {
 		t.Fatalf("missing process signal: %#v", process.pids)
+	}
+	if !strings.Contains(out.String(), "gohere service stopped") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestServiceStopDoesNotSignalUnverifiedPID(t *testing.T) {
+	stateDir := t.TempDir()
+	configDir := t.TempDir()
+	writeFile(t, filepath.Join(stateDir, "router.pid"), "12345\n")
+	process := &uninstallRecordingProcess{}
+	oldAdminShutdown := adminShutdown
+	defer func() {
+		adminShutdown = oldAdminShutdown
+	}()
+	adminShutdown = func(context.Context, string) error { return errors.New("service unavailable") }
+
+	var out strings.Builder
+	if err := ServiceStopWithConfig(context.Background(), &out, ServiceStopConfig{
+		StateDir:       stateDir,
+		ConfigDir:      configDir,
+		ProcessSignal:  process.Signal,
+		ProcessMatches: func(int, string) bool { return false },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(process.pids) != 0 {
+		t.Fatalf("unexpected process signals: %#v", process.pids)
+	}
+	if strings.TrimSpace(out.String()) != "No gohere service is running." {
+		t.Fatalf("output = %q", out.String())
+	}
+	if exists(filepath.Join(stateDir, "router.pid")) {
+		t.Fatal("unverified stale pid file should still be removed")
+	}
+}
+
+func TestServiceStopUsesAdminShutdownBeforePIDFallback(t *testing.T) {
+	stateDir := t.TempDir()
+	configDir := t.TempDir()
+	writeFile(t, filepath.Join(stateDir, "token"), strings.Repeat("a", 64)+"\n")
+	writeFile(t, filepath.Join(stateDir, "router.pid"), "12345\n")
+	process := &uninstallRecordingProcess{}
+	called := false
+	oldAdminShutdown := adminShutdown
+	defer func() {
+		adminShutdown = oldAdminShutdown
+	}()
+	adminShutdown = func(ctx context.Context, token string) error {
+		called = true
+		if token != strings.Repeat("a", 64) {
+			t.Fatalf("token = %q", token)
+		}
+		return nil
+	}
+
+	var out strings.Builder
+	if err := ServiceStopWithConfig(context.Background(), &out, ServiceStopConfig{
+		StateDir:       stateDir,
+		ConfigDir:      configDir,
+		ProcessSignal:  process.Signal,
+		ProcessMatches: func(int, string) bool { return false },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !called {
+		t.Fatal("admin shutdown was not called")
+	}
+	if len(process.pids) != 0 {
+		t.Fatalf("unexpected process signals: %#v", process.pids)
 	}
 	if !strings.Contains(out.String(), "gohere service stopped") {
 		t.Fatalf("output = %q", out.String())

@@ -14,22 +14,25 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/roie/gohere/internal/admin"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/setup"
 )
 
 type UninstallConfig struct {
-	StateDir      string
-	ConfigDir     string
-	CommandRunner setup.CommandRunner
-	ProcessSignal func(int) error
+	StateDir       string
+	ConfigDir      string
+	CommandRunner  setup.CommandRunner
+	ProcessSignal  func(int) error
+	ProcessMatches func(int, string) bool
 }
 
 type ServiceStopConfig struct {
-	StateDir      string
-	ConfigDir     string
-	CommandRunner setup.CommandRunner
-	ProcessSignal func(int) error
+	StateDir       string
+	ConfigDir      string
+	CommandRunner  setup.CommandRunner
+	ProcessSignal  func(int) error
+	ProcessMatches func(int, string) bool
 }
 
 func Uninstall(ctx context.Context, stdout io.Writer) error {
@@ -56,8 +59,14 @@ func ServiceStopWithConfig(ctx context.Context, stdout io.Writer, cfg ServiceSto
 	if cfg.ProcessSignal == nil {
 		cfg.ProcessSignal = signalProcess
 	}
+	if cfg.ProcessMatches == nil {
+		cfg.ProcessMatches = processMatchesInstalledBinary
+	}
 
 	stopped := false
+	if shutdownInstalledService(ctx, cfg.StateDir) == nil {
+		stopped = true
+	}
 	servicePath := filepath.Join(cfg.ConfigDir, "systemd", "user", "gohere-router.service")
 	if exists(servicePath) {
 		_ = cfg.CommandRunner.Run(ctx, "systemctl", "--user", "stop", "gohere-router")
@@ -66,8 +75,11 @@ func ServiceStopWithConfig(ctx context.Context, stdout io.Writer, cfg ServiceSto
 
 	pidPath := filepath.Join(cfg.StateDir, "router.pid")
 	if pid, ok := readRouterPID(pidPath); ok {
-		_ = cfg.ProcessSignal(pid)
-		stopped = true
+		stableBinary := filepath.Join(cfg.StateDir, "bin", stableBinaryName(runtime.GOOS))
+		if cfg.ProcessMatches(pid, stableBinary) {
+			_ = cfg.ProcessSignal(pid)
+			stopped = true
+		}
 	}
 	if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
 		return err
@@ -97,7 +109,11 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 	if cfg.ProcessSignal == nil {
 		cfg.ProcessSignal = signalProcess
 	}
+	if cfg.ProcessMatches == nil {
+		cfg.ProcessMatches = processMatchesInstalledBinary
+	}
 
+	_ = shutdownInstalledService(ctx, cfg.StateDir)
 	servicePath := filepath.Join(cfg.ConfigDir, "systemd", "user", "gohere-router.service")
 	if exists(servicePath) {
 		_ = cfg.CommandRunner.Run(ctx, "systemctl", "--user", "stop", "gohere-router")
@@ -109,7 +125,10 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 
 	pidPath := filepath.Join(cfg.StateDir, "router.pid")
 	if pid, ok := readRouterPID(pidPath); ok {
-		_ = cfg.ProcessSignal(pid)
+		stableBinary := filepath.Join(cfg.StateDir, "bin", stableBinaryName(runtime.GOOS))
+		if cfg.ProcessMatches(pid, stableBinary) {
+			_ = cfg.ProcessSignal(pid)
+		}
 	}
 	for _, binary := range []string{"gohere", "gohere.exe"} {
 		if err := removeInstalledFile(filepath.Join(cfg.StateDir, "bin", binary)); err != nil {
@@ -151,6 +170,18 @@ func shouldRemoveStateFromAnswer(answer string) bool {
 	return answer == "y" || answer == "yes"
 }
 
+func shutdownInstalledService(ctx context.Context, stateDir string) error {
+	token, err := router.ReadToken(stateDir)
+	if err != nil {
+		return err
+	}
+	return adminShutdown(ctx, token)
+}
+
+var adminShutdown = func(ctx context.Context, token string) error {
+	return admin.NewClient("http://127.0.0.1:39399", token).Shutdown(ctx)
+}
+
 func signalProcess(pid int) error {
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -169,6 +200,28 @@ func terminateProcess(process terminableProcess, goos string) error {
 		return process.Kill()
 	}
 	return process.Signal(syscall.SIGTERM)
+}
+
+func processMatchesInstalledBinary(pid int, stableBinary string) bool {
+	if pid <= 0 || stableBinary == "" {
+		return false
+	}
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	exe, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+	if err != nil {
+		return false
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return false
+	}
+	stableBinary, err = filepath.EvalSymlinks(stableBinary)
+	if err != nil {
+		return false
+	}
+	return exe == stableBinary
 }
 
 func removeInstalledFile(path string) error {

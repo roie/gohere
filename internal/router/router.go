@@ -41,17 +41,19 @@ type Store interface {
 }
 
 type Config struct {
-	Token string
-	Store Store
+	Token    string
+	Store    Store
+	Shutdown func()
 }
 
 type Server struct {
-	token string
-	store Store
+	token    string
+	store    Store
+	shutdown func()
 }
 
 func NewServer(cfg Config) *Server {
-	return &Server{token: cfg.Token, store: cfg.Store}
+	return &Server{token: cfg.Token, store: cfg.Store, shutdown: cfg.Shutdown}
 }
 
 func EnsureToken(stateDir string) (string, error) {
@@ -218,6 +220,7 @@ func (s *Server) AdminHandler() http.Handler {
 	mux.HandleFunc("/routes", s.handleRoutes)
 	mux.HandleFunc("/routes/", s.handleRoute)
 	mux.HandleFunc("/probe-target", s.handleProbeTarget)
+	mux.HandleFunc("/shutdown", s.handleShutdown)
 	return mux
 }
 
@@ -359,6 +362,21 @@ func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(struct {
 		Reachable bool `json:"reachable"`
 	}{Reachable: reachable})
+}
+
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+	if s.shutdown != nil {
+		go s.shutdown()
+	}
 }
 
 func (s *Server) authorized(r *http.Request) bool {
