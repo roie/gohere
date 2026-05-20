@@ -184,8 +184,13 @@ func detectCurrentWSL() bool {
 }
 
 func targetStatus(target string) RouteStatusKind {
-	client := http.Client{Timeout: 200 * time.Millisecond}
-	resp, err := client.Get(target)
+	client := http.Client{
+		Timeout: 200 * time.Millisecond,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Head(target)
 	if err != nil {
 		if isDefinitiveConnectionFailure(err) {
 			return RouteStatusDead

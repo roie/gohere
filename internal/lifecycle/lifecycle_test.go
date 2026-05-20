@@ -72,6 +72,51 @@ func TestRouteStatusesAreUnknownWhenRouterIsNotReady(t *testing.T) {
 	}
 }
 
+func TestRouteStatusUsesHEADWithoutGET(t *testing.T) {
+	var methods []string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		if r.Method == http.MethodGet {
+			t.Fatal("route status probe should not use GET")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	statuses := RouteStatuses([]router.Route{{
+		Host:   "web.localhost",
+		Target: backend.URL,
+	}})
+
+	if len(statuses) != 1 || statuses[0].Status != RouteStatusReady {
+		t.Fatalf("statuses = %#v, want ready", statuses)
+	}
+	if len(methods) != 1 || methods[0] != http.MethodHead {
+		t.Fatalf("methods = %#v, want HEAD only", methods)
+	}
+}
+
+func TestRouteStatusTreatsRedirectAsReadyWithoutFollowing(t *testing.T) {
+	var methods []string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method+" "+r.URL.Path)
+		http.Redirect(w, r, "/login", http.StatusFound)
+	}))
+	defer backend.Close()
+
+	statuses := RouteStatuses([]router.Route{{
+		Host:   "web.localhost",
+		Target: backend.URL,
+	}})
+
+	if len(statuses) != 1 || statuses[0].Status != RouteStatusReady {
+		t.Fatalf("statuses = %#v, want ready", statuses)
+	}
+	if len(methods) != 1 || methods[0] != "HEAD /" {
+		t.Fatalf("methods = %#v, want no redirect follow", methods)
+	}
+}
+
 func TestPruneRemovesDeadRoutes(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{
