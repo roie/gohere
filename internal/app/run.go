@@ -369,7 +369,8 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 }
 
 func bridgeTargetHost(ctx context.Context, client bridgeProbeClient, wslIP string) (string, error) {
-	for _, candidate := range bridgeTargetCandidates(wslIP) {
+	candidates := bridgeTargetCandidates(wslIP)
+	for _, candidate := range candidates {
 		reachable, _, err := probeBridgeFunc(ctx, client, candidate)
 		if err != nil {
 			return "", windowsRouterCannotReachWSLError(err)
@@ -378,7 +379,7 @@ func bridgeTargetHost(ctx context.Context, client bridgeProbeClient, wslIP strin
 			return candidate, nil
 		}
 	}
-	return "", windowsRouterCannotReachWSLError(nil)
+	return "", windowsRouterCannotReachWSLError(fmt.Errorf("Tried: %s", strings.Join(candidates, ", ")))
 }
 
 func bridgeTargetCandidates(wslIP string) []string {

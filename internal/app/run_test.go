@@ -1287,7 +1287,8 @@ func TestResolveRunRouterStopsWhenWindowsRouterCannotReachWSL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Windows gohere service is running, but cannot reach WSL dev servers") ||
 		!strings.Contains(err.Error(), "networkingMode=mirrored") ||
-		!strings.Contains(err.Error(), "Windows Firewall") {
+		!strings.Contains(err.Error(), "Windows Firewall") ||
+		!strings.Contains(err.Error(), "Tried: 127.0.0.1, localhost, 172.20.10.2") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
