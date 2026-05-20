@@ -98,15 +98,17 @@ func TestClientReportsUnauthorizedRoutes(t *testing.T) {
 }
 
 func TestClientShutdown(t *testing.T) {
-	called := false
-	srv := router.NewServer(router.Config{Token: "secret", Store: router.NewMemoryStore(), Shutdown: func() { called = true }})
+	called := make(chan struct{}, 1)
+	srv := router.NewServer(router.Config{Token: "secret", Store: router.NewMemoryStore(), Shutdown: func() { called <- struct{}{} }})
 	httpSrv := httptest.NewServer(srv.AdminHandler())
 	defer httpSrv.Close()
 
 	if err := NewClient(httpSrv.URL, "secret").Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if !called {
+	select {
+	case <-called:
+	case <-time.After(time.Second):
 		t.Fatal("shutdown handler was not called")
 	}
 }
