@@ -255,6 +255,30 @@ func TestResolveHostnameConflict(t *testing.T) {
 	}
 }
 
+func TestResolveHostnameConflictKeepsLabelsWithinDNSLimit(t *testing.T) {
+	parent := strings.Repeat("p", 31)
+	base := strings.Repeat("b", 31)
+	desired := base + ".localhost"
+	cwd := filepath.Join("/work", parent, base)
+
+	got := ResolveHostnameConflict(desired, cwd, map[string]string{
+		desired: "/other/project",
+	})
+	label := strings.TrimSuffix(got, ".localhost")
+	if len(label) != 63 {
+		t.Fatalf("conflict label length = %d for %q, want 63", len(label), label)
+	}
+
+	got = ResolveHostnameConflict(desired, cwd, map[string]string{
+		desired:                       "/other/project",
+		conflictHost(parent, base, 0): "/other/conflict",
+	})
+	label = strings.TrimSuffix(got, ".localhost")
+	if len(label) != 63 || !strings.HasSuffix(label, "-2") {
+		t.Fatalf("suffixed conflict label = %q length %d, want 63 and -2 suffix", label, len(label))
+	}
+}
+
 func tempProject(t *testing.T, files map[string]string) string {
 	t.Helper()
 
