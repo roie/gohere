@@ -90,72 +90,28 @@ func Parse(args []string) (Command, error) {
 				cmd.Script = arg
 				continue
 			}
-			if helpRequested(rest) {
-				return helpCommand(arg), nil
-			}
-			if verboseRequested(rest) {
-				cmd.Verbose = true
-			}
-			if openRequested(rest) {
-				return Command{}, openAfterFixedCommandError()
-			}
-			cmd.Kind = CommandList
-			cmd.Script = ""
-			return cmd, nil
+			return fixedCommand(CommandList, arg, rest)
 		case "stop":
 			if sawScript {
 				cmd.Kind = CommandRun
 				cmd.Script = arg
 				continue
 			}
-			if helpRequested(rest) {
-				return helpCommand(arg), nil
-			}
-			if verboseRequested(rest) {
-				cmd.Verbose = true
-			}
-			if openRequested(rest) {
-				return Command{}, openAfterFixedCommandError()
-			}
-			cmd.Kind = CommandStop
-			cmd.Script = ""
-			return cmd, nil
+			return fixedCommand(CommandStop, arg, rest)
 		case "prune":
 			if sawScript {
 				cmd.Kind = CommandRun
 				cmd.Script = arg
 				continue
 			}
-			if helpRequested(rest) {
-				return helpCommand(arg), nil
-			}
-			if verboseRequested(rest) {
-				cmd.Verbose = true
-			}
-			if openRequested(rest) {
-				return Command{}, openAfterFixedCommandError()
-			}
-			cmd.Kind = CommandPrune
-			cmd.Script = ""
-			return cmd, nil
+			return fixedCommand(CommandPrune, arg, rest)
 		case "doctor":
 			if sawScript {
 				cmd.Kind = CommandRun
 				cmd.Script = arg
 				continue
 			}
-			if helpRequested(rest) {
-				return helpCommand(arg), nil
-			}
-			if verboseRequested(rest) {
-				cmd.Verbose = true
-			}
-			if openRequested(rest) {
-				return Command{}, openAfterFixedCommandError()
-			}
-			cmd.Kind = CommandDoctor
-			cmd.Script = ""
-			return cmd, nil
+			return fixedCommand(CommandDoctor, arg, rest)
 		case "service":
 			if sawScript {
 				cmd.Kind = CommandRun
@@ -169,36 +125,14 @@ func Parse(args []string) (Command, error) {
 				cmd.Script = arg
 				continue
 			}
-			if helpRequested(rest) {
-				return helpCommand(arg), nil
-			}
-			if verboseRequested(rest) {
-				cmd.Verbose = true
-			}
-			if openRequested(rest) {
-				return Command{}, openAfterFixedCommandError()
-			}
-			cmd.Kind = CommandSetup
-			cmd.Script = ""
-			return cmd, nil
+			return fixedCommand(CommandSetup, arg, rest)
 		case "uninstall":
 			if sawScript {
 				cmd.Kind = CommandRun
 				cmd.Script = arg
 				continue
 			}
-			if helpRequested(rest) {
-				return helpCommand(arg), nil
-			}
-			if verboseRequested(rest) {
-				cmd.Verbose = true
-			}
-			if openRequested(rest) {
-				return Command{}, openAfterFixedCommandError()
-			}
-			cmd.Kind = CommandUninstall
-			cmd.Script = ""
-			return cmd, nil
+			return fixedCommand(CommandUninstall, arg, rest)
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return Command{}, unknownOptionError(arg)
@@ -235,6 +169,26 @@ func parseService(args []string) (Command, error) {
 	default:
 		return Command{}, fmt.Errorf("gohere error: unknown service command %q\nTry:\n  gohere service stop", subcommand)
 	}
+}
+
+func fixedCommand(kind CommandKind, topic string, args []string) (Command, error) {
+	cmd := Command{Kind: kind}
+	for _, arg := range args {
+		switch arg {
+		case "--help", "-h":
+			return helpCommand(topic), nil
+		case "--verbose":
+			cmd.Verbose = true
+		case "--open", "-o":
+			return Command{}, openAfterFixedCommandError()
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return Command{}, unknownOptionError(arg)
+			}
+			return Command{}, fmt.Errorf("gohere error: unexpected argument %q", arg)
+		}
+	}
+	return cmd, nil
 }
 
 func helpRequested(args []string) bool {

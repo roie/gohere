@@ -231,8 +231,29 @@ func TestParseVerboseAfterFixedCommand(t *testing.T) {
 	}
 }
 
+func TestParseHelpAfterFixedCommandWithOtherFlags(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "doctor", "--verbose", "--help"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandHelp || cmd.HelpTopic != "doctor" {
+		t.Fatalf("Parse doctor --verbose --help = %#v", cmd)
+	}
+}
+
 func TestParseRejectsOpenAfterFixedCommand(t *testing.T) {
 	_, err := Parse([]string{"gohere", "list", "--open"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: --open is only supported when running a project"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestParseRejectsOpenAfterFixedCommandWithOtherFlags(t *testing.T) {
+	_, err := Parse([]string{"gohere", "list", "--verbose", "--open"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
