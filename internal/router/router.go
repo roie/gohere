@@ -99,12 +99,36 @@ func writeToken(path string) (string, error) {
 		return "", err
 	}
 	token := hex.EncodeToString(tokenBytes)
-	if err := os.WriteFile(path, []byte(token+"\n"), 0600); err != nil {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write([]byte(token + "\n")); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
 		return "", err
 	}
 	if err := os.Chmod(path, 0600); err != nil {
 		return "", err
 	}
+	cleanup = false
 	return token, nil
 }
 

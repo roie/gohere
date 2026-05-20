@@ -35,6 +35,13 @@ func TestTokenGeneratedWith0600Permissions(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0600 {
 		t.Fatalf("token permissions = %v, want 0600", got)
 	}
+	matches, err := filepath.Glob(filepath.Join(dir, "token.*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary token files were left behind: %#v", matches)
+	}
 }
 
 func TestReadTokenDoesNotCreateMissingTokenFile(t *testing.T) {
