@@ -11,7 +11,6 @@ import (
 )
 
 func TestRouteProcessVerifiedWithRealLinuxProcessStartTime(t *testing.T) {
-	beforeStart := time.Now()
 	cmd := exec.Command("sleep", "30")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -20,12 +19,15 @@ func TestRouteProcessVerifiedWithRealLinuxProcessStartTime(t *testing.T) {
 		cmd.Process.Kill()
 		cmd.Wait()
 	})
-	afterStart := time.Now().Add(100 * time.Millisecond)
+	startedAt, ok := realProcessStartTime(cmd.Process.Pid)
+	if !ok {
+		t.Fatal("expected real process start time")
+	}
 
-	if !RouteProcessVerified(router.Route{PID: cmd.Process.Pid, StartedAt: afterStart}) {
+	if !RouteProcessVerified(router.Route{PID: cmd.Process.Pid, StartedAt: startedAt.Add(time.Second)}) {
 		t.Fatal("expected route to verify when recorded after process start")
 	}
-	if RouteProcessVerified(router.Route{PID: cmd.Process.Pid, StartedAt: beforeStart.Add(-time.Second)}) {
+	if RouteProcessVerified(router.Route{PID: cmd.Process.Pid, StartedAt: startedAt.Add(-time.Second)}) {
 		t.Fatal("expected route not to verify when recorded before process start")
 	}
 }
