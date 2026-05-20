@@ -71,13 +71,18 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-	case cli.CommandRouter:
+	case cli.CommandServiceStop:
+		if err := app.ServiceStop(ctx, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case cli.CommandServiceRun:
 		running, err := router.Start(ctx, router.StartConfig{})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "gohere router listening on %s\n", running.HTTPAddr)
+		fmt.Fprintf(os.Stderr, "gohere service listening on %s\n", running.HTTPAddr)
 		waitForRouter(ctx)
 	case cli.CommandHelp:
 		printUsage(os.Stdout, cmd.HelpTopic)
@@ -100,7 +105,7 @@ func printUsage(out io.Writer, topic string) {
 	fmt.Fprint(out, `Usage:
   gohere [script|file] [--open] [--verbose] [--target PORT] [--port-flag FLAG]
   gohere --target PORT -- command [args...]
-  gohere list|stop|prune|doctor|setup|uninstall
+  gohere list|stop|prune|doctor|service stop|setup|uninstall
 
 Examples:
   gohere

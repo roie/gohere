@@ -41,8 +41,8 @@ func TestLinuxSetupCopiesBinaryEnsuresTokenAndRunsSetcap(t *testing.T) {
 	if !runner.saw("sudo", "setcap", "cap_net_bind_service=+ep", stable) {
 		t.Fatalf("commands = %#v", runner.commands)
 	}
-	if !runner.saw(stable, "router") {
-		t.Fatalf("detached router command missing: %#v", runner.commands)
+	if !runner.saw(stable, "service", "run") {
+		t.Fatalf("detached service command missing: %#v", runner.commands)
 	}
 }
 
@@ -152,7 +152,7 @@ func TestLinuxSetupWritesSystemdServiceWhenAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "ExecStart=" + filepath.Join(dir, "state", "bin", "gohere") + " router"; !contains(string(data), want) {
+	if want := "ExecStart=" + filepath.Join(dir, "state", "bin", "gohere") + " service run"; !contains(string(data), want) {
 		t.Fatalf("service file missing %q:\n%s", want, string(data))
 	}
 	if !runner.saw("systemctl", "--user", "enable", "--now", "gohere-router") {
@@ -185,7 +185,7 @@ func TestLinuxSetupFallsBackToDetachedWhenSystemdStartFails(t *testing.T) {
 	if !runner.saw("systemctl", "--user", "enable", "--now", "gohere-router") {
 		t.Fatalf("systemd command missing: %#v", runner.commands)
 	}
-	if !runner.saw(stable, "router") {
+	if !runner.saw(stable, "service", "run") {
 		t.Fatalf("detached fallback missing: %#v", runner.commands)
 	}
 	if stderr.String() != "" {
@@ -246,8 +246,8 @@ func TestWindowsSetupCopiesExeEnsuresTokenAndStartsDetachedRouter(t *testing.T) 
 	if _, err := os.Stat(filepath.Join(dir, "state", "token")); err != nil {
 		t.Fatal(err)
 	}
-	if !runner.saw(stable, "router") {
-		t.Fatalf("detached router command missing: %#v", runner.commands)
+	if !runner.saw(stable, "service", "run") {
+		t.Fatalf("detached service command missing: %#v", runner.commands)
 	}
 	if runner.saw("sudo", "setcap", "cap_net_bind_service=+ep", stable) {
 		t.Fatalf("windows setup should not run setcap: %#v", runner.commands)

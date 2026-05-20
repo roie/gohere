@@ -284,7 +284,7 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		if routerLabel == "" {
 			routerLabel = "running"
 		}
-		fmt.Fprintf(stdout, "router: %s\n", routerLabel)
+		fmt.Fprintf(stdout, "service: %s\n", routerLabel)
 	}
 	return func() {
 		adminClient.DeleteRoute(context.Background(), route.Host)
@@ -306,7 +306,7 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 		if client == nil {
 			client, err = defaultAdminClientFunc()
 			if err != nil {
-				return runRouter{}, staleRouterTokenError()
+				return runRouter{}, localRouterControlError(runtime.GOOS, router.DefaultStateDir())
 			}
 		}
 		return runRouter{
@@ -432,19 +432,30 @@ func routeTarget(host string, port int) string {
 }
 
 func windowsTokenError(err error) error {
-	return errors.New("Windows gohere router found, but WSL could not read or use its token.\nRun gohere from Windows or use the WSL router.\n\nIf you use gohere in both Windows and WSL, run gohere uninstall in the side where the old router is running.")
+	return errors.New("Windows gohere service is available, but WSL could not use it.\n\nWhen Windows and WSL are both installed, WSL projects should use the Windows service.\n\nRun:\n  gohere doctor")
 }
 
 func windowsRouterUnavailableError() error {
-	return errors.New("Windows gohere is installed, but its router is not running.\nRun gohere from Windows first, or run gohere uninstall from Windows to use the WSL router.")
+	return errors.New("Windows gohere is installed, but its service is not running.\nRun gohere from Windows first so WSL can use the Windows service.")
 }
 
 func windowsRouterCannotReachWSLError() error {
-	return errors.New("Windows gohere router is running, but cannot reach WSL dev servers.\nTry enabling mirrored networking in %USERPROFILE%\\.wslconfig:\n  [wsl2]\n  networkingMode=mirrored\nThen run:\n  wsl --shutdown")
+	return errors.New("Windows gohere service is running, but cannot reach WSL dev servers.\nTry enabling mirrored networking in %USERPROFILE%\\.wslconfig:\n  [wsl2]\n  networkingMode=mirrored\nThen run:\n  wsl --shutdown")
 }
 
 func staleRouterTokenError() error {
-	return errors.New("gohere found a router it cannot control.\n\nThis usually means another gohere install is already running, or Windows and WSL are each using a different gohere token.\n\nStop the old router, then run gohere again.\nTry:\n  gohere uninstall\n\nIf you use gohere in both Windows and WSL, run that command in the side where the old router is running. If that does not work, stop the process using ports 80 and 39399.")
+	return errors.New("A gohere service is already using .localhost URLs, but this install cannot control it.\n\nWhen using Windows and WSL together, the Windows service should own .localhost URLs.\nWSL projects will register with the Windows service.\n\nIn the other environment, run:\n  gohere service stop\n\nThen run gohere again.")
+}
+
+func localRouterControlError(goos, stateDir string) error {
+	if goos == "windows" {
+		stableBinary := filepath.Join(stateDir, "bin", stableBinaryName(goos))
+		tokenPath := filepath.Join(stateDir, "token")
+		if !exists(stableBinary) || !exists(tokenPath) {
+			return errors.New("A WSL gohere service is using .localhost URLs.\n\nWhen using Windows and WSL together, the Windows service should own .localhost URLs.\nWSL projects will register with the Windows service.\n\nIn WSL, run:\n  gohere service stop\n\nThen run gohere again from Windows.")
+		}
+	}
+	return staleRouterTokenError()
 }
 
 type registeredRoute struct {
@@ -604,14 +615,14 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 		return err
 	}
 	if err := waitForRouterHealth(ctx, health, 3*time.Second); err != nil {
-		return errors.New("gohere setup finished, but the router is still not reachable")
+		return errors.New("gohere setup finished, but the service is still not reachable")
 	}
 	fmt.Fprintln(out)
 	return nil
 }
 
 func installedRouterUnavailableError(err error) error {
-	return fmt.Errorf("installed gohere router is not reachable.\nTry:\n  gohere doctor\n\nDetails: %w", err)
+	return fmt.Errorf("installed gohere service is not reachable.\nTry:\n  gohere doctor\n\nDetails: %w", err)
 }
 
 func startInstalledRouter(ctx context.Context) error {
@@ -889,7 +900,7 @@ func printStopResult(stdout io.Writer, host string, stopped bool, warning string
 		return
 	}
 	if host == "" {
-		fmt.Fprintln(stdout, "No running gohere app found for this folder.")
+		fmt.Fprintln(stdout, "No running gohere project found for this folder.")
 		return
 	}
 	fmt.Fprintf(stdout, "Stopped %s.\n", host)
@@ -941,7 +952,7 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 	pidPath := filepath.Join(stateDir, "router.pid")
 	checks := []lifecycle.DoctorCheck{
 		{Name: "state dir", OK: exists(stateDir), Detail: stateDir, Hint: "Try: run gohere once to finish setup."},
-		{Name: "stable binary", OK: exists(binaryPath), Detail: binaryPath, Hint: "Try: run gohere once to reinstall the local router binary."},
+		{Name: "stable binary", OK: exists(binaryPath), Detail: binaryPath, Hint: "Try: run gohere once to reinstall the local service binary."},
 		{Name: "token", OK: exists(tokenPath), Detail: tokenPath, Hint: "Try: run gohere uninstall, then run gohere again."},
 	}
 	if info, err := os.Stat(tokenPath); goos != "windows" && err == nil {
@@ -953,9 +964,9 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 		checks = append(checks, lifecycle.DoctorCheck{Name: "admin API health", OK: adminHealthy, Hint: "Try: gohere uninstall, then run gohere again."})
 	}
 	if pid, err := os.ReadFile(pidPath); err == nil {
-		checks = append(checks, lifecycle.DoctorCheck{Name: "router pid", OK: true, Detail: strings.TrimSpace(string(pid))})
+		checks = append(checks, lifecycle.DoctorCheck{Name: "service pid", OK: true, Detail: strings.TrimSpace(string(pid))})
 	} else {
-		checks = append(checks, lifecycle.DoctorCheck{Name: "router pid", OK: false, Detail: pidPath, Hint: "Try: run gohere once to start the router."})
+		checks = append(checks, lifecycle.DoctorCheck{Name: "service pid", OK: false, Detail: pidPath, Hint: "Try: run gohere once to start the service."})
 	}
 	if routes, err := store.Load(); err == nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "active routes", OK: true, Detail: fmt.Sprintf("%d", len(routes))})
@@ -967,7 +978,7 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 		hint := status.Hint
 		if !ok && adminHealthy {
 			ok = true
-			detail = "used by gohere router"
+			detail = "used by gohere service"
 			hint = ""
 		}
 		checks = append(checks, lifecycle.DoctorCheck{Name: "port 80", OK: ok, Detail: detail, Hint: hint})
@@ -978,7 +989,7 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 			detail = "available"
 		} else if adminHealthy {
 			ok = true
-			detail = "used by gohere router"
+			detail = "used by gohere service"
 		}
 		checks = append(checks, lifecycle.DoctorCheck{Name: "port 80", OK: ok, Detail: detail, Hint: "Try: stop the process using port 80, then run gohere again."})
 	}
@@ -1016,13 +1027,13 @@ func bridgeDoctorChecks(ctx context.Context) []lifecycle.DoctorCheck {
 		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
 			return checks
 		}
-		return append(checks, lifecycle.DoctorCheck{Name: "windows router", OK: false, Detail: "token unavailable", Hint: "Try: run gohere from Windows or stop the Windows router."})
+		return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: false, Detail: "token unavailable", Hint: "Try: run gohere from Windows or stop the Windows service."})
 	}
 	client := newWindowsAdminClientFunc(token)
 	if _, err := client.Routes(ctx); err != nil {
-		return append(checks, lifecycle.DoctorCheck{Name: "windows router", OK: false, Detail: "auth failed", Hint: "Try: gohere uninstall in the side where the old router is running."})
+		return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: false, Detail: "auth failed", Hint: "Try: gohere service stop in the side where the old service is running."})
 	}
-	return append(checks, lifecycle.DoctorCheck{Name: "windows router", OK: true, Detail: "available"})
+	return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: true, Detail: "available"})
 }
 
 func stableBinaryName(goos string) string {

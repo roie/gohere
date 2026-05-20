@@ -79,6 +79,7 @@ gohere list --verbose
 gohere stop
 gohere prune
 gohere doctor
+gohere service stop
 gohere uninstall
 ```
 
@@ -86,22 +87,28 @@ gohere uninstall
 
 Route status can be `ready`, `dead`, or `unknown`. `prune` removes only routes that are confidently dead.
 
-## Uninstall
+## Service And Uninstall
 
-Clean up the copied router binary and service before removing the npm package:
+Stop the background service without removing gohere:
+
+```bash
+gohere service stop
+```
+
+Clean up the copied service binary before removing the npm package:
 
 ```bash
 gohere uninstall
 npm uninstall -g gohere
 ```
 
-`gohere uninstall` removes the local router install and asks before deleting routes, logs, and token state.
+`gohere uninstall` removes the local service install and asks before deleting routes, logs, and token state.
 
 ## How it works
 
-`gohere` runs a local router on HTTP port `80`.
+`gohere` runs a local service on HTTP port `80`.
 
-Each project gets a hidden local port. The router maps the clean `.localhost` hostname to that port using the request `Host` header.
+Each project gets a hidden local port. The service maps the clean `.localhost` hostname to that port using the request `Host` header.
 
 State is stored in:
 
@@ -109,11 +116,11 @@ State is stored in:
 ~/.gohere/
 ```
 
-On Linux/WSL, first-time setup may ask for permission so the router can bind to local port `80`.
+On Linux/WSL, first-time setup may ask for permission so the service can bind to local port `80`.
 
-On Windows, first-time setup starts the local router directly on `127.0.0.1:80`.
+On Windows, first-time setup starts the local service directly on `127.0.0.1:80`.
 
-When used from WSL, `gohere` reuses a running Windows router automatically.
+When used from WSL, `gohere` reuses a running Windows service automatically.
 
 ## Platform support
 

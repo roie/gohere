@@ -25,8 +25,60 @@ type UninstallConfig struct {
 	ProcessSignal func(int) error
 }
 
+type ServiceStopConfig struct {
+	StateDir      string
+	ConfigDir     string
+	CommandRunner setup.CommandRunner
+	ProcessSignal func(int) error
+}
+
 func Uninstall(ctx context.Context, stdout io.Writer) error {
 	return UninstallWithConfig(ctx, stdout, UninstallConfig{})
+}
+
+func ServiceStop(ctx context.Context, stdout io.Writer) error {
+	return ServiceStopWithConfig(ctx, stdout, ServiceStopConfig{})
+}
+
+func ServiceStopWithConfig(ctx context.Context, stdout io.Writer, cfg ServiceStopConfig) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if cfg.StateDir == "" {
+		cfg.StateDir = router.DefaultStateDir()
+	}
+	if cfg.ConfigDir == "" {
+		cfg.ConfigDir = filepath.Join(homeDir(), ".config")
+	}
+	if cfg.CommandRunner == nil {
+		cfg.CommandRunner = uninstallRealRunner{}
+	}
+	if cfg.ProcessSignal == nil {
+		cfg.ProcessSignal = signalProcess
+	}
+
+	stopped := false
+	servicePath := filepath.Join(cfg.ConfigDir, "systemd", "user", "gohere-router.service")
+	if exists(servicePath) {
+		_ = cfg.CommandRunner.Run(ctx, "systemctl", "--user", "stop", "gohere-router")
+		stopped = true
+	}
+
+	pidPath := filepath.Join(cfg.StateDir, "router.pid")
+	if pid, ok := readRouterPID(pidPath); ok {
+		_ = cfg.ProcessSignal(pid)
+		stopped = true
+	}
+	if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	if stopped {
+		fmt.Fprintln(stdout, "gohere service stopped.")
+		return nil
+	}
+	fmt.Fprintln(stdout, "No gohere service is running.")
+	return nil
 }
 
 func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallConfig) error {
@@ -67,7 +119,7 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 	if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	fmt.Fprintln(stdout, "gohere router removed.")
+	fmt.Fprintln(stdout, "gohere service removed.")
 
 	fmt.Fprint(stdout, "Remove gohere local state too? This deletes routes, token, and logs. [y/N] ")
 	answer, _ := bufio.NewReader(promptInput).ReadString('\n')

@@ -60,7 +60,84 @@ func TestUninstallRemovesRouterInstallButKeepsStateByDefault(t *testing.T) {
 	if !process.saw(12345) {
 		t.Fatalf("missing process signal: %#v", process.pids)
 	}
-	if !strings.Contains(out.String(), "gohere router removed") {
+	if !strings.Contains(out.String(), "gohere service removed") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestServiceStopStopsRuntimeButKeepsInstallAndState(t *testing.T) {
+	stateDir := t.TempDir()
+	configDir := t.TempDir()
+	writeFile(t, filepath.Join(stateDir, "bin", "gohere"), "binary")
+	writeFile(t, filepath.Join(stateDir, "router.pid"), "12345\n")
+	writeFile(t, filepath.Join(stateDir, "token"), "token\n")
+	writeFile(t, filepath.Join(stateDir, "routes.json"), "[]")
+	writeFile(t, filepath.Join(configDir, "systemd", "user", "gohere-router.service"), "service")
+	runner := &uninstallRecordingRunner{}
+	process := &uninstallRecordingProcess{}
+
+	var out strings.Builder
+	if err := ServiceStopWithConfig(context.Background(), &out, ServiceStopConfig{
+		StateDir:      stateDir,
+		ConfigDir:     configDir,
+		CommandRunner: runner,
+		ProcessSignal: process.Signal,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !exists(filepath.Join(stateDir, "bin", "gohere")) {
+		t.Fatal("stable binary should be kept")
+	}
+	if exists(filepath.Join(stateDir, "router.pid")) {
+		t.Fatal("router pid should be removed")
+	}
+	if !exists(filepath.Join(stateDir, "token")) {
+		t.Fatal("token should be kept")
+	}
+	if !exists(filepath.Join(stateDir, "routes.json")) {
+		t.Fatal("routes should be kept")
+	}
+	if !exists(filepath.Join(configDir, "systemd", "user", "gohere-router.service")) {
+		t.Fatal("systemd service file should be kept")
+	}
+	if !runner.saw("systemctl", "--user", "stop", "gohere-router") {
+		t.Fatalf("missing systemctl stop: %#v", runner.commands)
+	}
+	if runner.saw("systemctl", "--user", "disable", "gohere-router") {
+		t.Fatalf("service stop should not disable systemd service: %#v", runner.commands)
+	}
+	if !process.saw(12345) {
+		t.Fatalf("missing process signal: %#v", process.pids)
+	}
+	if !strings.Contains(out.String(), "gohere service stopped") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestServiceStopReportsNoServiceWhenNothingIsRunning(t *testing.T) {
+	stateDir := t.TempDir()
+	configDir := t.TempDir()
+	runner := &uninstallRecordingRunner{}
+	process := &uninstallRecordingProcess{}
+
+	var out strings.Builder
+	if err := ServiceStopWithConfig(context.Background(), &out, ServiceStopConfig{
+		StateDir:      stateDir,
+		ConfigDir:     configDir,
+		CommandRunner: runner,
+		ProcessSignal: process.Signal,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(runner.commands) != 0 {
+		t.Fatalf("unexpected commands: %#v", runner.commands)
+	}
+	if len(process.pids) != 0 {
+		t.Fatalf("unexpected process signals: %#v", process.pids)
+	}
+	if strings.TrimSpace(out.String()) != "No gohere service is running." {
 		t.Fatalf("output = %q", out.String())
 	}
 }

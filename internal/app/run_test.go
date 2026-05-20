@@ -502,7 +502,7 @@ func TestEnsureRouterDoesNotPromptWhenInstalledRouterRestartFails(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected installed router restart error")
 	}
-	if !strings.Contains(err.Error(), "installed gohere router is not reachable") {
+	if !strings.Contains(err.Error(), "installed gohere service is not reachable") {
 		t.Fatalf("error = %q", err.Error())
 	}
 	if !strings.Contains(err.Error(), "gohere doctor") {
@@ -692,11 +692,11 @@ func TestRunReportsStaleRouterToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected stale router token error")
 	}
-	if !strings.Contains(err.Error(), "gohere found a router it cannot control") {
+	if !strings.Contains(err.Error(), "A gohere service is already using .localhost URLs") {
 		t.Fatalf("error = %q", err.Error())
 	}
-	if !strings.Contains(err.Error(), "gohere uninstall") {
-		t.Fatalf("error should recommend gohere uninstall: %q", err.Error())
+	if !strings.Contains(err.Error(), "gohere service stop") {
+		t.Fatalf("error should recommend gohere service stop: %q", err.Error())
 	}
 	if !strings.Contains(err.Error(), "Windows and WSL") {
 		t.Fatalf("error should mention Windows/WSL split: %q", err.Error())
@@ -974,7 +974,7 @@ func TestRunVerboseOutputIncludesCleanURLAndMetadata(t *testing.T) {
 		!strings.Contains(stdout.String(), "\ntarget: http://127.0.0.1:5173\n") ||
 		!strings.Contains(stdout.String(), "project root: "+dir+"\n") ||
 		!strings.Contains(stdout.String(), "command: npm run dev -- --host 127.0.0.1 --port ") ||
-		!strings.Contains(stdout.String(), "router: running\n") {
+		!strings.Contains(stdout.String(), "service: running\n") {
 		t.Fatalf("verbose stdout = %q", stdout.String())
 	}
 }
@@ -1016,7 +1016,7 @@ func TestRunUsesWindowsRouterBridgeFromWSL(t *testing.T) {
 		t.Fatalf("command = %#v, want bridge host injection", gotCommand)
 	}
 	if !strings.Contains(stdout.String(), "\ntarget: http://127.0.0.1:5173\n") ||
-		!strings.Contains(stdout.String(), "router: Windows\n") {
+		!strings.Contains(stdout.String(), "service: Windows\n") {
 		t.Fatalf("verbose stdout = %q", stdout.String())
 	}
 }
@@ -1052,7 +1052,7 @@ func TestResolveRunRouterStopsWhenWindowsRouterInstalledButNotRunning(t *testing
 	if err == nil {
 		t.Fatal("expected windows router unavailable error")
 	}
-	if !strings.Contains(err.Error(), "Windows gohere is installed, but its router is not running") {
+	if !strings.Contains(err.Error(), "Windows gohere is installed, but its service is not running") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
@@ -1163,7 +1163,7 @@ func TestResolveRunRouterReportsUncontrolledRouterWhenTokenMissingAfterHealth(t 
 	if err == nil {
 		t.Fatal("expected uncontrolled router error")
 	}
-	if !strings.Contains(err.Error(), "gohere found a router it cannot control") {
+	if !strings.Contains(err.Error(), "A gohere service is already using .localhost URLs") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
@@ -1191,7 +1191,42 @@ func TestResolveRunRouterHandlesTypedNilAdminClientAfterHealth(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected uncontrolled router error")
 	}
-	if !strings.Contains(err.Error(), "gohere found a router it cannot control") {
+	if !strings.Contains(err.Error(), "A gohere service is already using .localhost URLs") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestLocalRouterControlErrorExplainsWindowsWSLRouterConflict(t *testing.T) {
+	stateDir := t.TempDir()
+
+	err := localRouterControlError("windows", stateDir)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "A WSL gohere service is using .localhost URLs") ||
+		!strings.Contains(err.Error(), "gohere service stop") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestLocalRouterControlErrorKeepsGenericMessageWhenWindowsStateExists(t *testing.T) {
+	stateDir := t.TempDir()
+	binDir := filepath.Join(stateDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "gohere.exe"), []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "token"), []byte(strings.Repeat("a", 64)+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := localRouterControlError("windows", stateDir)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "A gohere service is already using .localhost URLs") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
@@ -1209,7 +1244,7 @@ func TestResolveRunRouterStopsWhenWindowsRouterExistsButTokenNotFound(t *testing
 	if err == nil {
 		t.Fatal("expected windows token error")
 	}
-	if !strings.Contains(err.Error(), "Windows gohere router found") {
+	if !strings.Contains(err.Error(), "Windows gohere service is available, but WSL could not use it") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
@@ -1247,7 +1282,7 @@ func TestResolveRunRouterStopsWhenWindowsRouterCannotReachWSL(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected bridge reachability error")
 	}
-	if !strings.Contains(err.Error(), "Windows gohere router is running, but cannot reach WSL dev servers") ||
+	if !strings.Contains(err.Error(), "Windows gohere service is running, but cannot reach WSL dev servers") ||
 		!strings.Contains(err.Error(), "networkingMode=mirrored") {
 		t.Fatalf("error = %q", err.Error())
 	}
@@ -1458,7 +1493,7 @@ func TestStopOutput(t *testing.T) {
 
 	out.Reset()
 	printStopResult(&out, "", false, "")
-	if out.String() != "No running gohere app found for this folder.\n" {
+	if out.String() != "No running gohere project found for this folder.\n" {
 		t.Fatalf("stop missing output = %q", out.String())
 	}
 
@@ -1531,7 +1566,7 @@ func TestRouteManagerStopsWhenWindowsRouterExistsButTokenNotFound(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected windows token error")
 	}
-	if !strings.Contains(err.Error(), "Windows gohere router found") {
+	if !strings.Contains(err.Error(), "Windows gohere service is available, but WSL could not use it") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
@@ -1567,7 +1602,7 @@ func TestRouteManagerStopsWhenWindowsRouterInstalledButNotRunning(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected windows router unavailable error")
 	}
-	if !strings.Contains(err.Error(), "Windows gohere is installed, but its router is not running") {
+	if !strings.Contains(err.Error(), "Windows gohere is installed, but its service is not running") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
@@ -1652,7 +1687,7 @@ func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
 	if !strings.Contains(out.String(), "ok active routes 1") {
 		t.Fatalf("doctor output = %q", out.String())
 	}
-	if !strings.Contains(out.String(), "ok router pid 12345") {
+	if !strings.Contains(out.String(), "ok service pid 12345") {
 		t.Fatalf("doctor output = %q", out.String())
 	}
 }
@@ -1673,7 +1708,7 @@ func TestDoctorReportsWindowsRouterWhenWSLBridgeAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "ok environment WSL") ||
-		!strings.Contains(out.String(), "ok windows router available") {
+		!strings.Contains(out.String(), "ok windows service available") {
 		t.Fatalf("doctor output = %q", out.String())
 	}
 }
@@ -1696,7 +1731,7 @@ func TestDoctorIgnoresStaleWindowsTokenWithoutStableBinary(t *testing.T) {
 	if !strings.Contains(out.String(), "ok environment WSL") {
 		t.Fatalf("doctor output = %q", out.String())
 	}
-	if strings.Contains(out.String(), "windows router") {
+	if strings.Contains(out.String(), "windows service") {
 		t.Fatalf("doctor should ignore stale Windows token without stable binary: %q", out.String())
 	}
 }
@@ -1793,7 +1828,7 @@ func TestDoctorWithStoreTreatsHealthyRouterAsPort80OK(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "ok port 80 used by gohere router") {
+	if !strings.Contains(out.String(), "ok port 80 used by gohere service") {
 		t.Fatalf("doctor output = %q", out.String())
 	}
 }

@@ -77,7 +77,7 @@ func Linux(ctx context.Context, cfg Config) error {
 			return nil
 		}
 	}
-	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "router")
+	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "service", "run")
 	if err != nil {
 		return err
 	}
@@ -116,7 +116,7 @@ func Windows(ctx context.Context, cfg Config) error {
 	if _, err := router.EnsureToken(cfg.StateDir); err != nil {
 		return err
 	}
-	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "router")
+	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "service", "run")
 	if err != nil {
 		return err
 	}
@@ -140,7 +140,7 @@ func StartInstalledRouter(ctx context.Context, cfg Config, binaryName string) er
 	if _, err := os.Stat(filepath.Join(cfg.StateDir, "token")); err != nil {
 		return err
 	}
-	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "router")
+	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "service", "run")
 	if err != nil {
 		return err
 	}
@@ -166,10 +166,10 @@ func writeSystemdService(configDir, stableBinary string) error {
 		return err
 	}
 	service := fmt.Sprintf(`[Unit]
-Description=gohere local hostname router
+Description=gohere local hostname service
 
 [Service]
-ExecStart=%s router
+ExecStart=%s service run
 Restart=on-failure
 
 [Install]

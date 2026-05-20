@@ -112,7 +112,6 @@ func TestParseFixedCommands(t *testing.T) {
 		"stop":      CommandStop,
 		"prune":     CommandPrune,
 		"doctor":    CommandDoctor,
-		"router":    CommandRouter,
 		"setup":     CommandSetup,
 		"uninstall": CommandUninstall,
 	}
@@ -127,6 +126,50 @@ func TestParseFixedCommands(t *testing.T) {
 				t.Fatalf("kind = %v, want %v", cmd.Kind, want)
 			}
 		})
+	}
+}
+
+func TestParseRouterIsScriptName(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "router"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandRun || cmd.Script != "router" {
+		t.Fatalf("Parse router = %#v", cmd)
+	}
+}
+
+func TestParseServiceCommands(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want CommandKind
+	}{
+		{name: "stop", args: []string{"gohere", "service", "stop"}, want: CommandServiceStop},
+		{name: "run", args: []string{"gohere", "service", "run"}, want: CommandServiceRun},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, err := Parse(tt.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cmd.Kind != tt.want || cmd.Script != "" {
+				t.Fatalf("Parse service command = %#v, want %v", cmd, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseServiceRejectsUnknownSubcommand(t *testing.T) {
+	_, err := Parse([]string{"gohere", "service", "status"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: unknown service command \"status\"\nTry:\n  gohere service stop"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}
 }
 
@@ -151,6 +194,7 @@ func TestParseHelp(t *testing.T) {
 		{name: "global command", args: []string{"gohere", "help"}},
 		{name: "setup topic", args: []string{"gohere", "setup", "--help"}, wantTopic: "setup"},
 		{name: "doctor topic short", args: []string{"gohere", "doctor", "-h"}, wantTopic: "doctor"},
+		{name: "service topic", args: []string{"gohere", "service", "--help"}, wantTopic: "service"},
 	}
 
 	for _, tt := range tests {

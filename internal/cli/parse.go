@@ -10,17 +10,18 @@ import (
 type CommandKind string
 
 const (
-	CommandRun       CommandKind = "run"
-	CommandRaw       CommandKind = "raw"
-	CommandList      CommandKind = "list"
-	CommandStop      CommandKind = "stop"
-	CommandPrune     CommandKind = "prune"
-	CommandDoctor    CommandKind = "doctor"
-	CommandRouter    CommandKind = "router"
-	CommandSetup     CommandKind = "setup"
-	CommandUninstall CommandKind = "uninstall"
-	CommandHelp      CommandKind = "help"
-	CommandVersion   CommandKind = "version"
+	CommandRun         CommandKind = "run"
+	CommandRaw         CommandKind = "raw"
+	CommandList        CommandKind = "list"
+	CommandStop        CommandKind = "stop"
+	CommandPrune       CommandKind = "prune"
+	CommandDoctor      CommandKind = "doctor"
+	CommandServiceRun  CommandKind = "service-run"
+	CommandServiceStop CommandKind = "service-stop"
+	CommandSetup       CommandKind = "setup"
+	CommandUninstall   CommandKind = "uninstall"
+	CommandHelp        CommandKind = "help"
+	CommandVersion     CommandKind = "version"
 )
 
 type Command struct {
@@ -155,24 +156,13 @@ func Parse(args []string) (Command, error) {
 			cmd.Kind = CommandDoctor
 			cmd.Script = ""
 			return cmd, nil
-		case "router":
+		case "service":
 			if sawScript {
 				cmd.Kind = CommandRun
 				cmd.Script = arg
 				continue
 			}
-			if helpRequested(rest) {
-				return helpCommand(arg), nil
-			}
-			if verboseRequested(rest) {
-				cmd.Verbose = true
-			}
-			if openRequested(rest) {
-				return Command{}, openAfterFixedCommandError()
-			}
-			cmd.Kind = CommandRouter
-			cmd.Script = ""
-			return cmd, nil
+			return parseService(rest)
 		case "setup":
 			if sawScript {
 				cmd.Kind = CommandRun
@@ -220,6 +210,31 @@ func Parse(args []string) (Command, error) {
 	}
 
 	return cmd, nil
+}
+
+func parseService(args []string) (Command, error) {
+	if len(args) == 0 {
+		return Command{}, errors.New("gohere error: service requires a command\nTry:\n  gohere service stop")
+	}
+	if helpRequested(args) {
+		return helpCommand("service"), nil
+	}
+	subcommand := args[0]
+	rest := args[1:]
+	if helpRequested(rest) {
+		return helpCommand("service " + subcommand), nil
+	}
+	if verboseRequested(rest) || openRequested(rest) || len(rest) > 0 {
+		return Command{}, fmt.Errorf("gohere error: unknown service command %q\nTry:\n  gohere service stop", subcommand)
+	}
+	switch subcommand {
+	case "stop":
+		return Command{Kind: CommandServiceStop}, nil
+	case "run":
+		return Command{Kind: CommandServiceRun}, nil
+	default:
+		return Command{}, fmt.Errorf("gohere error: unknown service command %q\nTry:\n  gohere service stop", subcommand)
+	}
 }
 
 func helpRequested(args []string) bool {
