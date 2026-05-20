@@ -152,11 +152,43 @@ func TestLinuxSetupWritesSystemdServiceWhenAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "ExecStart=" + filepath.Join(dir, "state", "bin", "gohere") + " service run"; !contains(string(data), want) {
+	if want := "ExecStart=\"" + filepath.Join(dir, "state", "bin", "gohere") + "\" service run"; !contains(string(data), want) {
 		t.Fatalf("service file missing %q:\n%s", want, string(data))
 	}
 	if !runner.saw("systemctl", "--user", "enable", "--now", "gohere-router") {
 		t.Fatalf("commands = %#v", runner.commands)
+	}
+}
+
+func TestLinuxSetupQuotesSystemdExecStartPath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "path with spaces")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(dir, "source-gohere")
+	if err := os.WriteFile(source, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Linux(context.Background(), Config{
+		StateDir:         filepath.Join(dir, "state"),
+		ConfigDir:        filepath.Join(dir, "config"),
+		CurrentBinary:    source,
+		CommandRunner:    &recordingRunner{},
+		SystemdAvailable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	servicePath := filepath.Join(dir, "config", "systemd", "user", "gohere-router.service")
+	data, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stable := filepath.Join(dir, "state", "bin", "gohere")
+	if want := "ExecStart=\"" + stable + "\" service run"; !contains(string(data), want) {
+		t.Fatalf("service file missing quoted ExecStart %q:\n%s", want, string(data))
 	}
 }
 

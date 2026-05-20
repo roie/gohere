@@ -176,8 +176,12 @@ Restart=on-failure
 
 [Install]
 WantedBy=default.target
-`, stableBinary)
+`, systemdQuote(stableBinary))
 	return os.WriteFile(filepath.Join(serviceDir, "gohere-router.service"), []byte(service), 0644)
+}
+
+func systemdQuote(value string) string {
+	return strconv.Quote(value)
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {
