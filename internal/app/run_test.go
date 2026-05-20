@@ -377,11 +377,14 @@ func TestRunSuccessOutputDoesNotLabelRawCommand(t *testing.T) {
 
 func TestShouldRunSetupFromAnswer(t *testing.T) {
 	tests := map[string]bool{
-		"\n":  true,
-		"Y\n": true,
-		"y\n": true,
-		"n\n": false,
-		"N\n": false,
+		"\n":    true,
+		"Y\n":   true,
+		"y\n":   true,
+		"yes\n": true,
+		"yep\n": true,
+		"ye\n":  true,
+		"n\n":   false,
+		"N\n":   false,
 	}
 
 	for answer, want := range tests {

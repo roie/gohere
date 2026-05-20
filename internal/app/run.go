@@ -661,7 +661,7 @@ func firstRunPrompt() string {
 
 func shouldRunSetupFromAnswer(answer string) bool {
 	answer = strings.TrimSpace(strings.ToLower(answer))
-	return answer == "" || answer == "y" || answer == "yes"
+	return answer == "" || strings.HasPrefix(answer, "y")
 }
 
 func setupForGOOS(ctx context.Context, goos string) error {

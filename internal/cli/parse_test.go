@@ -75,6 +75,17 @@ func TestParseRawCommand(t *testing.T) {
 	}
 }
 
+func TestParseRawCommandRequiresCommand(t *testing.T) {
+	_, err := Parse([]string{"gohere", "--"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: raw command after -- is required"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestParseOpenFlag(t *testing.T) {
 	tests := [][]string{
 		{"gohere", "--open"},
@@ -238,6 +249,30 @@ func TestParseOptions(t *testing.T) {
 	}
 	if !cmd.Verbose || cmd.TargetPort != 5173 || cmd.PortFlag != "-p" || cmd.Script != "dev" {
 		t.Fatalf("options = %#v", cmd)
+	}
+}
+
+func TestParseOptionErrorsUseGoherePrefix(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing target", args: []string{"gohere", "--target"}, want: "gohere error: --target requires a port"},
+		{name: "invalid target", args: []string{"gohere", "--target", "nope"}, want: "gohere error: --target must be a valid port"},
+		{name: "missing port flag", args: []string{"gohere", "--port-flag"}, want: "gohere error: --port-flag requires a flag"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse(tt.args)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("error = %q, want %q", err.Error(), tt.want)
+			}
+		})
 	}
 }
 

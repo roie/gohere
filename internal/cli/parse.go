@@ -50,7 +50,7 @@ func Parse(args []string) (Command, error) {
 		switch arg {
 		case "--":
 			if len(rest) == 0 {
-				return Command{}, errors.New("raw command after -- is required")
+				return Command{}, parseError("raw command after -- is required")
 			}
 			cmd.Kind = CommandRaw
 			cmd.Script = ""
@@ -62,17 +62,17 @@ func Parse(args []string) (Command, error) {
 			cmd.Open = true
 		case "--target":
 			if len(rest) == 0 {
-				return Command{}, errors.New("--target requires a port")
+				return Command{}, parseError("--target requires a port")
 			}
 			port, err := strconv.Atoi(rest[0])
 			if err != nil || port <= 0 || port > 65535 {
-				return Command{}, errors.New("--target must be a valid port")
+				return Command{}, parseError("--target must be a valid port")
 			}
 			cmd.TargetPort = port
 			rest = rest[1:]
 		case "--port-flag":
 			if len(rest) == 0 {
-				return Command{}, errors.New("--port-flag requires a flag")
+				return Command{}, parseError("--port-flag requires a flag")
 			}
 			cmd.PortFlag = rest[0]
 			rest = rest[1:]
@@ -258,6 +258,10 @@ func openRequested(args []string) bool {
 
 func openAfterFixedCommandError() error {
 	return errors.New("gohere error: --open is only supported when running a project")
+}
+
+func parseError(message string) error {
+	return fmt.Errorf("gohere error: %s", message)
 }
 
 func unknownOptionError(arg string) error {
