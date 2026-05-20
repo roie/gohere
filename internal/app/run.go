@@ -42,6 +42,7 @@ var (
 	}
 	startRunnerFunc           = runner.Start
 	detectWSLFunc             = bridge.DetectWSL
+	routerHealthFunc          = func(ctx context.Context) error { return admin.NewClient("http://127.0.0.1:39399", "").Health(ctx) }
 	windowsRouterHealthFunc   = func(ctx context.Context) error { return admin.NewClient(windowsAdminBaseURL, "").Health(ctx) }
 	discoverWindowsTokenFunc  = bridge.DiscoverWindowsToken
 	windowsStableBinaryExists = bridge.WindowsStableBinaryExists
@@ -293,11 +294,18 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) {
 	local := func() (runRouter, error) {
 		client, err := defaultAdminClientFunc()
-		if err != nil {
+		health := routerHealthFunc
+		if err == nil {
+			health = client.Health
+		}
+		if err := ensureRouter(ctx, stderr, health); err != nil {
 			return runRouter{}, err
 		}
-		if err := ensureRouter(ctx, stderr, client.Health); err != nil {
-			return runRouter{}, err
+		if client == nil {
+			client, err = defaultAdminClientFunc()
+			if err != nil {
+				return runRouter{}, err
+			}
 		}
 		return runRouter{
 			Client:          client,

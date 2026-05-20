@@ -1074,6 +1074,54 @@ func TestResolveRunRouterFallsBackWhenOnlyWindowsTokenRemains(t *testing.T) {
 	}
 }
 
+func TestResolveRunRouterRunsSetupBeforeReadingMissingToken(t *testing.T) {
+	oldDetectWSL := detectWSLFunc
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldRouterHealth := routerHealthFunc
+	oldSetup := setupFunc
+	oldStartInstalledRouter := startInstalledRouterFunc
+	oldPromptInput := promptInput
+	defer func() {
+		detectWSLFunc = oldDetectWSL
+		defaultAdminClientFunc = oldDefaultAdminClient
+		routerHealthFunc = oldRouterHealth
+		setupFunc = oldSetup
+		startInstalledRouterFunc = oldStartInstalledRouter
+		promptInput = oldPromptInput
+	}()
+
+	detectWSLFunc = func() bool { return false }
+	setupDone := false
+	defaultAdminClientFunc = func() (adminClient, error) {
+		if !setupDone {
+			return nil, os.ErrNotExist
+		}
+		return fakeAdminClient{}, nil
+	}
+	routerHealthFunc = func(context.Context) error {
+		if !setupDone {
+			return errors.New("router unavailable")
+		}
+		return nil
+	}
+	setupFunc = func(context.Context) error {
+		setupDone = true
+		return nil
+	}
+	startInstalledRouterFunc = func(context.Context) error {
+		return os.ErrNotExist
+	}
+	promptInput = strings.NewReader("\n")
+
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runRouter.Client == nil || runRouter.RouteTargetHost != "127.0.0.1" {
+		t.Fatalf("runRouter = %#v", runRouter)
+	}
+}
+
 func TestResolveRunRouterStopsWhenWindowsRouterExistsButTokenNotFound(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:     true,
