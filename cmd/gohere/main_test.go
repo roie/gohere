@@ -47,3 +47,23 @@ func TestPrintUsageIndentsExamples(t *testing.T) {
 		t.Fatalf("usage output = %q", out.String())
 	}
 }
+
+func TestPrintUsageDescribesFlags(t *testing.T) {
+	var out bytes.Buffer
+	printUsage(&out, "")
+
+	for _, want := range []string{
+		"--open",
+		"open the URL in your browser",
+		"--verbose",
+		"show target, command, and service details",
+		"--target PORT",
+		"use an existing local port",
+		"--port-flag FLAG",
+		"override the dev server port flag",
+	} {
+		if !bytes.Contains(out.Bytes(), []byte(want)) {
+			t.Fatalf("usage output missing %q:\n%s", want, out.String())
+		}
+	}
+}

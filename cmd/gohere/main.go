@@ -113,6 +113,12 @@ Examples:
   gohere dev:web
   gohere pages/about.html
   gohere --target 5173 -- npm run dev
+
+Flags:
+  --open, -o        open the URL in your browser
+  --verbose         show target, command, and service details
+  --target PORT     use an existing local port
+  --port-flag FLAG  override the dev server port flag
 `)
 }
 
