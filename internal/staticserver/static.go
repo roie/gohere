@@ -5,8 +5,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 type Server struct {
@@ -22,14 +24,12 @@ func IsStaticProject(dir string) bool {
 
 func Handler(root string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := filepath.Clean(r.URL.Path)
-		if path == "." || path == "/" {
-			path = "index.html"
-		} else {
-			path = path[1:]
+		localPath, ok := localStaticPath(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
 		}
-
-		fullPath := filepath.Join(root, path)
+		fullPath := filepath.Join(root, localPath)
 		info, err := os.Stat(fullPath)
 		if err != nil {
 			http.NotFound(w, r)
@@ -45,6 +45,21 @@ func Handler(root string) http.Handler {
 		}
 		http.ServeFile(w, r, fullPath)
 	})
+}
+
+func localStaticPath(urlPath string) (string, bool) {
+	if strings.Contains(urlPath, "\\") {
+		return "", false
+	}
+	cleanPath := path.Clean("/" + urlPath)
+	if cleanPath == "/" {
+		return "index.html", true
+	}
+	cleanPath = strings.TrimPrefix(cleanPath, "/")
+	if cleanPath == "." || cleanPath == ".." || strings.HasPrefix(cleanPath, "../") {
+		return "", false
+	}
+	return filepath.FromSlash(cleanPath), true
 }
 
 func Start(ctx context.Context, dir string, port int) (*Server, error) {

@@ -85,7 +85,7 @@ func TestHandlerDoesNotServePathTraversalOutsideRoot(t *testing.T) {
 	}
 	handler := Handler(root)
 
-	for _, path := range []string{"/../secret.txt", "/%2e%2e/secret.txt"} {
+	for _, path := range []string{"/../secret.txt", "/%2e%2e/secret.txt", "/%5c..%5csecret.txt"} {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusNotFound {
