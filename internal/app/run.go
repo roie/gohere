@@ -351,6 +351,9 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 	for i := range items {
 		itemCmd := items[i].cmd
 		plan := items[i].plan
+		if routerResolved {
+			applyRunRouter(&plan, resolvedRouter)
+		}
 		childStdout := newLimitedCapture(32 * 1024)
 		childStderr := newLimitedCapture(32 * 1024)
 		result, err := startRunnerFunc(ctx, runner.Config{
@@ -376,6 +379,7 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 				result.Stop()
 				return err
 			}
+			resolvedRouter = rr
 			applyRunRouter(&plan, rr)
 		}
 
@@ -384,6 +388,7 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 			result.Stop()
 			return err
 		}
+		items[i].plan = plan
 		items[i].result = result
 		items[i].cleanup = cleanup
 	}
@@ -770,6 +775,9 @@ func replayCapturedOutput(out io.Writer, captures ...*limitedCapture) {
 		fmt.Fprint(out, text)
 		lastEndedNewline = strings.HasSuffix(text, "\n")
 		wrote = true
+	}
+	if wrote && !lastEndedNewline {
+		fmt.Fprintln(out)
 	}
 }
 

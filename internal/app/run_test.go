@@ -930,6 +930,40 @@ func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
 	}
 }
 
+func TestRunMultiAppliesRouterTargetToEveryRoute(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	oldResolveWSL := detectWSLFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+		detectWSLFunc = oldResolveWSL
+	}()
+
+	detectWSLFunc = func() bool { return false }
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		return &runner.Result{Port: 5100 + len(admin.upsertedHosts()) + 1}, nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev:web":"vite","dev:api":"vite"}}`,
+	})
+	cmd := cli.Command{Kind: cli.CommandRun, Script: "dev:web", Scripts: []string{"dev:web", "dev:api"}}
+	if err := Run(context.Background(), cmd, dir, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, route := range admin.upsertedRoutes() {
+		if !strings.HasPrefix(route.Target, "http://127.0.0.1:") {
+			t.Fatalf("route target = %q, want router target host applied", route.Target)
+		}
+	}
+}
+
 func TestMultiScriptHostDerivesLabelFromScriptSuffix(t *testing.T) {
 	tests := []struct {
 		script string
@@ -1272,6 +1306,35 @@ func TestRunFormatsFailedScriptExit(t *testing.T) {
 	}
 	if stderr.String() != "lint failed\n" {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunFailureReplayAddsTrailingNewline(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return nil, errors.New("service should not be touched")
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		cfg.Stderr.Write([]byte("lint failed"))
+		return nil, runner.ErrProcessFailed
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"lint":"eslint ."}}`,
+	})
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "lint"}, dir, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	if stderr.String() != "lint failed\n" {
+		t.Fatalf("stderr = %q, want trailing newline", stderr.String())
 	}
 }
 
@@ -2465,6 +2528,12 @@ func (c *multiRecordingAdminClient) upsertedHosts() []string {
 		hosts = append(hosts, route.Host)
 	}
 	return hosts
+}
+
+func (c *multiRecordingAdminClient) upsertedRoutes() []router.Route {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]router.Route(nil), c.routes...)
 }
 
 func (c *multiRecordingAdminClient) deletedHosts() []string {
