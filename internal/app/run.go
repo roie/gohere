@@ -1084,12 +1084,21 @@ func adminRouteStatuses(ctx context.Context, client adminClient) ([]lifecycle.Ro
 			if probeClient, ok := client.(bridgeProbeClient); ok {
 				return adminProbeRouteStatuses(ctx, client, probeClient)
 			}
+			return fallbackLocalRouteStatuses(ctx, client)
 		}
 		return nil, err
 	}
 	if probeClient, ok := client.(bridgeProbeClient); ok {
 		return adminProbeRouteStatuses(ctx, client, probeClient)
 	}
+	routes, err := client.Routes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return lifecycle.RouteStatuses(routes), nil
+}
+
+func fallbackLocalRouteStatuses(ctx context.Context, client adminClient) ([]lifecycle.RouteStatus, error) {
 	routes, err := client.Routes(ctx)
 	if err != nil {
 		return nil, err

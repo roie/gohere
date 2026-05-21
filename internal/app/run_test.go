@@ -16,6 +16,7 @@ import (
 	"github.com/roie/gohere/internal/admin"
 	"github.com/roie/gohere/internal/bridge"
 	"github.com/roie/gohere/internal/cli"
+	"github.com/roie/gohere/internal/lifecycle"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/runner"
 	"github.com/roie/gohere/internal/setup"
@@ -2054,6 +2055,23 @@ func TestListDoesNotFallbackToProbeForRouteStatusServerError(t *testing.T) {
 	}
 }
 
+func TestListFallsBackToLocalStatusWhenRouteStatusesUnsupportedWithoutProbe(t *testing.T) {
+	route := router.Route{
+		Host:   "old-local.localhost",
+		Target: "http://127.0.0.1:1",
+		CWD:    "/tmp/old-local",
+	}
+	client := routeStatusesUnsupportedClient{routes: []router.Route{route}}
+
+	statuses, err := adminRouteStatuses(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Route.Host != "old-local.localhost" || statuses[0].Status == lifecycle.RouteStatusReady {
+		t.Fatalf("statuses = %#v", statuses)
+	}
+}
+
 func TestPruneUsesWindowsRouterFromWSL(t *testing.T) {
 	route := router.Route{
 		Host:   "dead.localhost",
@@ -2656,6 +2674,30 @@ type recordingAdminClient struct {
 	statusErr      error
 	probeReachable map[string]bool
 	deleted        string
+}
+
+type routeStatusesUnsupportedClient struct {
+	routes []router.Route
+}
+
+func (c routeStatusesUnsupportedClient) Health(context.Context) error {
+	return nil
+}
+
+func (c routeStatusesUnsupportedClient) Routes(context.Context) ([]router.Route, error) {
+	return append([]router.Route(nil), c.routes...), nil
+}
+
+func (c routeStatusesUnsupportedClient) RouteStatuses(context.Context) ([]router.RouteStatus, error) {
+	return nil, admin.ErrRouteStatusesUnsupported
+}
+
+func (c routeStatusesUnsupportedClient) UpsertRoute(context.Context, router.Route) error {
+	return nil
+}
+
+func (c routeStatusesUnsupportedClient) DeleteRoute(context.Context, string) error {
+	return nil
 }
 
 type multiRecordingAdminClient struct {
