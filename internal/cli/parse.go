@@ -30,6 +30,7 @@ type Command struct {
 	Raw        []string
 	Verbose    bool
 	Open       bool
+	As         string
 	TargetPort int
 	PortFlag   string
 	HelpTopic  string
@@ -60,6 +61,12 @@ func Parse(args []string) (Command, error) {
 			cmd.Verbose = true
 		case "--open", "-o":
 			cmd.Open = true
+		case "--as":
+			if len(rest) == 0 {
+				return Command{}, parseError("--as requires a name")
+			}
+			cmd.As = rest[0]
+			rest = rest[1:]
 		case "--target":
 			if len(rest) == 0 {
 				return Command{}, parseError("--target requires a port")

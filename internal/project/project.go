@@ -156,6 +156,19 @@ func packageManagerFromField(value string) PackageManager {
 }
 
 func NormalizeHostnameName(name string) string {
+	normalized := normalizeHostnameName(name)
+	if normalized == "" {
+		return "app"
+	}
+	return normalized
+}
+
+func NormalizeHostnameAlias(name string) (string, bool) {
+	normalized := normalizeHostnameName(name)
+	return normalized, normalized != ""
+}
+
+func normalizeHostnameName(name string) string {
 	name = strings.ToLower(name)
 
 	var out strings.Builder
@@ -181,14 +194,8 @@ func NormalizeHostnameName(name string) string {
 	}
 
 	normalized := strings.Trim(out.String(), "-")
-	if normalized == "" {
-		return "app"
-	}
 	if len(normalized) > 63 {
 		normalized = strings.TrimRight(normalized[:63], "-")
-	}
-	if normalized == "" {
-		return "app"
 	}
 	return normalized
 }

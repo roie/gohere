@@ -118,7 +118,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	env := runner.ChildEnv(os.Environ(), port)
 	if cmd.Kind == cli.CommandRaw {
 		host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
-		return RunPlan{
+		return applyAsAlias(cmd, RunPlan{
 			Command:             append([]string(nil), cmd.Raw...),
 			Env:                 env,
 			Port:                port,
@@ -126,7 +126,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 			Name:                strings.TrimSuffix(host, ".localhost"),
 			CWD:                 cwd,
 			RequireDetectedPort: cmd.TargetPort == 0,
-		}, nil
+		})
 	}
 
 	if isFileTarget(cmd) {
@@ -140,7 +140,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	}
 	if cmd.Script == "dev" && staticserver.IsStaticProject(cwd) && !hasCurrentPackage {
 		host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
-		return RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, Static: true}, nil
+		return applyAsAlias(cmd, RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, Static: true})
 	}
 
 	packagePath, found, err := project.FindNearestPackageJSON(cwd)
@@ -153,7 +153,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 		}
 		if staticserver.IsStaticProject(cwd) {
 			host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
-			return RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, Static: true}, nil
+			return applyAsAlias(cmd, RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, Static: true})
 		}
 		return RunPlan{}, errors.New("No package.json or index.html found; use gohere -- <command>.")
 	}
@@ -177,7 +177,20 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	if err != nil {
 		return RunPlan{}, err
 	}
-	return RunPlan{Command: command, Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: projectDir(packagePath)}, nil
+	return applyAsAlias(cmd, RunPlan{Command: command, Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: projectDir(packagePath)})
+}
+
+func applyAsAlias(cmd cli.Command, plan RunPlan) (RunPlan, error) {
+	if cmd.As == "" {
+		return plan, nil
+	}
+	name, ok := project.NormalizeHostnameAlias(cmd.As)
+	if !ok {
+		return RunPlan{}, fmt.Errorf("Invalid alias: %s", cmd.As)
+	}
+	plan.Name = name
+	plan.Host = name + ".localhost"
+	return plan, nil
 }
 
 func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Writer) error {
@@ -513,14 +526,14 @@ func prepareStaticFileTarget(cmd cli.Command, cwd string, port int) (RunPlan, er
 	}
 
 	host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
-	return RunPlan{
+	return applyAsAlias(cmd, RunPlan{
 		Port:    port,
 		Host:    host,
 		Name:    strings.TrimSuffix(host, ".localhost"),
 		CWD:     cwd,
 		Static:  true,
 		URLPath: "/" + filepath.ToSlash(cleanPath),
-	}, nil
+	})
 }
 
 func escapedURLPath(path string) string {

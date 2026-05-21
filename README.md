@@ -46,6 +46,12 @@ Run a raw command:
 gohere -- npm run dev
 ```
 
+Use a custom `.localhost` name for this run:
+
+```bash
+gohere --as api
+```
+
 Route to a known target port:
 
 ```bash

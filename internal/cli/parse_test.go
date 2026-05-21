@@ -107,6 +107,42 @@ func TestParseOpenFlag(t *testing.T) {
 	}
 }
 
+func TestParseAsFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "default run", args: []string{"gohere", "--as", "api"}, want: "api"},
+		{name: "script run", args: []string{"gohere", "dev:web", "--as", "web"}, want: "web"},
+		{name: "file run", args: []string{"gohere", "about.html", "--as", "docs"}, want: "docs"},
+		{name: "raw run", args: []string{"gohere", "--as", "api", "--", "npm", "run", "dev"}, want: "api"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, err := Parse(tt.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cmd.As != tt.want {
+				t.Fatalf("As = %q, want %q for args %#v", cmd.As, tt.want, tt.args)
+			}
+		})
+	}
+}
+
+func TestParseAsFlagRequiresValue(t *testing.T) {
+	_, err := Parse([]string{"gohere", "--as"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: --as requires a name"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestParseRawCommandOpenFlag(t *testing.T) {
 	cmd, err := Parse([]string{"gohere", "--open", "--", "npm", "run", "dev"})
 	if err != nil {

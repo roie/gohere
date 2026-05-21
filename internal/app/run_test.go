@@ -179,6 +179,71 @@ func TestPrepareStaticProject(t *testing.T) {
 	}
 }
 
+func TestPrepareRunUsesAsAlias(t *testing.T) {
+	tests := []struct {
+		name     string
+		cmd      cli.Command
+		files    map[string]string
+		wantHost string
+		wantName string
+		wantPath string
+	}{
+		{
+			name:     "package project",
+			cmd:      cli.Command{Kind: cli.CommandRun, Script: "dev", As: "api"},
+			files:    map[string]string{"package.json": `{"scripts":{"dev":"vite"}}`},
+			wantHost: "api.localhost",
+			wantName: "api",
+		},
+		{
+			name:     "script project",
+			cmd:      cli.Command{Kind: cli.CommandRun, Script: "dev:web", As: "Web.API"},
+			files:    map[string]string{"package.json": `{"scripts":{"dev:web":"vite"}}`},
+			wantHost: "web-api.localhost",
+			wantName: "web-api",
+		},
+		{
+			name:     "raw command",
+			cmd:      cli.Command{Kind: cli.CommandRaw, Raw: []string{"npm", "run", "dev"}, As: "api"},
+			wantHost: "api.localhost",
+			wantName: "api",
+		},
+		{
+			name:     "static file",
+			cmd:      cli.Command{Kind: cli.CommandRun, Script: "about.html", As: "docs"},
+			files:    map[string]string{"about.html": "<h1>About</h1>"},
+			wantHost: "docs.localhost",
+			wantName: "docs",
+			wantPath: "/about.html",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := tempProject(t, tt.files)
+			plan, err := PrepareRun(tt.cmd, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Host != tt.wantHost || plan.Name != tt.wantName || plan.URLPath != tt.wantPath {
+				t.Fatalf("plan host/name/path = %q/%q/%q, want %q/%q/%q", plan.Host, plan.Name, plan.URLPath, tt.wantHost, tt.wantName, tt.wantPath)
+			}
+		})
+	}
+}
+
+func TestPrepareRunRejectsEmptyAsAlias(t *testing.T) {
+	dir := tempProject(t, map[string]string{"package.json": `{"scripts":{"dev":"vite"}}`})
+	_, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "dev", As: "!!!"}, dir)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "Invalid alias: !!!"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestPrepareStaticProjectWinsOverParentPackageForDefaultRun(t *testing.T) {
 	root := tempProject(t, map[string]string{
 		"package.json": `{"scripts":{}}`,
@@ -773,6 +838,39 @@ func TestRunSuccessOutputLabelsExplicitScriptInNormalMode(t *testing.T) {
 	want := "gohere dev:web \u2192 http://" + filepath.Base(dir) + ".localhost\n"
 	if stdout.String() != want {
 		t.Fatalf("normal script output = %q, want %q", stdout.String(), want)
+	}
+}
+
+func TestRunUsesAsAliasInOutputAndRoute(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	admin := &recordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		return &runner.Result{Port: 5173}, nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev:web":"vite"}}`,
+	})
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev:web", As: "Web.API"}, dir, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admin.route.Host != "web-api.localhost" || admin.route.Name != "web-api" {
+		t.Fatalf("route host/name = %q/%q, want web-api.localhost/web-api", admin.route.Host, admin.route.Name)
+	}
+	want := "gohere dev:web \u2192 http://web-api.localhost\n"
+	if stdout.String() != want || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), want)
 	}
 }
 

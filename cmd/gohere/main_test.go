@@ -55,6 +55,8 @@ func TestPrintUsageDescribesFlags(t *testing.T) {
 	for _, want := range []string{
 		"--open",
 		"open the URL in your browser",
+		"--as NAME",
+		"use NAME.localhost for this run",
 		"--verbose",
 		"show target, command, and service details",
 		"--target PORT",
