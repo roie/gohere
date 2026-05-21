@@ -1080,8 +1080,10 @@ func adminRouteStatuses(ctx context.Context, client adminClient) ([]lifecycle.Ro
 		if errors.Is(err, admin.ErrUnauthorized) {
 			return nil, err
 		}
-		if probeClient, ok := client.(bridgeProbeClient); ok {
-			return adminProbeRouteStatuses(ctx, client, probeClient)
+		if errors.Is(err, admin.ErrRouteStatusesUnsupported) {
+			if probeClient, ok := client.(bridgeProbeClient); ok {
+				return adminProbeRouteStatuses(ctx, client, probeClient)
+			}
 		}
 		return nil, err
 	}

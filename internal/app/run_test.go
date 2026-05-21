@@ -2007,7 +2007,7 @@ func TestListFallsBackToServiceProbeWhenRouteStatusesEndpointIsMissing(t *testin
 	}
 	admin := &recordingAdminClient{
 		routes:         []router.Route{route},
-		statusErr:      errors.New("GET /route-statuses returned 404 Not Found"),
+		statusErr:      admin.ErrRouteStatusesUnsupported,
 		probeReachable: map[string]bool{route.Target: true},
 	}
 	restore := stubBridgeDetection(t, bridgeStub{
@@ -2025,6 +2025,32 @@ func TestListFallsBackToServiceProbeWhenRouteStatusesEndpointIsMissing(t *testin
 	text := out.String()
 	if !strings.Contains(text, "squawk.localhost") || !strings.Contains(text, "ready") {
 		t.Fatalf("list output = %q", text)
+	}
+}
+
+func TestListDoesNotFallbackToProbeForRouteStatusServerError(t *testing.T) {
+	route := router.Route{
+		Host:   "squawk.localhost",
+		Target: "http://127.0.0.1:57605",
+		CWD:    `D:\roie\dev\web\squawk`,
+	}
+	admin := &recordingAdminClient{
+		routes:         []router.Route{route},
+		statusErr:      errors.New("GET /route-statuses returned 500 Internal Server Error"),
+		probeReachable: map[string]bool{route.Target: true},
+	}
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		windowsBinary: true,
+		admin:         admin,
+	})
+	defer restore()
+
+	var out strings.Builder
+	err := List(&out, true)
+	if err == nil || !strings.Contains(err.Error(), "500 Internal Server Error") {
+		t.Fatalf("List error = %v", err)
 	}
 }
 
@@ -2098,7 +2124,7 @@ func TestPruneFallbackProbeKeepsUnreachableRouteUnknown(t *testing.T) {
 	}
 	admin := &recordingAdminClient{
 		routes:         []router.Route{route},
-		statusErr:      errors.New("GET /route-statuses returned 404 Not Found"),
+		statusErr:      admin.ErrRouteStatusesUnsupported,
 		probeReachable: map[string]bool{route.Target: false},
 	}
 	restore := stubBridgeDetection(t, bridgeStub{

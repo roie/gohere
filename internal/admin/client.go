@@ -15,6 +15,7 @@ import (
 )
 
 var ErrUnauthorized = errors.New("gohere admin API unauthorized")
+var ErrRouteStatusesUnsupported = errors.New("gohere admin API route statuses unsupported")
 
 type Client struct {
 	baseURL string
@@ -88,6 +89,9 @@ func (c *Client) RouteStatuses(ctx context.Context) ([]router.RouteStatus, error
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrUnauthorized
+	}
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		return nil, ErrRouteStatusesUnsupported
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET /route-statuses returned %s", resp.Status)

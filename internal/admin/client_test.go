@@ -131,6 +131,16 @@ func TestClientRouteStatusesReportsUnauthorized(t *testing.T) {
 	}
 }
 
+func TestClientRouteStatusesReportsUnsupported(t *testing.T) {
+	httpSrv := httptest.NewServer(http.NotFoundHandler())
+	defer httpSrv.Close()
+
+	_, err := NewClient(httpSrv.URL, "secret").RouteStatuses(t.Context())
+	if !errors.Is(err, ErrRouteStatusesUnsupported) {
+		t.Fatalf("RouteStatuses error = %v, want ErrRouteStatusesUnsupported", err)
+	}
+}
+
 func TestClientShutdown(t *testing.T) {
 	called := make(chan struct{}, 1)
 	srv := router.NewServer(router.Config{Token: "secret", Store: router.NewMemoryStore(), Shutdown: func() { called <- struct{}{} }})
