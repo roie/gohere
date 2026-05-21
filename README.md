@@ -40,6 +40,12 @@ Run a named package script:
 gohere dev:web
 ```
 
+Run multiple server scripts:
+
+```bash
+gohere dev:web dev:api
+```
+
 Run a raw command:
 
 ```bash

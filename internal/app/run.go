@@ -197,6 +197,10 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if cmd.Kind == cli.CommandRun && len(cmd.Scripts) > 1 {
+		return runMulti(ctx, cmd, cwd, stdout, stderr)
+	}
+
 	plan, err := PrepareRun(cmd, cwd)
 	if err != nil {
 		return err
@@ -278,6 +282,148 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	}
 	defer cleanup()
 	return result.Wait()
+}
+
+type multiRunItem struct {
+	cmd     cli.Command
+	plan    RunPlan
+	result  *runner.Result
+	cleanup func()
+}
+
+func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Writer) error {
+	var items []multiRunItem
+	cleanupStarted := func() {
+		for i := len(items) - 1; i >= 0; i-- {
+			if items[i].cleanup != nil {
+				items[i].cleanup()
+			}
+			if items[i].result != nil {
+				items[i].result.Stop()
+			}
+		}
+	}
+	defer cleanupStarted()
+
+	var adminClient adminClient
+	routerResolved := false
+	ensureRunRouter := func() (runRouter, error) {
+		if routerResolved {
+			return runRouter{Client: adminClient}, nil
+		}
+		rr, err := resolveRunRouter(ctx, stderr)
+		if err != nil {
+			return runRouter{}, err
+		}
+		adminClient = rr.Client
+		routerResolved = true
+		return rr, nil
+	}
+
+	var resolvedRouter runRouter
+	if detectWSLFunc() {
+		rr, err := ensureRunRouter()
+		if err != nil {
+			return err
+		}
+		resolvedRouter = rr
+	}
+
+	for _, script := range cmd.Scripts {
+		itemCmd := cmd
+		itemCmd.Script = script
+		itemCmd.Scripts = nil
+		plan, err := PrepareRun(itemCmd, cwd)
+		if err != nil {
+			return err
+		}
+		if plan.Static {
+			return errors.New("gohere error: multiple projects only support package scripts")
+		}
+		plan.Host = multiScriptHost(script, plan.Host)
+		plan.Name = strings.TrimSuffix(plan.Host, ".localhost")
+		if detectWSLFunc() {
+			applyRunRouter(&plan, resolvedRouter)
+		}
+		items = append(items, multiRunItem{cmd: itemCmd, plan: plan})
+	}
+
+	for i := range items {
+		itemCmd := items[i].cmd
+		plan := items[i].plan
+		childStdout := newLimitedCapture(32 * 1024)
+		childStderr := newLimitedCapture(32 * 1024)
+		result, err := startRunnerFunc(ctx, runner.Config{
+			Command:             plan.Command,
+			Env:                 plan.Env,
+			ChosenPort:          plan.Port,
+			RequireDetectedPort: plan.RequireDetectedPort,
+			Stdout:              childStdout,
+			Stderr:              childStderr,
+			StartupTimeout:      15 * time.Second,
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			replayCapturedOutput(stderr, childStdout, childStderr)
+			return formatMultiRunError(itemCmd, err)
+		}
+
+		if !routerResolved {
+			rr, err := ensureRunRouter()
+			if err != nil {
+				result.Stop()
+				return err
+			}
+			applyRunRouter(&plan, rr)
+		}
+
+		cleanup, err := registerRoute(ctx, adminClient, itemCmd, plan, result.Port, result.PID(), stdout, stderr)
+		if err != nil {
+			result.Stop()
+			return err
+		}
+		items[i].result = result
+		items[i].cleanup = cleanup
+	}
+
+	return waitForMulti(ctx, items)
+}
+
+func multiScriptHost(script, baseHost string) string {
+	base := strings.TrimSuffix(baseHost, ".localhost")
+	label := script
+	if index := strings.LastIndex(script, ":"); index >= 0 && index < len(script)-1 {
+		label = script[index+1:]
+	}
+	return project.NormalizeHostnameName(label) + "." + base + ".localhost"
+}
+
+func formatMultiRunError(cmd cli.Command, err error) error {
+	if errors.Is(err, runner.ErrProcessFinished) {
+		return fmt.Errorf("gohere error: script %q finished without starting a local server.", runName(cmd))
+	}
+	return formatRunError(cmd, err)
+}
+
+func waitForMulti(ctx context.Context, items []multiRunItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	done := make(chan error, len(items))
+	for _, item := range items {
+		result := item.result
+		go func() {
+			done <- result.Wait()
+		}()
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return nil
+	}
 }
 
 func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command, plan RunPlan, port, pid int, stdout, stderr io.Writer) (func(), error) {

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -871,6 +872,140 @@ func TestRunUsesAsAliasInOutputAndRoute(t *testing.T) {
 	want := "gohere dev:web \u2192 http://web-api.localhost\n"
 	if stdout.String() != want || stderr.String() != "" {
 		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), want)
+	}
+}
+
+func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	oldOpenBrowser := openBrowserFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+		openBrowserFunc = oldOpenBrowser
+	}()
+
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	ports := []int{5101, 5102}
+	var commands []string
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		commands = append(commands, strings.Join(cfg.Command, " "))
+		port := ports[0]
+		ports = ports[1:]
+		return &runner.Result{Port: port}, nil
+	}
+	var opened []string
+	openBrowserFunc = func(ctx context.Context, url string) error {
+		opened = append(opened, url)
+		return nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev:web":"vite","dev:api":"vite"}}`,
+	})
+	cmd := cli.Command{Kind: cli.CommandRun, Script: "dev:web", Scripts: []string{"dev:web", "dev:api"}, Open: true}
+	var stdout, stderr strings.Builder
+	if err := Run(context.Background(), cmd, dir, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	base := filepath.Base(dir)
+	wantWeb := "web." + base + ".localhost"
+	wantAPI := "api." + base + ".localhost"
+	if !sameStrings(admin.upsertedHosts(), []string{wantWeb, wantAPI}) {
+		t.Fatalf("upserted hosts = %#v, want %#v", admin.upsertedHosts(), []string{wantWeb, wantAPI})
+	}
+	if !sameStrings(opened, []string{"http://" + wantWeb, "http://" + wantAPI}) {
+		t.Fatalf("opened = %#v", opened)
+	}
+	wantOut := fmt.Sprintf("gohere dev:web \u2192 http://%s\ngohere dev:api \u2192 http://%s\n", wantWeb, wantAPI)
+	if stdout.String() != wantOut || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
+	}
+	if len(commands) != 2 || !strings.Contains(commands[0], "dev:web") || !strings.Contains(commands[1], "dev:api") {
+		t.Fatalf("commands = %#v", commands)
+	}
+}
+
+func TestMultiScriptHostDerivesLabelFromScriptSuffix(t *testing.T) {
+	tests := []struct {
+		script string
+		base   string
+		want   string
+	}{
+		{script: "dev:web", base: "project.localhost", want: "web.project.localhost"},
+		{script: "storybook", base: "project.localhost", want: "storybook.project.localhost"},
+		{script: "dev:web.ui", base: "project.localhost", want: "web-ui.project.localhost"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.script, func(t *testing.T) {
+			if got := multiScriptHost(tt.script, tt.base); got != tt.want {
+				t.Fatalf("multiScriptHost(%q, %q) = %q, want %q", tt.script, tt.base, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunMultiScriptFinishedBeforeURLIsErrorAndCleansUp(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	calls := 0
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		calls++
+		if calls == 2 {
+			return nil, runner.ErrProcessFinished
+		}
+		return &runner.Result{Port: 5101}, nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev:api":"vite","lint":"eslint ."}}`,
+	})
+	cmd := cli.Command{Kind: cli.CommandRun, Script: "dev:api", Scripts: []string{"dev:api", "lint"}}
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cmd, dir, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: script \"lint\" finished without starting a local server."
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+	apiHost := "api." + filepath.Base(dir) + ".localhost"
+	if !sameStrings(admin.deletedHosts(), []string{apiHost}) {
+		t.Fatalf("deleted hosts = %#v, want %q", admin.deletedHosts(), apiHost)
+	}
+	if !strings.Contains(stdout.String(), "gohere dev:api \u2192 http://"+apiHost+"\n") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRunMultiRejectsStaticFileTarget(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev:web":"vite"}}`,
+		"about.html":   "<h1>About</h1>",
+	})
+	cmd := cli.Command{Kind: cli.CommandRun, Script: "dev:web", Scripts: []string{"dev:web", "about.html"}}
+	err := Run(context.Background(), cmd, dir, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: multiple projects only support package scripts"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}
 }
 
@@ -2290,6 +2425,52 @@ type recordingAdminClient struct {
 	route          router.Route
 	routes         []router.Route
 	deleted        string
+}
+
+type multiRecordingAdminClient struct {
+	mu      sync.Mutex
+	routes  []router.Route
+	deleted []string
+}
+
+func (c *multiRecordingAdminClient) Health(context.Context) error {
+	return nil
+}
+
+func (c *multiRecordingAdminClient) Routes(context.Context) ([]router.Route, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]router.Route(nil), c.routes...), nil
+}
+
+func (c *multiRecordingAdminClient) UpsertRoute(ctx context.Context, route router.Route) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.routes = append(c.routes, route)
+	return nil
+}
+
+func (c *multiRecordingAdminClient) DeleteRoute(ctx context.Context, host string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deleted = append(c.deleted, host)
+	return nil
+}
+
+func (c *multiRecordingAdminClient) upsertedHosts() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	hosts := make([]string, 0, len(c.routes))
+	for _, route := range c.routes {
+		hosts = append(hosts, route.Host)
+	}
+	return hosts
+}
+
+func (c *multiRecordingAdminClient) deletedHosts() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.deleted...)
 }
 
 func (c *recordingAdminClient) Health(context.Context) error {

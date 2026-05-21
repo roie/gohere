@@ -22,6 +22,39 @@ func TestParseScriptRun(t *testing.T) {
 	}
 }
 
+func TestParseMultiScriptRun(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "dev:web", "dev:api", "--open", "--verbose"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandRun || cmd.Script != "dev:web" || !sameStrings(cmd.Scripts, []string{"dev:web", "dev:api"}) || !cmd.Open || !cmd.Verbose {
+		t.Fatalf("Parse multi script = %#v", cmd)
+	}
+}
+
+func TestParseMultiRejectsUnsupportedOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "as", args: []string{"gohere", "dev:web", "dev:api", "--as", "web"}, want: "gohere error: --as can only be used with one project"},
+		{name: "target", args: []string{"gohere", "dev:web", "dev:api", "--target", "5173"}, want: "gohere error: --target can only be used with one project"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse(tt.args)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("error = %q, want %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestParseVersionScriptRun(t *testing.T) {
 	cmd, err := Parse([]string{"gohere", "version"})
 	if err != nil {

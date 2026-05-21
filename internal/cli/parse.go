@@ -27,6 +27,7 @@ const (
 type Command struct {
 	Kind       CommandKind
 	Script     string
+	Scripts    []string
 	Raw        []string
 	Verbose    bool
 	Open       bool
@@ -94,49 +95,70 @@ func Parse(args []string) (Command, error) {
 		case "list":
 			if sawScript {
 				cmd.Kind = CommandRun
-				cmd.Script = arg
+				if cmd.Script == "" {
+					cmd.Script = arg
+				}
+				cmd.Scripts = append(cmd.Scripts, arg)
 				continue
 			}
 			return fixedCommand(CommandList, arg, rest)
 		case "stop":
 			if sawScript {
 				cmd.Kind = CommandRun
-				cmd.Script = arg
+				if cmd.Script == "" {
+					cmd.Script = arg
+				}
+				cmd.Scripts = append(cmd.Scripts, arg)
 				continue
 			}
 			return fixedCommand(CommandStop, arg, rest)
 		case "prune":
 			if sawScript {
 				cmd.Kind = CommandRun
-				cmd.Script = arg
+				if cmd.Script == "" {
+					cmd.Script = arg
+				}
+				cmd.Scripts = append(cmd.Scripts, arg)
 				continue
 			}
 			return fixedCommand(CommandPrune, arg, rest)
 		case "doctor":
 			if sawScript {
 				cmd.Kind = CommandRun
-				cmd.Script = arg
+				if cmd.Script == "" {
+					cmd.Script = arg
+				}
+				cmd.Scripts = append(cmd.Scripts, arg)
 				continue
 			}
 			return fixedCommand(CommandDoctor, arg, rest)
 		case "service":
 			if sawScript {
 				cmd.Kind = CommandRun
-				cmd.Script = arg
+				if cmd.Script == "" {
+					cmd.Script = arg
+				}
+				cmd.Scripts = append(cmd.Scripts, arg)
 				continue
 			}
 			return parseService(rest)
 		case "setup":
 			if sawScript {
 				cmd.Kind = CommandRun
-				cmd.Script = arg
+				if cmd.Script == "" {
+					cmd.Script = arg
+				}
+				cmd.Scripts = append(cmd.Scripts, arg)
 				continue
 			}
 			return fixedCommand(CommandSetup, arg, rest)
 		case "uninstall":
 			if sawScript {
 				cmd.Kind = CommandRun
-				cmd.Script = arg
+				if cmd.Script == "" {
+					cmd.Script = arg
+				}
+				cmd.Scripts = append(cmd.Scripts, arg)
 				continue
 			}
 			return fixedCommand(CommandUninstall, arg, rest)
@@ -145,12 +167,31 @@ func Parse(args []string) (Command, error) {
 				return Command{}, unknownOptionError(arg)
 			}
 			cmd.Kind = CommandRun
-			cmd.Script = arg
+			if cmd.Script == "dev" && len(cmd.Scripts) == 0 {
+				cmd.Script = arg
+			}
+			cmd.Scripts = append(cmd.Scripts, arg)
 			sawScript = true
 		}
 	}
 
+	if err := validateMultiRun(cmd); err != nil {
+		return Command{}, err
+	}
 	return cmd, nil
+}
+
+func validateMultiRun(cmd Command) error {
+	if cmd.Kind != CommandRun || len(cmd.Scripts) <= 1 {
+		return nil
+	}
+	if cmd.As != "" {
+		return parseError("--as can only be used with one project")
+	}
+	if cmd.TargetPort != 0 {
+		return parseError("--target can only be used with one project")
+	}
+	return nil
 }
 
 func parseService(args []string) (Command, error) {
