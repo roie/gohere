@@ -202,14 +202,27 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		return err
 	}
 
-	runRouter, err := resolveRunRouter(ctx, stderr)
-	if err != nil {
-		return err
+	var adminClient adminClient
+	routerResolved := false
+	ensureRunRouter := func() error {
+		if routerResolved {
+			return nil
+		}
+		rr, err := resolveRunRouter(ctx, stderr)
+		if err != nil {
+			return err
+		}
+		adminClient = rr.Client
+		applyRunRouter(&plan, rr)
+		routerResolved = true
+		return nil
 	}
-	adminClient := runRouter.Client
-	applyRunRouter(&plan, runRouter)
 
 	if plan.Static {
+		if err := ensureRunRouter(); err != nil {
+			return err
+		}
+
 		staticServer, err := staticserver.StartWithHost(ctx, plan.CWD, plan.Port, plan.StaticBindHost)
 		if err != nil {
 			return err
@@ -227,6 +240,12 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	childStdout := newLimitedCapture(32 * 1024)
 	childStderr := newLimitedCapture(32 * 1024)
 
+	if detectWSLFunc() {
+		if err := ensureRunRouter(); err != nil {
+			return err
+		}
+	}
+
 	result, err := startRunnerFunc(ctx, runner.Config{
 		Command:             plan.Command,
 		Env:                 plan.Env,
@@ -241,9 +260,17 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 			return nil
 		}
 		replayCapturedOutput(stderr, childStdout, childStderr)
-		return formatRunError(err)
+		if errors.Is(err, runner.ErrProcessFinished) {
+			fmt.Fprint(stdout, runFinishedOutput(cmd))
+			return nil
+		}
+		return formatRunError(cmd, err)
 	}
 	defer result.Stop()
+
+	if err := ensureRunRouter(); err != nil {
+		return err
+	}
 
 	cleanup, err := registerRoute(ctx, adminClient, cmd, plan, result.Port, result.PID(), stdout, stderr)
 	if err != nil {
@@ -555,32 +582,48 @@ func missingScriptError(script string, available []string) error {
 	return fmt.Errorf("gohere error: script %q not found; available scripts: %s", script, strings.Join(available, ", "))
 }
 
-func formatRunError(err error) error {
-	msg := err.Error()
-	if strings.Contains(msg, "could not detect a local URL") {
-		return errors.New("gohere error: started dev script, but could not detect a local URL.\nTry:\n  gohere --target 5173")
+func formatRunError(cmd cli.Command, err error) error {
+	if errors.Is(err, runner.ErrProcessFailed) {
+		if cmd.Kind == cli.CommandRun {
+			return fmt.Errorf("gohere error: script %q failed.", runName(cmd))
+		}
+		return errors.New("gohere error: command failed.")
+	}
+	if errors.Is(err, runner.ErrNoLocalURL) || strings.Contains(err.Error(), "could not detect a local URL") {
+		name := runName(cmd)
+		return fmt.Errorf("gohere error: started %q, but no local URL was detected.\nTry:\n  gohere --target 5173 %s", name, name)
 	}
 	return fmt.Errorf("gohere error: %w", err)
 }
 
+func runFinishedOutput(cmd cli.Command) string {
+	if cmd.Kind == cli.CommandRaw {
+		return "gohere command finished.\n"
+	}
+	return fmt.Sprintf("gohere %s finished.\n", runName(cmd))
+}
+
+func runName(cmd cli.Command) string {
+	if cmd.Kind == cli.CommandRun && cmd.Script != "" {
+		return cmd.Script
+	}
+	return "command"
+}
+
 func replayCapturedOutput(out io.Writer, captures ...*limitedCapture) {
 	wrote := false
+	lastEndedNewline := true
 	for _, capture := range captures {
 		text := capture.String()
 		if text == "" {
 			continue
 		}
-		if wrote && !strings.HasSuffix(text, "\n") {
+		if wrote && !lastEndedNewline {
 			fmt.Fprintln(out)
 		}
 		fmt.Fprint(out, text)
-		if !strings.HasSuffix(text, "\n") {
-			fmt.Fprintln(out)
-		}
+		lastEndedNewline = strings.HasSuffix(text, "\n")
 		wrote = true
-	}
-	if wrote {
-		fmt.Fprintln(out)
 	}
 }
 

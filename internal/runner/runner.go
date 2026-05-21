@@ -246,7 +246,9 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 		return result, nil
 	case <-done:
 		if result.waitErr == nil {
-			result.waitErr = errors.New("process exited before a local URL was detected")
+			result.waitErr = ErrProcessFinished
+		} else {
+			result.waitErr = errors.Join(ErrProcessFailed, result.waitErr)
 		}
 		return nil, result.waitErr
 	case <-time.After(timeout):
@@ -256,7 +258,7 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 		}
 		terminateProcessTree(cmd)
 		<-done
-		return nil, errors.New("started dev script, but could not detect a local URL; try: gohere --target 5173")
+		return nil, ErrNoLocalURL
 	}
 }
 
@@ -311,3 +313,9 @@ func firstCommandWord(command string) string {
 }
 
 var localURLPort = regexp.MustCompile(`https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0):([0-9]{1,5})`)
+
+var (
+	ErrProcessFinished = errors.New("process finished before a local URL was detected")
+	ErrProcessFailed   = errors.New("process failed before a local URL was detected")
+	ErrNoLocalURL      = errors.New("started process, but no local URL was detected")
+)

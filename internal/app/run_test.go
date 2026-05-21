@@ -708,7 +708,7 @@ func TestSetupForGOOSUsesWindowsSetup(t *testing.T) {
 	}
 }
 
-func TestRunEnsuresRouterBeforeStartingProject(t *testing.T) {
+func TestRunStartsLocalProjectBeforeServiceRegistration(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -723,17 +723,17 @@ func TestRunEnsuresRouterBeforeStartingProject(t *testing.T) {
 	}
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
 		calls = append(calls, "runner")
-		return nil, errors.New("stop after order check")
+		return &runner.Result{Port: 5173}, nil
 	}
 
 	dir := tempProject(t, map[string]string{
 		"package.json": `{"scripts":{"dev":"vite"}}`,
 	})
 	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, io.Discard, io.Discard)
-	if err == nil {
-		t.Fatal("expected runner error")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(calls) != 2 || calls[0] != "admin" || calls[1] != "runner" {
+	if len(calls) != 2 || calls[0] != "runner" || calls[1] != "admin" {
 		t.Fatalf("calls = %#v", calls)
 	}
 }
@@ -1041,9 +1041,102 @@ func TestRunReplaysChildOutputOnStartupFailure(t *testing.T) {
 	if !strings.Contains(stderr.String(), "starting dev server") || !strings.Contains(stderr.String(), "Error: config is invalid") {
 		t.Fatalf("startup failure should replay child output, stderr=%q", stderr.String())
 	}
-	wantErr := "gohere error: started dev script, but could not detect a local URL.\nTry:\n  gohere --target 5173"
+	wantErr := "gohere error: started \"dev\", but no local URL was detected.\nTry:\n  gohere --target 5173 dev"
 	if err.Error() != wantErr {
 		t.Fatalf("error = %q, want %q", err.Error(), wantErr)
+	}
+}
+
+func TestRunPrintsFinishedWhenScriptExitsBeforeURL(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return nil, errors.New("service should not be touched")
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		cfg.Stdout.Write([]byte("lint ok\n"))
+		return nil, runner.ErrProcessFinished
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"lint":"eslint ."}}`,
+	})
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "lint"}, dir, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != "gohere lint finished.\n" {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if stderr.String() != "lint ok\n" {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunFormatsNoURLTimeoutWithScriptName(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return nil, errors.New("service should not be touched")
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		return nil, runner.ErrNoLocalURL
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"worker":"node worker.js"}}`,
+	})
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "worker"}, dir, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected startup error")
+	}
+	want := "gohere error: started \"worker\", but no local URL was detected.\nTry:\n  gohere --target 5173 worker"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestRunFormatsFailedScriptExit(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return nil, errors.New("service should not be touched")
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		cfg.Stderr.Write([]byte("lint failed\n"))
+		return nil, runner.ErrProcessFailed
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"lint":"eslint ."}}`,
+	})
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "lint"}, dir, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	if err.Error() != "gohere error: script \"lint\" failed." {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if stderr.String() != "lint failed\n" {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 

@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -365,6 +366,40 @@ func TestRunCanRequireDetectedPort(t *testing.T) {
 	}
 }
 
+func TestStartReturnsFinishedWhenProcessExitsZeroBeforeURL(t *testing.T) {
+	var stdout bytes.Buffer
+	cfg := Config{
+		Command:        []string{os.Args[0], "-test.run=TestHelperProcess", "--", "finish-zero"},
+		Env:            []string{"GOHERE_HELPER_PROCESS=1"},
+		Stdout:         &stdout,
+		Stderr:         &bytes.Buffer{},
+		StartupTimeout: time.Second,
+	}
+
+	_, err := Start(context.Background(), cfg)
+	if !errors.Is(err, ErrProcessFinished) {
+		t.Fatalf("error = %v, want ErrProcessFinished", err)
+	}
+	if !strings.Contains(stdout.String(), "finished ok") {
+		t.Fatalf("stdout was not streamed: %q", stdout.String())
+	}
+}
+
+func TestStartReturnsFailedWhenProcessExitsNonZeroBeforeURL(t *testing.T) {
+	cfg := Config{
+		Command:        []string{os.Args[0], "-test.run=TestHelperProcess", "--", "finish-one"},
+		Env:            []string{"GOHERE_HELPER_PROCESS=1"},
+		Stdout:         &bytes.Buffer{},
+		Stderr:         &bytes.Buffer{},
+		StartupTimeout: time.Second,
+	}
+
+	_, err := Start(context.Background(), cfg)
+	if !errors.Is(err, ErrProcessFailed) {
+		t.Fatalf("error = %v, want ErrProcessFailed", err)
+	}
+}
+
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GOHERE_HELPER_PROCESS") != "1" {
 		return
@@ -397,6 +432,10 @@ func TestHelperProcess(t *testing.T) {
 		}
 		os.Stdout.WriteString(strconv.Itoa(count) + "\n")
 		time.Sleep(2 * time.Second)
+	case "finish-zero":
+		os.Stdout.WriteString("finished ok\n")
+	case "finish-one":
+		os.Exit(1)
 	default:
 		os.Exit(2)
 	}
