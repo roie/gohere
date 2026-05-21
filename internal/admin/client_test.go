@@ -97,6 +97,40 @@ func TestClientReportsUnauthorizedRoutes(t *testing.T) {
 	}
 }
 
+func TestClientRouteStatuses(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer target.Close()
+	store := router.NewMemoryStore()
+	if err := store.Save([]router.Route{{
+		Host:   "web.localhost",
+		Target: target.URL,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := router.NewServer(router.Config{Token: "secret", Store: store})
+	httpSrv := httptest.NewServer(srv.AdminHandler())
+	defer httpSrv.Close()
+
+	statuses, err := NewClient(httpSrv.URL, "secret").RouteStatuses(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Route.Host != "web.localhost" || statuses[0].Status != "ready" {
+		t.Fatalf("statuses = %#v", statuses)
+	}
+}
+
+func TestClientRouteStatusesReportsUnauthorized(t *testing.T) {
+	srv := router.NewServer(router.Config{Token: "server-token", Store: router.NewMemoryStore()})
+	httpSrv := httptest.NewServer(srv.AdminHandler())
+	defer httpSrv.Close()
+
+	_, err := NewClient(httpSrv.URL, "client-token").RouteStatuses(t.Context())
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("RouteStatuses error = %v, want ErrUnauthorized", err)
+	}
+}
+
 func TestClientShutdown(t *testing.T) {
 	called := make(chan struct{}, 1)
 	srv := router.NewServer(router.Config{Token: "secret", Store: router.NewMemoryStore(), Shutdown: func() { called <- struct{}{} }})

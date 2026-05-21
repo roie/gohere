@@ -63,6 +63,10 @@ type adminClient interface {
 	DeleteRoute(context.Context, string) error
 }
 
+type routeStatusClient interface {
+	RouteStatuses(context.Context) ([]router.RouteStatus, error)
+}
+
 type bridgeProbeClient interface {
 	ProbeTarget(context.Context, string) (bool, error)
 }
@@ -903,14 +907,14 @@ func List(stdout io.Writer, verbose bool) error {
 		return err
 	}
 	if manager.Client != nil {
-		routes, err := manager.Client.Routes(context.Background())
+		statuses, err := adminRouteStatuses(context.Background(), manager.Client)
 		if err != nil {
 			if errors.Is(err, admin.ErrUnauthorized) {
 				return staleRouterTokenError()
 			}
 			return err
 		}
-		printRoutes(stdout, routes, verbose)
+		printRouteStatuses(stdout, statuses, verbose)
 		return nil
 	}
 	return ListWithStoreRouterReady(stdout, manager.Store, verbose, manager.RouterReady)
@@ -929,12 +933,12 @@ func ListWithStoreRouterReady(stdout io.Writer, store router.Store, verbose bool
 	return nil
 }
 
-func printRoutes(stdout io.Writer, routes []router.Route, verbose bool) {
-	printRoutesWithRouterReady(stdout, routes, verbose, true)
-}
-
 func printRoutesWithRouterReady(stdout io.Writer, routes []router.Route, verbose bool, routerReady bool) {
 	statuses := lifecycle.RouteStatusesWithRouterReady(routes, routerReady)
+	printRouteStatuses(stdout, statuses, verbose)
+}
+
+func printRouteStatuses(stdout io.Writer, statuses []lifecycle.RouteStatus, verbose bool) {
 	if verbose {
 		fmt.Fprint(stdout, lifecycle.FormatRoutesVerbose(statuses))
 		return
@@ -1047,7 +1051,7 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 }
 
 func pruneAdminRoutes(ctx context.Context, client adminClient) (int, error) {
-	routes, err := client.Routes(ctx)
+	statuses, err := adminRouteStatuses(ctx, client)
 	if err != nil {
 		if errors.Is(err, admin.ErrUnauthorized) {
 			return 0, staleRouterTokenError()
@@ -1055,7 +1059,7 @@ func pruneAdminRoutes(ctx context.Context, client adminClient) (int, error) {
 		return 0, err
 	}
 	removed := 0
-	for _, status := range lifecycle.RouteStatuses(routes) {
+	for _, status := range statuses {
 		if status.Status != lifecycle.RouteStatusDead {
 			continue
 		}
@@ -1065,6 +1069,62 @@ func pruneAdminRoutes(ctx context.Context, client adminClient) (int, error) {
 		removed++
 	}
 	return removed, nil
+}
+
+func adminRouteStatuses(ctx context.Context, client adminClient) ([]lifecycle.RouteStatus, error) {
+	if statusClient, ok := client.(routeStatusClient); ok {
+		statuses, err := statusClient.RouteStatuses(ctx)
+		if err == nil {
+			return convertAdminStatuses(statuses), nil
+		}
+		if errors.Is(err, admin.ErrUnauthorized) {
+			return nil, err
+		}
+		if probeClient, ok := client.(bridgeProbeClient); ok {
+			return adminProbeRouteStatuses(ctx, client, probeClient)
+		}
+		return nil, err
+	}
+	if probeClient, ok := client.(bridgeProbeClient); ok {
+		return adminProbeRouteStatuses(ctx, client, probeClient)
+	}
+	routes, err := client.Routes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return lifecycle.RouteStatuses(routes), nil
+}
+
+func convertAdminStatuses(statuses []router.RouteStatus) []lifecycle.RouteStatus {
+	converted := make([]lifecycle.RouteStatus, 0, len(statuses))
+	for _, status := range statuses {
+		converted = append(converted, lifecycle.RouteStatus{
+			Route:  status.Route,
+			Status: lifecycle.RouteStatusKind(status.Status),
+		})
+	}
+	return converted
+}
+
+func adminProbeRouteStatuses(ctx context.Context, client adminClient, probeClient bridgeProbeClient) ([]lifecycle.RouteStatus, error) {
+	routes, err := client.Routes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	statuses := make([]lifecycle.RouteStatus, 0, len(routes))
+	for _, route := range routes {
+		reachable, err := probeClient.ProbeTarget(ctx, route.Target)
+		status := lifecycle.RouteStatusUnknown
+		if err != nil {
+			if errors.Is(err, admin.ErrUnauthorized) {
+				return nil, err
+			}
+		} else if reachable {
+			status = lifecycle.RouteStatusReady
+		}
+		statuses = append(statuses, lifecycle.RouteStatus{Route: route, Status: status})
+	}
+	return statuses, nil
 }
 
 func stopAdminCurrent(ctx context.Context, client adminClient, cwd string) (string, bool, string, error) {

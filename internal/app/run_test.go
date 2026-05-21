@@ -1962,13 +1962,83 @@ func TestListUsesWindowsRouterFromWSL(t *testing.T) {
 	}
 }
 
+func TestListUsesServiceComputedRouteStatusFromWSL(t *testing.T) {
+	admin := &recordingAdminClient{
+		routes: []router.Route{{
+			Host:   "squawk.localhost",
+			Target: "http://127.0.0.1:57605",
+			CWD:    `D:\roie\dev\web\squawk`,
+		}},
+		statuses: []router.RouteStatus{{
+			Route: router.Route{
+				Host:   "squawk.localhost",
+				Target: "http://127.0.0.1:57605",
+				CWD:    `D:\roie\dev\web\squawk`,
+			},
+			Status: "ready",
+		}},
+	}
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		windowsBinary: true,
+		admin:         admin,
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := List(&out, true); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "squawk.localhost") || !strings.Contains(text, "ready") {
+		t.Fatalf("list output = %q", text)
+	}
+	if strings.Contains(text, "dead") {
+		t.Fatalf("list used client-side target status: %q", text)
+	}
+}
+
+func TestListFallsBackToServiceProbeWhenRouteStatusesEndpointIsMissing(t *testing.T) {
+	route := router.Route{
+		Host:   "squawk.localhost",
+		Target: "http://127.0.0.1:57605",
+		CWD:    `D:\roie\dev\web\squawk`,
+	}
+	admin := &recordingAdminClient{
+		routes:         []router.Route{route},
+		statusErr:      errors.New("GET /route-statuses returned 404 Not Found"),
+		probeReachable: map[string]bool{route.Target: true},
+	}
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		windowsBinary: true,
+		admin:         admin,
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := List(&out, true); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "squawk.localhost") || !strings.Contains(text, "ready") {
+		t.Fatalf("list output = %q", text)
+	}
+}
+
 func TestPruneUsesWindowsRouterFromWSL(t *testing.T) {
-	admin := &recordingAdminClient{routes: []router.Route{{
+	route := router.Route{
 		Host:   "dead.localhost",
 		Target: "http://127.0.0.1:1",
 		PID:    999999,
 		CWD:    "/home/roie/dev/dead",
-	}}}
+	}
+	admin := &recordingAdminClient{
+		routes:   []router.Route{route},
+		statuses: []router.RouteStatus{{Route: route, Status: "dead"}},
+	}
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:         true,
 		token:         "windows-token",
@@ -1985,6 +2055,68 @@ func TestPruneUsesWindowsRouterFromWSL(t *testing.T) {
 		t.Fatalf("deleted = %q, want dead.localhost", admin.deleted)
 	}
 	if out.String() != "Removed 1 dead route.\n" {
+		t.Fatalf("prune output = %q", out.String())
+	}
+}
+
+func TestPruneKeepsServiceReadyWindowsLoopbackRouteFromWSL(t *testing.T) {
+	route := router.Route{
+		Host:   "squawk.localhost",
+		Target: "http://127.0.0.1:57605",
+		PID:    21480,
+		CWD:    `D:\roie\dev\web\squawk`,
+	}
+	admin := &recordingAdminClient{
+		routes:   []router.Route{route},
+		statuses: []router.RouteStatus{{Route: route, Status: "ready"}},
+	}
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		windowsBinary: true,
+		admin:         admin,
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := Prune(&out); err != nil {
+		t.Fatal(err)
+	}
+	if admin.deleted != "" {
+		t.Fatalf("deleted = %q, want no delete", admin.deleted)
+	}
+	if out.String() != "No dead routes.\n" {
+		t.Fatalf("prune output = %q", out.String())
+	}
+}
+
+func TestPruneFallbackProbeKeepsUnreachableRouteUnknown(t *testing.T) {
+	route := router.Route{
+		Host:   "maybe.localhost",
+		Target: "http://127.0.0.1:59999",
+		CWD:    `D:\roie\dev\web\maybe`,
+	}
+	admin := &recordingAdminClient{
+		routes:         []router.Route{route},
+		statusErr:      errors.New("GET /route-statuses returned 404 Not Found"),
+		probeReachable: map[string]bool{route.Target: false},
+	}
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		windowsBinary: true,
+		admin:         admin,
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := Prune(&out); err != nil {
+		t.Fatal(err)
+	}
+	if admin.deleted != "" {
+		t.Fatalf("deleted = %q, want no delete", admin.deleted)
+	}
+	if out.String() != "No dead routes.\n" {
 		t.Fatalf("prune output = %q", out.String())
 	}
 }
@@ -2494,6 +2626,9 @@ type recordingAdminClient struct {
 	upsertedClosed bool
 	route          router.Route
 	routes         []router.Route
+	statuses       []router.RouteStatus
+	statusErr      error
+	probeReachable map[string]bool
 	deleted        string
 }
 
@@ -2559,6 +2694,22 @@ func (c *recordingAdminClient) Routes(context.Context) ([]router.Route, error) {
 	return c.routes, nil
 }
 
+func (c *recordingAdminClient) RouteStatuses(context.Context) ([]router.RouteStatus, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.statusErr != nil {
+		return nil, c.statusErr
+	}
+	if c.statuses != nil {
+		return append([]router.RouteStatus(nil), c.statuses...), nil
+	}
+	statuses := make([]router.RouteStatus, 0, len(c.routes))
+	for _, route := range c.routes {
+		statuses = append(statuses, router.RouteStatus{Route: route, Status: "ready"})
+	}
+	return statuses, nil
+}
+
 func (c *recordingAdminClient) UpsertRoute(ctx context.Context, route router.Route) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -2580,7 +2731,12 @@ func (c *recordingAdminClient) DeleteRoute(ctx context.Context, host string) err
 	return nil
 }
 
-func (c *recordingAdminClient) ProbeTarget(context.Context, string) (bool, error) {
+func (c *recordingAdminClient) ProbeTarget(_ context.Context, target string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.probeReachable != nil {
+		return c.probeReachable[target], nil
+	}
 	return true, nil
 }
 

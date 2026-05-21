@@ -76,6 +76,29 @@ func (c *Client) Routes(ctx context.Context) ([]router.Route, error) {
 	return routes, nil
 }
 
+func (c *Client) RouteStatuses(ctx context.Context) ([]router.RouteStatus, error) {
+	req, err := c.authedRequest(ctx, http.MethodGet, "/route-statuses", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, ErrUnauthorized
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET /route-statuses returned %s", resp.Status)
+	}
+	var statuses []router.RouteStatus
+	if err := json.NewDecoder(resp.Body).Decode(&statuses); err != nil {
+		return nil, err
+	}
+	return statuses, nil
+}
+
 func (c *Client) UpsertRoute(ctx context.Context, route router.Route) error {
 	var body bytes.Buffer
 	if err := json.NewEncoder(&body).Encode(route); err != nil {

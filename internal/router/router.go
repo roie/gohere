@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -33,6 +34,11 @@ type Route struct {
 	OwnerCWD  string    `json:"ownerCwd,omitempty"`
 	OwnerEnv  string    `json:"ownerEnv,omitempty"`
 	StartedAt time.Time `json:"startedAt"`
+}
+
+type RouteStatus struct {
+	Route  Route  `json:"route"`
+	Status string `json:"status"`
 }
 
 type Store interface {
@@ -219,6 +225,7 @@ func (s *Server) AdminHandler() http.Handler {
 		io.WriteString(w, "gohere-router\n")
 	})
 	mux.HandleFunc("/routes", s.handleRoutes)
+	mux.HandleFunc("/route-statuses", s.handleRouteStatuses)
 	mux.HandleFunc("/routes/", s.handleRoute)
 	mux.HandleFunc("/probe-target", s.handleProbeTarget)
 	mux.HandleFunc("/shutdown", s.handleShutdown)
@@ -293,6 +300,32 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleRouteStatuses(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	routes, err := s.store.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	statuses := make([]RouteStatus, 0, len(routes))
+	for _, route := range routes {
+		statuses = append(statuses, RouteStatus{
+			Route:  route,
+			Status: targetStatus(route.Target),
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(statuses)
+}
+
 func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -324,6 +357,18 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func targetStatus(target string) string {
+	resp, err := probeTarget(target, 500*time.Millisecond)
+	if err != nil {
+		if errors.Is(err, syscall.ECONNREFUSED) {
+			return "dead"
+		}
+		return "unknown"
+	}
+	resp.Body.Close()
+	return "ready"
+}
+
 func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -351,13 +396,7 @@ func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := http.Client{
-		Timeout: 500 * time.Millisecond,
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{Timeout: 500 * time.Millisecond}).DialContext,
-		},
-	}
-	resp, err := client.Get(target.String())
+	resp, err := probeTarget(target.String(), 500*time.Millisecond)
 	reachable := err == nil
 	if resp != nil {
 		resp.Body.Close()
@@ -367,6 +406,19 @@ func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(struct {
 		Reachable bool `json:"reachable"`
 	}{Reachable: reachable})
+}
+
+func probeTarget(target string, timeout time.Duration) (*http.Response, error) {
+	client := http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{Timeout: timeout}).DialContext,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return client.Head(target)
 }
 
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {

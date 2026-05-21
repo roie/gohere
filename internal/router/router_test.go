@@ -289,6 +289,53 @@ func TestAdminAPIProbeTargetUnreachable(t *testing.T) {
 	}
 }
 
+func TestAdminAPIRouteStatusesComputedByRouter(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			t.Fatal("route status probe should not use GET")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{
+		Host:   "squawk.localhost",
+		Target: target.URL,
+		CWD:    `D:\roie\dev\web\squawk`,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "/route-statuses", nil)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /route-statuses = %d body %q", rec.Code, rec.Body.String())
+	}
+	var statuses []RouteStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &statuses); err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Route.Host != "squawk.localhost" || statuses[0].Status != "ready" {
+		t.Fatalf("statuses = %#v", statuses)
+	}
+}
+
+func TestAdminAPIRouteStatusesRequiresToken(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+
+	req := httptest.NewRequest(http.MethodGet, "/route-statuses", nil)
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /route-statuses without token = %d", rec.Code)
+	}
+}
+
 func TestAdminAPIProbeTargetRejectsNonHTTPURL(t *testing.T) {
 	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
 
