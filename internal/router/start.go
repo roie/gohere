@@ -112,7 +112,7 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 
 func listenError(addr string, err error) error {
 	msg := fmt.Sprintf("gohere router cannot listen on %s", addr)
-	if strings.Contains(err.Error(), "address already in use") {
+	if isAddressInUseError(err) {
 		_, port, _ := net.SplitHostPort(addr)
 		if owner := findPortOwner(port); owner != "" {
 			return fmt.Errorf("%s: port is already in use; owning process: %s; stop that process and try again: %w", msg, owner, err)
@@ -120,6 +120,12 @@ func listenError(addr string, err error) error {
 		return fmt.Errorf("%s: port is already in use; stop the process using that port and try again: %w", msg, err)
 	}
 	return fmt.Errorf("%s: %w", msg, err)
+}
+
+func isAddressInUseError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "only one usage of each socket address")
 }
 
 var findPortOwner = func(port string) string {

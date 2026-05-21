@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -47,6 +48,9 @@ func TestLinuxSetupCopiesBinaryEnsuresTokenAndRunsSetcap(t *testing.T) {
 }
 
 func TestLinuxSetupRestoresStableBinaryModeWhenUpdating(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix executable mode bits")
+	}
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source-gohere")
 	if err := os.WriteFile(source, []byte("new-binary"), 0755); err != nil {
@@ -131,6 +135,9 @@ func TestLinuxSetupDetachedFallbackIsQuiet(t *testing.T) {
 }
 
 func TestLinuxSetupWritesSystemdServiceWhenAvailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("systemd service files are Linux-specific")
+	}
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source-gohere")
 	os.WriteFile(source, []byte("binary"), 0755)
@@ -161,6 +168,9 @@ func TestLinuxSetupWritesSystemdServiceWhenAvailable(t *testing.T) {
 }
 
 func TestLinuxSetupQuotesSystemdExecStartPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("systemd service files are Linux-specific")
+	}
 	dir := filepath.Join(t.TempDir(), "path with spaces")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)

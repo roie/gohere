@@ -12,12 +12,16 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestTokenGeneratedWith0600Permissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
 	dir := t.TempDir()
 
 	token, err := EnsureToken(dir)
@@ -77,6 +81,9 @@ func TestReadTokenRejectsInvalidTokenFile(t *testing.T) {
 }
 
 func TestEnsureTokenRegeneratesEmptyTokenFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "token")
 	if err := os.WriteFile(path, []byte("\n"), 0644); err != nil {

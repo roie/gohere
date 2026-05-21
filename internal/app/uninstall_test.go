@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -14,6 +15,7 @@ func TestUninstallRemovesRouterInstallButKeepsStateByDefault(t *testing.T) {
 	stateDir := t.TempDir()
 	configDir := t.TempDir()
 	writeFile(t, filepath.Join(stateDir, "bin", "gohere"), "binary")
+	writeFile(t, filepath.Join(stateDir, "bin", "gohere.exe"), "binary")
 	writeFile(t, filepath.Join(stateDir, "router.pid"), "12345\n")
 	writeFile(t, filepath.Join(stateDir, "token"), "token\n")
 	writeFile(t, filepath.Join(stateDir, "routes.json"), "[]")
@@ -36,7 +38,7 @@ func TestUninstallRemovesRouterInstallButKeepsStateByDefault(t *testing.T) {
 		CommandRunner: runner,
 		ProcessSignal: process.Signal,
 		ProcessMatches: func(pid int, binary string) bool {
-			return pid == 12345 && strings.HasSuffix(binary, filepath.Join("bin", "gohere"))
+			return pid == 12345 && strings.HasSuffix(binary, filepath.Join("bin", stableBinaryName(runtime.GOOS)))
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -75,6 +77,7 @@ func TestServiceStopStopsRuntimeButKeepsInstallAndState(t *testing.T) {
 	stateDir := t.TempDir()
 	configDir := t.TempDir()
 	writeFile(t, filepath.Join(stateDir, "bin", "gohere"), "binary")
+	writeFile(t, filepath.Join(stateDir, "bin", "gohere.exe"), "binary")
 	writeFile(t, filepath.Join(stateDir, "router.pid"), "12345\n")
 	writeFile(t, filepath.Join(stateDir, "token"), "token\n")
 	writeFile(t, filepath.Join(stateDir, "routes.json"), "[]")
@@ -94,7 +97,7 @@ func TestServiceStopStopsRuntimeButKeepsInstallAndState(t *testing.T) {
 		CommandRunner: runner,
 		ProcessSignal: process.Signal,
 		ProcessMatches: func(pid int, binary string) bool {
-			return pid == 12345 && strings.HasSuffix(binary, filepath.Join("bin", "gohere"))
+			return pid == 12345 && strings.HasSuffix(binary, filepath.Join("bin", stableBinaryName(runtime.GOOS)))
 		},
 	}); err != nil {
 		t.Fatal(err)

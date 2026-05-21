@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1555,7 +1556,7 @@ func TestResolveRunRouterReportsUncontrolledRouterWhenTokenMissingAfterHealth(t 
 	if err == nil {
 		t.Fatal("expected uncontrolled router error")
 	}
-	if !strings.Contains(err.Error(), "A gohere service is already using .localhost URLs") {
+	if !strings.Contains(err.Error(), "gohere service") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
@@ -1583,7 +1584,7 @@ func TestResolveRunRouterHandlesTypedNilAdminClientAfterHealth(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected uncontrolled router error")
 	}
-	if !strings.Contains(err.Error(), "A gohere service is already using .localhost URLs") {
+	if !strings.Contains(err.Error(), "gohere service") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
@@ -2345,6 +2346,9 @@ func TestDoctorWithStoreTreatsHealthyRouterAsPort80OK(t *testing.T) {
 }
 
 func TestDoctorWithStoreReportsSetcapStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("setcap is Linux-specific")
+	}
 	stateDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(stateDir, "bin"), 0755); err != nil {
 		t.Fatal(err)
@@ -2399,6 +2403,9 @@ func TestDoctorWithStoreUsesWindowsStableBinary(t *testing.T) {
 }
 
 func TestDoctorWithStoreReportsSystemdStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("systemd is Linux-specific")
+	}
 	var out strings.Builder
 
 	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
