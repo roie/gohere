@@ -84,6 +84,32 @@ func TestLinuxSetupRestoresStableBinaryModeWhenUpdating(t *testing.T) {
 	}
 }
 
+func TestCopyFileKeepsDestinationWhenCopyFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("opening a directory for copy behaves differently on Windows")
+	}
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "source-dir")
+	if err := os.Mkdir(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "stable")
+	if err := os.WriteFile(dst, []byte("old-binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyFile(srcDir, dst, 0755); err == nil {
+		t.Fatal("expected copy error")
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "old-binary" {
+		t.Fatalf("destination = %q, want old contents", string(data))
+	}
+}
+
 func TestLinuxSetupDetachedFallbackWritesRouterPID(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source-gohere")

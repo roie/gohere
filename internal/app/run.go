@@ -623,11 +623,25 @@ func withHost(command []string, host string) []string {
 	}
 	out := append([]string(nil), command...)
 	for i := range out {
-		if out[i] == "127.0.0.1" {
-			out[i] = host
-		}
+		out[i] = replaceCommandHost(out[i], host)
 	}
 	return out
+}
+
+func replaceCommandHost(arg, host string) string {
+	if isCommonLoopbackHost(arg) {
+		return host
+	}
+	for _, prefix := range []string{"--host=", "--hostname=", "--listen="} {
+		if strings.HasPrefix(arg, prefix) && isCommonLoopbackHost(strings.TrimPrefix(arg, prefix)) {
+			return prefix + host
+		}
+	}
+	return arg
+}
+
+func isCommonLoopbackHost(host string) bool {
+	return host == "127.0.0.1" || host == "localhost" || host == "0.0.0.0"
 }
 
 func routeTarget(host string, port int) string {
@@ -910,6 +924,13 @@ func waitForRouterHealth(ctx context.Context, health func(context.Context) error
 }
 
 func firstRunPrompt() string {
+	return firstRunPromptForGOOS(runtime.GOOS)
+}
+
+func firstRunPromptForGOOS(goos string) string {
+	if goos == "linux" {
+		return "gohere needs one-time permission to enable .localhost project URLs.\nThis lets gohere use port 80 locally, and sudo access may be requested. Continue? [Y/n] "
+	}
 	return "gohere needs one-time permission to enable .localhost project URLs.\nThis lets gohere use port 80 locally. Continue? [Y/n] "
 }
 

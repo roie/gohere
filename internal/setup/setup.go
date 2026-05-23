@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 
 	"github.com/roie/gohere/internal/router"
@@ -191,21 +192,41 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 	defer in.Close()
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*.tmp")
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			os.Remove(tmpPath)
+		}
+	}()
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
 		return err
 	}
-	if err := out.Sync(); err != nil {
-		out.Close()
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
 		return err
 	}
-	if err := out.Close(); err != nil {
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
 		return err
 	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return err
+	}
+	cleanup = false
 	return os.Chmod(dst, mode)
 }
 

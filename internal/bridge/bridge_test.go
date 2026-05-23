@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -121,6 +123,47 @@ func TestProbeServerListensOnAllInterfaces(t *testing.T) {
 	}
 }
 
+func TestProbeServerRequiresToken(t *testing.T) {
+	probe, err := StartProbeServer(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close()
+
+	target, err := probe.Target("127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(target, "token=") {
+		t.Fatalf("target = %q, want token query", target)
+	}
+	req, err := http.NewRequest(http.MethodHead, "http://"+probe.Addr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("probe server accepted request without token")
+	}
+
+	req, err = http.NewRequest(http.MethodHead, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("authorized probe status = %d", resp.StatusCode)
+	}
+}
+
 func TestProbeBridgeAsksWindowsRouterToReachWSL(t *testing.T) {
 	client := &fakeProbeClient{reachable: true}
 
@@ -133,6 +176,9 @@ func TestProbeBridgeAsksWindowsRouterToReachWSL(t *testing.T) {
 	}
 	if client.target != target {
 		t.Fatalf("probe target = %q, returned target %q", client.target, target)
+	}
+	if !strings.Contains(target, "token=") {
+		t.Fatalf("probe target = %q, want token query", target)
 	}
 }
 

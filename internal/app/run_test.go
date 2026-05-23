@@ -498,7 +498,7 @@ func TestEnsureRouterPromptsAndRunsSetup(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("setup calls = %d, want 1", calls)
 	}
-	want := "gohere needs one-time permission to enable .localhost project URLs.\nThis lets gohere use port 80 locally. Continue? [Y/n] \n"
+	want := firstRunPrompt() + "\n"
 	if out.String() != want {
 		t.Fatalf("prompt output = %q, want %q", out.String(), want)
 	}
@@ -616,7 +616,7 @@ func TestEnsureRouterDeclinePrintsCalmMessage(t *testing.T) {
 	if err.Error() != "gohere was not enabled" {
 		t.Fatalf("error = %q", err.Error())
 	}
-	want := "gohere needs one-time permission to enable .localhost project URLs.\nThis lets gohere use port 80 locally. Continue? [Y/n] gohere was not enabled.\n\nRun gohere again when you are ready.\n"
+	want := firstRunPrompt() + "gohere was not enabled.\n\nRun gohere again when you are ready.\n"
 	if out.String() != want {
 		t.Fatalf("decline output = %q, want %q", out.String(), want)
 	}
@@ -1373,6 +1373,24 @@ func TestRunVerboseOutputIncludesCleanURLAndMetadata(t *testing.T) {
 		!strings.Contains(stdout.String(), "command: npm run dev -- --host 127.0.0.1 --port ") ||
 		!strings.Contains(stdout.String(), "service: running\n") {
 		t.Fatalf("verbose stdout = %q", stdout.String())
+	}
+}
+
+func TestWithHostRewritesCommonLoopbackHosts(t *testing.T) {
+	command := []string{"vite", "--host", "localhost", "--allowed-hosts", "127.0.0.1", "--listen", "0.0.0.0", "--hostname=localhost"}
+	got := withHost(command, "192.0.2.10")
+	want := []string{"vite", "--host", "192.0.2.10", "--allowed-hosts", "192.0.2.10", "--listen", "192.0.2.10", "--hostname=192.0.2.10"}
+	if !sameStrings(got, want) {
+		t.Fatalf("withHost() = %#v, want %#v", got, want)
+	}
+}
+
+func TestFirstRunPromptMentionsSudoOnLinux(t *testing.T) {
+	if !strings.Contains(firstRunPromptForGOOS("linux"), "sudo") {
+		t.Fatalf("linux prompt should mention sudo: %q", firstRunPromptForGOOS("linux"))
+	}
+	if strings.Contains(firstRunPromptForGOOS("windows"), "sudo") {
+		t.Fatalf("windows prompt should not mention sudo: %q", firstRunPromptForGOOS("windows"))
 	}
 }
 

@@ -110,8 +110,15 @@ jobs:
           EOF
           chmod +x bin/gohere.js
 
-      - name: Pack npm package
-        run: npm pack --dry-run
+      - name: Pack and smoke test npm package
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          tarball="$(npm pack)"
+          install_dir="$(mktemp -d)"
+          npm install --prefix "$install_dir" "$tarball"
+          test "$("$install_dir/node_modules/.bin/gohere" --version)" = "gohere ${version}"
 
       - name: Publish npm package
         run: npm publish --access public

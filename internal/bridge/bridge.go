@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -29,6 +31,7 @@ type ProbeServer struct {
 
 	server *http.Server
 	ln     net.Listener
+	token  string
 }
 
 func IsWSLVersion(version string) bool {
@@ -107,17 +110,47 @@ func StartProbeServer(ctx context.Context) (*ProbeServer, error) {
 	if err != nil {
 		return nil, err
 	}
+	token, err := probeToken()
+	if err != nil {
+		ln.Close()
+		return nil, err
+	}
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != token {
+			http.NotFound(w, r)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok\n"))
+		if r.Method != http.MethodHead {
+			w.Write([]byte("ok\n"))
+		}
 	})}
-	probe := &ProbeServer{Addr: ln.Addr().String(), server: server, ln: ln}
+	probe := &ProbeServer{Addr: ln.Addr().String(), server: server, ln: ln, token: token}
 	go server.Serve(ln)
 	go func() {
 		<-ctx.Done()
 		probe.Close()
 	}()
 	return probe, nil
+}
+
+func probeToken() (string, error) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(token[:]), nil
+}
+
+func (s *ProbeServer) Target(host string) (string, error) {
+	if s == nil {
+		return "", errors.New("probe server is nil")
+	}
+	_, port, err := net.SplitHostPort(s.Addr)
+	if err != nil {
+		return "", err
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/?token=" + s.token, nil
 }
 
 func (s *ProbeServer) Close() error {
@@ -134,11 +167,10 @@ func ProbeBridge(ctx context.Context, client ProbeClient, wslIP string) (bool, s
 	}
 	defer probe.Close()
 
-	_, port, err := net.SplitHostPort(probe.Addr)
+	target, err := probe.Target(wslIP)
 	if err != nil {
 		return false, "", err
 	}
-	target := "http://" + net.JoinHostPort(wslIP, port)
 	reachable, err := client.ProbeTarget(ctx, target)
 	if err != nil {
 		return false, target, err

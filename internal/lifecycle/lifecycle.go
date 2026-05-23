@@ -215,10 +215,20 @@ func StopPID(pid int) {
 		return
 	}
 	if runtime.GOOS == "windows" {
+		taskkill := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid))
+		if err := taskkill.Run(); err == nil {
+			return
+		}
 		process.Kill()
 		return
 	}
-	process.Signal(syscall.SIGTERM)
+	if stopProcessGroup(pid) {
+		return
+	}
+	if err := process.Signal(syscall.SIGTERM); err == nil {
+		time.Sleep(500 * time.Millisecond)
+		_ = process.Kill()
+	}
 }
 
 func RouteProcessVerified(route router.Route) bool {
