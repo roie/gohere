@@ -622,6 +622,41 @@ func TestEnsureRouterDeclinePrintsCalmMessage(t *testing.T) {
 	}
 }
 
+func TestEnsureRouterDoesNotRunSetupWhenPromptReadFailsEmpty(t *testing.T) {
+	oldSetup := setupFunc
+	oldPromptInput := promptInput
+	oldStartInstalledRouter := startInstalledRouterFunc
+	defer func() {
+		setupFunc = oldSetup
+		promptInput = oldPromptInput
+		startInstalledRouterFunc = oldStartInstalledRouter
+	}()
+
+	setupFunc = func(ctx context.Context) error {
+		t.Fatal("setup should not run when the setup prompt cannot be read")
+		return nil
+	}
+	startInstalledRouterFunc = func(context.Context) error {
+		return os.ErrNotExist
+	}
+	promptInput = failingPromptReader{}
+	var out strings.Builder
+
+	err := ensureRouter(context.Background(), &out, func(context.Context) error {
+		return errors.New("router unavailable")
+	})
+	if err == nil {
+		t.Fatal("expected prompt read failure to decline setup")
+	}
+	if err.Error() != "gohere was not enabled" {
+		t.Fatalf("error = %q", err.Error())
+	}
+	want := firstRunPrompt() + "gohere was not enabled.\n\nRun gohere again when you are ready.\n"
+	if out.String() != want {
+		t.Fatalf("prompt output = %q, want %q", out.String(), want)
+	}
+}
+
 func TestEnsureRouterAddsBlankLineAfterSetup(t *testing.T) {
 	oldSetup := setupFunc
 	oldPromptInput := promptInput
@@ -3052,6 +3087,12 @@ func sameStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+type failingPromptReader struct{}
+
+func (failingPromptReader) Read([]byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
 }
 
 func itoa(n int) string {

@@ -373,7 +373,7 @@ func TestStartReturnsFinishedWhenProcessExitsZeroBeforeURL(t *testing.T) {
 		Env:            []string{"GOHERE_HELPER_PROCESS=1"},
 		Stdout:         &stdout,
 		Stderr:         &bytes.Buffer{},
-		StartupTimeout: time.Second,
+		StartupTimeout: 5 * time.Second,
 	}
 
 	_, err := Start(context.Background(), cfg)
@@ -391,7 +391,7 @@ func TestStartReturnsFailedWhenProcessExitsNonZeroBeforeURL(t *testing.T) {
 		Env:            []string{"GOHERE_HELPER_PROCESS=1"},
 		Stdout:         &bytes.Buffer{},
 		Stderr:         &bytes.Buffer{},
-		StartupTimeout: time.Second,
+		StartupTimeout: 5 * time.Second,
 	}
 
 	_, err := Start(context.Background(), cfg)

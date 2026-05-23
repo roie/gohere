@@ -146,6 +146,32 @@ func TestEnsureTokenRegeneratesNonHexTokenFile(t *testing.T) {
 	}
 }
 
+func TestReplaceFileForWindowsReplacesExistingTarget(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "token")
+	tmp := filepath.Join(dir, "token.tmp")
+	if err := os.WriteFile(dst, []byte("old\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tmp, []byte("new\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := replaceFileForGOOS("windows", tmp, dst); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new\n" {
+		t.Fatalf("target file = %q, want new contents", string(data))
+	}
+	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temp file stat err = %v, want not exist", err)
+	}
+}
+
 func TestRouteStoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	store := NewRouteStore(filepath.Join(dir, "routes.json"))
@@ -170,6 +196,71 @@ func TestRouteStoreRoundTrip(t *testing.T) {
 	}
 	if len(routes) != 1 || routes[0].Host != route.Host || routes[0].Target != route.Target || routes[0].Source != "wsl" || routes[0].OwnerCWD != route.OwnerCWD || routes[0].OwnerEnv != "wsl" {
 		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestAdminRoutesReadWaitsForStoreWriteLock(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+	srv.storeMu.Lock()
+
+	done := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/routes", nil)
+		req.Header.Set("X-Gohere-Token", "secret")
+		rec := httptest.NewRecorder()
+		srv.AdminHandler().ServeHTTP(rec, req)
+		done <- rec.Code
+	}()
+
+	select {
+	case code := <-done:
+		t.Fatalf("GET /routes completed while store write lock was held with status %d", code)
+	case <-time.After(50 * time.Millisecond):
+	}
+	srv.storeMu.Unlock()
+
+	select {
+	case code := <-done:
+		if code != http.StatusOK {
+			t.Fatalf("GET /routes = %d", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GET /routes did not finish after store lock was released")
+	}
+}
+
+func TestHTTPRouteLookupWaitsForStoreWriteLock(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{Host: "eventca.localhost", Target: backend.URL}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Token: "secret", Store: store})
+	srv.storeMu.Lock()
+
+	done := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "http://eventca.localhost/", nil)
+		req.Host = "eventca.localhost"
+		rec := httptest.NewRecorder()
+		srv.HTTPHandler().ServeHTTP(rec, req)
+		done <- rec.Code
+	}()
+
+	select {
+	case code := <-done:
+		t.Fatalf("HTTP route lookup completed while store write lock was held with status %d", code)
+	case <-time.After(50 * time.Millisecond):
+	}
+	srv.storeMu.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP route lookup did not finish after store lock was released")
 	}
 }
 

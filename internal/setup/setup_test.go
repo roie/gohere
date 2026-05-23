@@ -137,6 +137,39 @@ func TestLinuxSetupDetachedFallbackWritesRouterPID(t *testing.T) {
 	}
 }
 
+func TestLinuxSetupStopsDetachedServiceWhenRouterPIDWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source-gohere")
+	if err := os.WriteFile(source, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(dir, "state")
+	if err := os.MkdirAll(filepath.Join(stateDir, "router.pid"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldStop := stopDetachedProcess
+	var stopped []int
+	stopDetachedProcess = func(pid int) {
+		stopped = append(stopped, pid)
+	}
+	defer func() {
+		stopDetachedProcess = oldStop
+	}()
+
+	err := Linux(context.Background(), Config{
+		StateDir:         stateDir,
+		CurrentBinary:    source,
+		CommandRunner:    &detachingRunner{pid: 4242},
+		SystemdAvailable: false,
+	})
+	if err == nil {
+		t.Fatal("expected router.pid write error")
+	}
+	if len(stopped) != 1 || stopped[0] != 4242 {
+		t.Fatalf("stopped detached pids = %#v, want [4242]", stopped)
+	}
+}
+
 func TestLinuxSetupDetachedFallbackIsQuiet(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source-gohere")

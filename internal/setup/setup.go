@@ -31,6 +31,17 @@ type Config struct {
 	SystemdAvailable bool
 }
 
+var stopDetachedProcess = func(pid int) {
+	if pid <= 0 {
+		return
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+	_ = process.Kill()
+}
+
 func Linux(ctx context.Context, cfg Config) error {
 	if cfg.RouterHealth != nil && cfg.RouterHealth(ctx) == nil {
 		return nil
@@ -84,7 +95,7 @@ func Linux(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(cfg.StateDir, "router.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
+	if err := writeDetachedRouterPID(cfg.StateDir, pid); err != nil {
 		return err
 	}
 	return nil
@@ -123,7 +134,7 @@ func Windows(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(cfg.StateDir, "router.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
+	if err := writeDetachedRouterPID(cfg.StateDir, pid); err != nil {
 		return err
 	}
 	return nil
@@ -147,7 +158,7 @@ func StartInstalledRouter(ctx context.Context, cfg Config, binaryName string) er
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(cfg.StateDir, "router.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
+	if err := writeDetachedRouterPID(cfg.StateDir, pid); err != nil {
 		return err
 	}
 	return nil
@@ -161,6 +172,14 @@ func startDetached(ctx context.Context, runner CommandRunner, command string, ar
 		return 0, err
 	}
 	return 0, nil
+}
+
+func writeDetachedRouterPID(stateDir string, pid int) error {
+	if err := os.WriteFile(filepath.Join(stateDir, "router.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
+		stopDetachedProcess(pid)
+		return err
+	}
+	return nil
 }
 
 func writeSystemdService(configDir, stableBinary string) error {

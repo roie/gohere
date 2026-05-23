@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -57,7 +58,7 @@ type Server struct {
 	token    string
 	store    Store
 	shutdown func()
-	storeMu  sync.Mutex
+	storeMu  sync.RWMutex
 }
 
 func NewServer(cfg Config) *Server {
@@ -132,7 +133,7 @@ func writeToken(path string) (string, error) {
 	if err := tmp.Close(); err != nil {
 		return "", err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := replaceFile(tmpPath, path); err != nil {
 		return "", err
 	}
 	if err := os.Chmod(path, 0600); err != nil {
@@ -140,6 +141,19 @@ func writeToken(path string) (string, error) {
 	}
 	cleanup = false
 	return token, nil
+}
+
+func replaceFile(tmpPath, path string) error {
+	return replaceFileForGOOS(runtime.GOOS, tmpPath, path)
+}
+
+func replaceFileForGOOS(goos, tmpPath, path string) error {
+	if goos == "windows" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func validToken(token string) bool {
@@ -189,7 +203,37 @@ func (s *RouteStore) Save(routes []Route) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(s.path, data, 0600)
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), filepath.Base(s.path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := replaceFile(tmpPath, s.path); err != nil {
+		return err
+	}
+	cleanup = false
+	return os.Chmod(s.path, 0600)
 }
 
 type MemoryStore struct {
@@ -266,7 +310,7 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		routes, err := s.store.Load()
+		routes, err := s.loadRoutes()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -311,7 +355,7 @@ func (s *Server) handleRouteStatuses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	routes, err := s.store.Load()
+	routes, err := s.loadRoutes()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -366,7 +410,9 @@ func targetStatus(target string) string {
 		}
 		return "unknown"
 	}
-	resp.Body.Close()
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
+	}
 	return "ready"
 }
 
@@ -399,7 +445,7 @@ func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := probeTarget(target.String(), 500*time.Millisecond)
 	reachable := err == nil
-	if resp != nil {
+	if resp != nil && resp.Body != nil {
 		resp.Body.Close()
 	}
 
@@ -446,7 +492,7 @@ func (s *Server) routeForHost(host string) (Route, bool, error) {
 		host = before
 	}
 	host = strings.ToLower(host)
-	routes, err := s.store.Load()
+	routes, err := s.loadRoutes()
 	if err != nil {
 		return Route{}, false, err
 	}
@@ -456,6 +502,12 @@ func (s *Server) routeForHost(host string) (Route, bool, error) {
 		}
 	}
 	return Route{}, false, nil
+}
+
+func (s *Server) loadRoutes() ([]Route, error) {
+	s.storeMu.RLock()
+	defer s.storeMu.RUnlock()
+	return s.store.Load()
 }
 
 func RotateLog(logPath string) error {

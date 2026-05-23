@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -434,6 +435,18 @@ func waitForMulti(ctx context.Context, items []multiRunItem) error {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
+		for _, item := range items {
+			if item.result != nil {
+				item.result.Stop()
+			}
+		}
+		for range items {
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				return nil
+			}
+		}
 		return nil
 	}
 }
@@ -839,6 +852,7 @@ func replayCapturedOutput(out io.Writer, captures ...*limitedCapture) {
 }
 
 type limitedCapture struct {
+	mu  sync.Mutex
 	buf bytes.Buffer
 	max int
 }
@@ -848,6 +862,8 @@ func newLimitedCapture(max int) *limitedCapture {
 }
 
 func (w *limitedCapture) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	accepted := len(p)
 	remaining := w.max - w.buf.Len()
 	if remaining > 0 {
@@ -860,6 +876,8 @@ func (w *limitedCapture) Write(p []byte) (int, error) {
 }
 
 func (w *limitedCapture) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	return w.buf.String()
 }
 
@@ -878,7 +896,11 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 	}
 
 	fmt.Fprint(out, firstRunPrompt())
-	answer, _ := bufio.NewReader(promptInput).ReadString('\n')
+	answer, readErr := bufio.NewReader(promptInput).ReadString('\n')
+	if readErr != nil && strings.TrimSpace(answer) == "" {
+		fmt.Fprint(out, "gohere was not enabled.\n\nRun gohere again when you are ready.\n")
+		return errors.New("gohere was not enabled")
+	}
 	if !shouldRunSetupFromAnswer(answer) {
 		fmt.Fprint(out, "gohere was not enabled.\n\nRun gohere again when you are ready.\n")
 		return errors.New("gohere was not enabled")
