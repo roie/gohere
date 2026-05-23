@@ -1434,11 +1434,14 @@ func TestResolveRunRouterFallsBackWhenWindowsRouterAbsent(t *testing.T) {
 }
 
 func TestResolveRunRouterStopsWhenWindowsRouterInstalledButNotRunning(t *testing.T) {
+	startCalls := 0
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL:         true,
-		token:         "windows-token",
-		healthErr:     errors.New("connection refused"),
-		windowsBinary: true,
+		isWSL:             true,
+		token:             "windows-token",
+		healthErr:         errors.New("connection refused"),
+		windowsBinary:     true,
+		startWindowsErr:   errors.New("start failed"),
+		startWindowsCalls: &startCalls,
 	})
 	defer restore()
 
@@ -1446,8 +1449,37 @@ func TestResolveRunRouterStopsWhenWindowsRouterInstalledButNotRunning(t *testing
 	if err == nil {
 		t.Fatal("expected windows router unavailable error")
 	}
-	if !strings.Contains(err.Error(), "Windows gohere is installed, but its service is not running") {
+	if !strings.Contains(err.Error(), "Windows gohere is installed, but WSL could not start its service") {
 		t.Fatalf("error = %q", err.Error())
+	}
+	if startCalls != 1 {
+		t.Fatalf("start calls = %d, want 1", startCalls)
+	}
+}
+
+func TestResolveRunRouterStartsWindowsServiceFromWSLWhenInstalledButStopped(t *testing.T) {
+	startCalls := 0
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:                    true,
+		token:                    "windows-token",
+		healthErr:                errors.New("connection refused"),
+		windowsBinary:            true,
+		startWindowsCalls:        &startCalls,
+		startWindowsMakesHealthy: true,
+		wslIP:                    "172.20.10.2",
+		reachable:                true,
+	})
+	defer restore()
+
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if startCalls != 1 {
+		t.Fatalf("start calls = %d, want 1", startCalls)
+	}
+	if runRouter.RouterLabel != "Windows" || !runRouter.Bridge {
+		t.Fatalf("runRouter = %#v", runRouter)
 	}
 }
 
@@ -2201,11 +2233,14 @@ func TestRouteManagerFallsBackWhenOnlyWSLLocalRouterLooksHealthy(t *testing.T) {
 }
 
 func TestRouteManagerStopsWhenWindowsRouterInstalledButNotRunning(t *testing.T) {
+	startCalls := 0
 	restore := stubBridgeDetection(t, bridgeStub{
-		isWSL:         true,
-		token:         "windows-token",
-		healthErr:     errors.New("connection refused"),
-		windowsBinary: true,
+		isWSL:             true,
+		token:             "windows-token",
+		healthErr:         errors.New("connection refused"),
+		windowsBinary:     true,
+		startWindowsErr:   errors.New("start failed"),
+		startWindowsCalls: &startCalls,
 	})
 	defer restore()
 
@@ -2213,8 +2248,36 @@ func TestRouteManagerStopsWhenWindowsRouterInstalledButNotRunning(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected windows router unavailable error")
 	}
-	if !strings.Contains(err.Error(), "Windows gohere is installed, but its service is not running") {
+	if !strings.Contains(err.Error(), "Windows gohere is installed, but WSL could not start its service") {
 		t.Fatalf("error = %q", err.Error())
+	}
+	if startCalls != 1 {
+		t.Fatalf("start calls = %d, want 1", startCalls)
+	}
+}
+
+func TestRouteManagerStartsWindowsServiceFromWSLWhenInstalledButStopped(t *testing.T) {
+	startCalls := 0
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:                    true,
+		token:                    "windows-token",
+		healthErr:                errors.New("connection refused"),
+		windowsBinary:            true,
+		startWindowsCalls:        &startCalls,
+		startWindowsMakesHealthy: true,
+		admin:                    &recordingAdminClient{},
+	})
+	defer restore()
+
+	manager, err := resolveRouteManager(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if startCalls != 1 {
+		t.Fatalf("start calls = %d, want 1", startCalls)
+	}
+	if manager.Client == nil || !manager.RouterReady {
+		t.Fatalf("manager = %#v", manager)
 	}
 }
 
@@ -2824,18 +2887,21 @@ func (c *recordingAdminClient) waitForUpsert(t *testing.T) {
 }
 
 type bridgeStub struct {
-	isWSL          bool
-	healthErr      error
-	token          string
-	tokenErr       error
-	windowsBinary  bool
-	wslIP          string
-	reachable      bool
-	probeErr       error
-	probeReachable map[string]bool
-	probeHosts     *[]string
-	admin          bridgeAdminClient
-	localAdmin     adminClient
+	isWSL                    bool
+	healthErr                error
+	token                    string
+	tokenErr                 error
+	windowsBinary            bool
+	wslIP                    string
+	reachable                bool
+	probeErr                 error
+	probeReachable           map[string]bool
+	probeHosts               *[]string
+	admin                    bridgeAdminClient
+	localAdmin               adminClient
+	startWindowsErr          error
+	startWindowsCalls        *int
+	startWindowsMakesHealthy bool
 }
 
 func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
@@ -2848,11 +2914,16 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 	oldCurrentWSLIP := currentWSLIPFunc
 	oldProbeBridge := probeBridgeFunc
 	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartWindowsService := startWindowsServiceFunc
+	windowsStarted := false
 
 	detectWSLFunc = func() bool {
 		return stub.isWSL
 	}
 	windowsRouterHealthFunc = func(ctx context.Context) error {
+		if windowsStarted && stub.startWindowsMakesHealthy {
+			return nil
+		}
 		return stub.healthErr
 	}
 	discoverWindowsTokenFunc = func(string) (string, string, error) {
@@ -2897,6 +2968,16 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 		}
 		return stub.localAdmin, nil
 	}
+	startWindowsServiceFunc = func(context.Context, string) error {
+		if stub.startWindowsCalls != nil {
+			(*stub.startWindowsCalls)++
+		}
+		if stub.startWindowsErr != nil {
+			return stub.startWindowsErr
+		}
+		windowsStarted = true
+		return nil
+	}
 
 	return func() {
 		detectWSLFunc = oldDetectWSL
@@ -2907,6 +2988,7 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 		currentWSLIPFunc = oldCurrentWSLIP
 		probeBridgeFunc = oldProbeBridge
 		defaultAdminClientFunc = oldDefaultAdminClient
+		startWindowsServiceFunc = oldStartWindowsService
 	}
 }
 

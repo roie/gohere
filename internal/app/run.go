@@ -46,6 +46,7 @@ var (
 	windowsRouterHealthFunc   = func(ctx context.Context) error { return admin.NewClient(windowsAdminBaseURL, "").Health(ctx) }
 	discoverWindowsTokenFunc  = bridge.DiscoverWindowsToken
 	windowsStableBinaryExists = bridge.WindowsStableBinaryExists
+	startWindowsServiceFunc   = startWindowsService
 	newWindowsAdminClientFunc = func(token string) bridgeAdminClient { return admin.NewClient(windowsAdminBaseURL, token) }
 	currentWSLIPFunc          = bridge.CurrentWSLIP
 	probeBridgeFunc           = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
@@ -55,6 +56,8 @@ var (
 		return opener.Open(ctx, runtime.GOOS, detectWSLFunc(), url)
 	}
 )
+
+const routerStartTimeout = 10 * time.Second
 
 type adminClient interface {
 	Health(context.Context) error
@@ -516,7 +519,7 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 		return local()
 	}
 
-	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
+	token, tokenPath, err := discoverWindowsTokenFunc(windowsUsersRoot)
 	if err != nil {
 		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
 			if !windowsStableBinaryExists(windowsUsersRoot) {
@@ -535,7 +538,12 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 		if !windowsStableBinaryExists(windowsUsersRoot) {
 			return local()
 		}
-		return runRouter{}, windowsRouterUnavailableError()
+		if err := startWindowsServiceFunc(ctx, tokenPath); err != nil {
+			return runRouter{}, windowsRouterUnavailableError(err)
+		}
+		if err := waitForRouterHealth(ctx, windowsRouterHealthFunc, routerStartTimeout); err != nil {
+			return runRouter{}, windowsRouterUnavailableError(err)
+		}
 	}
 	client := newWindowsAdminClientFunc(token)
 	if _, err := client.Routes(ctx); err != nil {
@@ -631,8 +639,37 @@ func windowsTokenError(err error) error {
 	return errors.New("Windows gohere service is available, but WSL could not use it.\n\nWhen Windows and WSL are both installed, WSL projects should use the Windows service.\n\nRun:\n  gohere doctor")
 }
 
-func windowsRouterUnavailableError() error {
-	return errors.New("Windows gohere is installed, but its service is not running.\nRun gohere from Windows first so WSL can use the Windows service.")
+func startWindowsService(ctx context.Context, tokenPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	stableBinary := filepath.Join(filepath.Dir(tokenPath), "bin", "gohere.exe")
+	if !exists(stableBinary) {
+		return os.ErrNotExist
+	}
+	output, err := exec.CommandContext(ctx, "wslpath", "-w", stableBinary).Output()
+	if err != nil {
+		return err
+	}
+	windowsBinary := strings.TrimSpace(string(output))
+	command := "Start-Process -FilePath " + powerShellQuote(windowsBinary) + " -ArgumentList @('service','run')"
+	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-Command", command)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Stdin = nil
+	return cmd.Run()
+}
+
+func powerShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func windowsRouterUnavailableError(cause error) error {
+	msg := "Windows gohere is installed, but WSL could not start its service.\n\nRun this from Windows:\n  gohere\n\nThen run gohere again from WSL."
+	if cause != nil {
+		return fmt.Errorf("%s\n\nDetails: %w", msg, cause)
+	}
+	return errors.New(msg)
 }
 
 func windowsRouterCannotReachWSLError(cause error) error {
@@ -815,7 +852,7 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 		return nil
 	}
 	if err := startInstalledRouterFunc(ctx); err == nil {
-		if err := waitForRouterHealth(ctx, health, 3*time.Second); err == nil {
+		if err := waitForRouterHealth(ctx, health, routerStartTimeout); err == nil {
 			return nil
 		} else {
 			return installedRouterUnavailableError(err)
@@ -833,7 +870,7 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 	if err := setupFunc(ctx); err != nil {
 		return err
 	}
-	if err := waitForRouterHealth(ctx, health, 3*time.Second); err != nil {
+	if err := waitForRouterHealth(ctx, health, routerStartTimeout); err != nil {
 		return errors.New("gohere setup finished, but the service is still not reachable")
 	}
 	fmt.Fprintln(out)
@@ -1019,7 +1056,7 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 	if !detectWSLFunc() {
 		return local(), nil
 	}
-	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
+	token, tokenPath, err := discoverWindowsTokenFunc(windowsUsersRoot)
 	if err != nil {
 		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
 			if !windowsStableBinaryExists(windowsUsersRoot) {
@@ -1038,7 +1075,12 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 		if !windowsStableBinaryExists(windowsUsersRoot) {
 			return local(), nil
 		}
-		return routeManager{}, windowsRouterUnavailableError()
+		if err := startWindowsServiceFunc(ctx, tokenPath); err != nil {
+			return routeManager{}, windowsRouterUnavailableError(err)
+		}
+		if err := waitForRouterHealth(ctx, windowsRouterHealthFunc, routerStartTimeout); err != nil {
+			return routeManager{}, windowsRouterUnavailableError(err)
+		}
 	}
 	client := newWindowsAdminClientFunc(token)
 	if _, err := client.Routes(ctx); err != nil {
