@@ -447,16 +447,18 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		return nil, err
 	}
 	plan.Host = resolveRouteHost(plan, toRegisteredRoutes(routes))
+	processIdentity, _ := lifecycle.ProcessIdentity(pid)
 	route := router.Route{
-		Host:      plan.Host,
-		Target:    routeTarget(plan.RouteTargetHost, port),
-		PID:       pid,
-		CWD:       plan.CWD,
-		Name:      plan.Name,
-		Source:    plan.RouteSource,
-		OwnerCWD:  plan.CWD,
-		OwnerEnv:  plan.OwnerEnv,
-		StartedAt: time.Now().UTC(),
+		Host:            plan.Host,
+		Target:          routeTarget(plan.RouteTargetHost, port),
+		PID:             pid,
+		CWD:             plan.CWD,
+		Name:            plan.Name,
+		Source:          plan.RouteSource,
+		OwnerCWD:        plan.CWD,
+		OwnerEnv:        plan.OwnerEnv,
+		StartedAt:       time.Now().UTC(),
+		ProcessIdentity: processIdentity,
 	}
 	if err := adminClient.UpsertRoute(ctx, route); err != nil {
 		if errors.Is(err, admin.ErrUnauthorized) {

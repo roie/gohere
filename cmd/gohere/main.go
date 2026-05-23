@@ -83,7 +83,7 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stderr, "gohere service listening on %s\n", running.HTTPAddr)
-		waitForRouter(ctx)
+		waitForRouter(ctx, running.Done())
 	case cli.CommandHelp:
 		printUsage(os.Stdout, cmd.HelpTopic)
 	case cli.CommandVersion:
@@ -94,8 +94,11 @@ func main() {
 	}
 }
 
-func waitForRouter(ctx context.Context) {
-	<-ctx.Done()
+func waitForRouter(ctx context.Context, done <-chan struct{}) {
+	select {
+	case <-ctx.Done():
+	case <-done:
+	}
 }
 
 func printUsage(out io.Writer, topic string) {

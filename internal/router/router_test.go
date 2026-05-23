@@ -735,6 +735,43 @@ func TestCloseRemovesRouterPID(t *testing.T) {
 	}
 }
 
+func TestShutdownClosesRunningDone(t *testing.T) {
+	stateDir := t.TempDir()
+	running, err := Start(t.Context(), StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  stateDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+
+	token, err := ReadToken(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://"+running.AdminAddr+"/shutdown", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Gohere-Token", token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST /shutdown = %d", resp.StatusCode)
+	}
+
+	select {
+	case <-running.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("running Done was not closed after shutdown")
+	}
+}
+
 func TestCloseAllowsInFlightRequestToFinish(t *testing.T) {
 	stateDir := t.TempDir()
 	store := NewRouteStore(filepath.Join(stateDir, "routes.json"))

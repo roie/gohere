@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,6 +31,8 @@ type Running struct {
 	adminLn     net.Listener
 	pidPath     string
 	logFile     *os.File
+	done        chan struct{}
+	doneOnce    sync.Once
 }
 
 func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
@@ -100,6 +103,7 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		adminLn:     adminLn,
 		pidPath:     pidPath,
 		logFile:     logFile,
+		done:        make(chan struct{}),
 	}
 	go running.httpServer.Serve(httpLn)
 	go running.adminServer.Serve(adminLn)
@@ -162,6 +166,9 @@ func (r *Running) Close() error {
 	if r == nil {
 		return nil
 	}
+	defer r.doneOnce.Do(func() {
+		close(r.done)
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var firstErr error
@@ -188,6 +195,15 @@ func (r *Running) Close() error {
 		r.logFile.Close()
 	}
 	return firstErr
+}
+
+func (r *Running) Done() <-chan struct{} {
+	if r == nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	return r.done
 }
 
 func DefaultStateDir() string {

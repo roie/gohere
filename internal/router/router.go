@@ -25,15 +25,16 @@ const maxLogSize = 1024 * 1024
 const tokenLength = 64
 
 type Route struct {
-	Host      string    `json:"host"`
-	Target    string    `json:"target"`
-	PID       int       `json:"pid"`
-	CWD       string    `json:"cwd"`
-	Name      string    `json:"name"`
-	Source    string    `json:"source,omitempty"`
-	OwnerCWD  string    `json:"ownerCwd,omitempty"`
-	OwnerEnv  string    `json:"ownerEnv,omitempty"`
-	StartedAt time.Time `json:"startedAt"`
+	Host            string    `json:"host"`
+	Target          string    `json:"target"`
+	PID             int       `json:"pid"`
+	CWD             string    `json:"cwd"`
+	Name            string    `json:"name"`
+	Source          string    `json:"source,omitempty"`
+	OwnerCWD        string    `json:"ownerCwd,omitempty"`
+	OwnerEnv        string    `json:"ownerEnv,omitempty"`
+	StartedAt       time.Time `json:"startedAt"`
+	ProcessIdentity string    `json:"processIdentity,omitempty"`
 }
 
 type RouteStatus struct {

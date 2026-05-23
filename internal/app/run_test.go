@@ -1145,6 +1145,9 @@ func TestRunStaticUsesPlainSuccessLabel(t *testing.T) {
 	if admin.route.PID == 0 {
 		t.Fatalf("static route PID = 0, want current gohere process PID")
 	}
+	if admin.route.ProcessIdentity == "" {
+		t.Fatal("static route process identity is empty")
+	}
 	want := "gohere \u2192 http://" + filepath.Base(dir) + ".localhost\n"
 	if stdout.String() != want {
 		t.Fatalf("static output = %q, want %q", stdout.String(), want)

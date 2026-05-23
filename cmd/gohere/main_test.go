@@ -9,10 +9,11 @@ import (
 
 func TestWaitForRouterStopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	routerDone := make(chan struct{})
 	done := make(chan struct{})
 
 	go func() {
-		waitForRouter(ctx)
+		waitForRouter(ctx, routerDone)
 		close(done)
 	}()
 
@@ -21,6 +22,24 @@ func TestWaitForRouterStopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("waitForRouter did not return after context cancellation")
+	}
+}
+
+func TestWaitForRouterStopsOnRouterDone(t *testing.T) {
+	ctx := context.Background()
+	routerDone := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		waitForRouter(ctx, routerDone)
+		close(done)
+	}()
+
+	close(routerDone)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("waitForRouter did not return after router shutdown")
 	}
 }
 

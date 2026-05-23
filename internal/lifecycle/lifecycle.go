@@ -19,6 +19,7 @@ import (
 
 var currentIsWSL = detectCurrentWSL
 var processStartTime = realProcessStartTime
+var processIdentity = realProcessIdentity
 var stopPID = StopPID
 
 type RouteStatusKind string
@@ -221,7 +222,14 @@ func StopPID(pid int) {
 }
 
 func RouteProcessVerified(route router.Route) bool {
-	if route.PID <= 0 || route.StartedAt.IsZero() {
+	if route.PID <= 0 {
+		return false
+	}
+	if route.ProcessIdentity != "" {
+		identity, ok := processIdentity(route.PID)
+		return ok && identity == route.ProcessIdentity
+	}
+	if route.StartedAt.IsZero() {
 		return false
 	}
 	startedAt, ok := processStartTime(route.PID)
@@ -229,6 +237,31 @@ func RouteProcessVerified(route router.Route) bool {
 		return false
 	}
 	return !startedAt.After(route.StartedAt)
+}
+
+func ProcessIdentity(pid int) (string, bool) {
+	return processIdentity(pid)
+}
+
+func realProcessIdentity(pid int) (string, bool) {
+	if pid <= 0 {
+		return "", false
+	}
+	if runtime.GOOS == "linux" {
+		ticks, ok := linuxProcessStartTicks(pid)
+		if !ok {
+			return "", false
+		}
+		return fmt.Sprintf("linux:%d", ticks), true
+	}
+	if runtime.GOOS == "windows" {
+		startedAt, ok := windowsProcessStartTime(pid)
+		if !ok {
+			return "", false
+		}
+		return "windows:" + startedAt.Format(time.RFC3339Nano), true
+	}
+	return "", false
 }
 
 func PIDAlive(pid int) bool {
@@ -246,7 +279,13 @@ func PIDAlive(pid int) bool {
 }
 
 func realProcessStartTime(pid int) (time.Time, bool) {
-	if runtime.GOOS != "linux" || pid <= 0 {
+	if pid <= 0 {
+		return time.Time{}, false
+	}
+	if runtime.GOOS == "windows" {
+		return windowsProcessStartTime(pid)
+	}
+	if runtime.GOOS != "linux" {
 		return time.Time{}, false
 	}
 	ticks, ok := linuxProcessStartTicks(pid)
@@ -262,6 +301,31 @@ func realProcessStartTime(pid int) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return bootTime.Add(time.Duration(ticks) * time.Second / time.Duration(hz)), true
+}
+
+func windowsProcessStartTime(pid int) (time.Time, bool) {
+	output, err := exec.Command(
+		"powershell.exe",
+		"-NoProfile",
+		"-Command",
+		fmt.Sprintf(`$p = Get-Process -Id %d -ErrorAction Stop; $p.StartTime.ToUniversalTime().ToString("o")`, pid),
+	).Output()
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parseWindowsProcessStartTime(string(output))
+}
+
+func parseWindowsProcessStartTime(output string) (time.Time, bool) {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return time.Time{}, false
+	}
+	startedAt, err := time.Parse(time.RFC3339Nano, output)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return startedAt, true
 }
 
 func linuxProcessStartTicks(pid int) (uint64, bool) {

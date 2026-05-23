@@ -339,6 +339,38 @@ func TestStopCurrentFolderStopsVerifiedLiveProcess(t *testing.T) {
 	}
 }
 
+func TestRouteProcessVerifiedUsesProcessIdentity(t *testing.T) {
+	oldProcessIdentity := processIdentity
+	t.Cleanup(func() {
+		processIdentity = oldProcessIdentity
+	})
+	processIdentity = func(pid int) (string, bool) {
+		if pid != 123 {
+			return "", false
+		}
+		return "linux:456", true
+	}
+
+	route := router.Route{
+		PID:             123,
+		StartedAt:       time.Now().Add(-time.Hour),
+		ProcessIdentity: "linux:456",
+	}
+	if !RouteProcessVerified(route) {
+		t.Fatal("expected matching process identity to verify")
+	}
+
+	route.StartedAt = time.Time{}
+	if !RouteProcessVerified(route) {
+		t.Fatal("expected matching process identity to verify without startedAt")
+	}
+
+	route.ProcessIdentity = "linux:789"
+	if RouteProcessVerified(route) {
+		t.Fatal("expected mismatched process identity to be rejected")
+	}
+}
+
 func TestStopCurrentFolderRemovesDeadRouteWithoutStoppingUnverifiedPID(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{{
@@ -423,5 +455,21 @@ func TestTasklistContainsPIDHandlesCommaSeparatedMemory(t *testing.T) {
 
 	if !tasklistContainsPID(output, pid) {
 		t.Fatal("expected CSV parsing to ignore comma inside memory field")
+	}
+}
+
+func TestParseWindowsProcessStartTime(t *testing.T) {
+	startedAt, ok := parseWindowsProcessStartTime("2026-05-23T21:15:42.1234567Z\r\n")
+	if !ok {
+		t.Fatal("expected start time to parse")
+	}
+	if startedAt.Year() != 2026 || startedAt.Month() != time.May || startedAt.Day() != 23 {
+		t.Fatalf("startedAt = %s", startedAt)
+	}
+}
+
+func TestParseWindowsProcessStartTimeRejectsInvalidOutput(t *testing.T) {
+	if _, ok := parseWindowsProcessStartTime("Saturday, May 23, 2026"); ok {
+		t.Fatal("expected localized output to be rejected")
 	}
 }
