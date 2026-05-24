@@ -28,6 +28,8 @@ const tokenLength = 64
 const maxAdminBodyBytes = 1024 * 1024
 const RoutesFilename = "routes.json"
 
+var rotateOpenFile = os.OpenFile
+
 type Route struct {
 	Host            string    `json:"host"`
 	Target          string    `json:"target"`
@@ -432,7 +434,13 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/routes/"))
+	rawHost := strings.TrimPrefix(r.URL.EscapedPath(), "/routes/")
+	host, err := url.PathUnescape(rawHost)
+	if err != nil {
+		http.Error(w, "invalid route host", http.StatusBadRequest)
+		return
+	}
+	host = strings.ToLower(host)
 	s.storeMu.Lock()
 	defer s.storeMu.Unlock()
 	routes, err := s.store.Load()
@@ -575,8 +583,11 @@ func RotateLog(logPath string) error {
 	if err := os.Rename(logPath, logPath+".1"); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	file, err := rotateOpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {
+		if restoreErr := os.Rename(logPath+".1", logPath); restoreErr != nil {
+			return errors.Join(err, fmt.Errorf("restore rotated log: %w", restoreErr))
+		}
 		return err
 	}
 	return file.Close()

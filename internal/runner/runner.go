@@ -281,12 +281,20 @@ func streamAndScan(r io.Reader, w io.Writer, detected chan<- int, wg *sync.WaitG
 }
 
 func PortReachable(port int) bool {
-	client := http.Client{Timeout: 200 * time.Millisecond}
+	timeout := 200 * time.Millisecond
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{Timeout: timeout}).DialContext,
+	}
+	client := http.Client{Timeout: timeout, Transport: transport}
 	resp, err := client.Head("http://127.0.0.1:" + strconv.Itoa(port))
 	if err != nil {
+		transport.CloseIdleConnections()
 		return false
 	}
-	resp.Body.Close()
+	if resp.Body != nil {
+		resp.Body.Close()
+	}
+	transport.CloseIdleConnections()
 	return true
 }
 

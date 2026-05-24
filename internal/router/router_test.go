@@ -668,6 +668,24 @@ func TestAdminAPIDeleteHostCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestAdminAPIDeleteUnescapesHostPathSegment(t *testing.T) {
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "weird/host?x#y", Target: "http://127.0.0.1:49231"}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodDelete, "/routes/weird%2Fhost%3Fx%23y", nil)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /routes/host = %d", rec.Code)
+	}
+	if routes, _ := store.Load(); len(routes) != 0 {
+		t.Fatalf("routes after delete = %#v", routes)
+	}
+}
+
 func TestProxyRoutesByHostHeader(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Backend-Host", r.Host)
@@ -853,6 +871,38 @@ func TestRotateLogKeepsOneBackup(t *testing.T) {
 	}
 	if info.Size() != 0 {
 		t.Fatalf("new log size = %d, want 0", info.Size())
+	}
+}
+
+func TestRotateLogRestoresCurrentLogWhenReplacementCreateFails(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "router.log")
+	original := bytes.Repeat([]byte("x"), maxLogSize+1)
+	if err := os.WriteFile(logPath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldOpenFile := rotateOpenFile
+	defer func() {
+		rotateOpenFile = oldOpenFile
+	}()
+	rotateOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		if name == logPath {
+			return nil, errors.New("create failed")
+		}
+		return oldOpenFile(name, flag, perm)
+	}
+
+	err := RotateLog(logPath)
+	if err == nil || !strings.Contains(err.Error(), "create failed") {
+		t.Fatalf("RotateLog error = %v", err)
+	}
+	current, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(current, original) {
+		t.Fatalf("current log was not restored")
 	}
 }
 

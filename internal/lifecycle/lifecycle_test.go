@@ -300,6 +300,32 @@ func TestStopCurrentFolderRemovesStaleRouteAndReportsNotStopped(t *testing.T) {
 	}
 }
 
+func TestStopCurrentFolderMatchesOwnerCWD(t *testing.T) {
+	store := router.NewMemoryStore()
+	store.Save([]router.Route{
+		{Host: "app.localhost", CWD: "/tmp/app/components", OwnerCWD: "/tmp/app", PID: 999999, StartedAt: time.Now()},
+		{Host: "api.localhost", CWD: "/tmp/api", OwnerCWD: "/tmp/api", PID: 999998, StartedAt: time.Now()},
+	})
+
+	host, stopped, warning, err := StopCurrent(store, "/tmp/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "app.localhost" {
+		t.Fatalf("host = %q", host)
+	}
+	if stopped {
+		t.Fatal("stale PID should not be reported as stopped")
+	}
+	if warning != "" {
+		t.Fatalf("warning = %q", warning)
+	}
+	routes, _ := store.Load()
+	if len(routes) != 1 || routes[0].Host != "api.localhost" {
+		t.Fatalf("routes = %#v", routes)
+	}
+}
+
 func TestStopCurrentFolderDoesNotStopLiveProcessWithoutIdentityVerification(t *testing.T) {
 	cmd := exec.Command("sleep", "30")
 	if err := cmd.Start(); err != nil {

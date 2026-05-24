@@ -943,7 +943,7 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 		return err
 	}
 	if err := waitForRouterHealth(ctx, health, routerStartTimeout); err != nil {
-		return errors.New("gohere setup finished, but the service is still not reachable")
+		return fmt.Errorf("gohere setup finished, but the service is still not reachable: %w", err)
 	}
 	fmt.Fprintln(out)
 	return nil
@@ -1017,13 +1017,13 @@ func setupForGOOS(ctx context.Context, goos string) error {
 	}
 }
 
-func List(stdout io.Writer, verbose bool) error {
-	manager, err := resolveRouteManager(context.Background())
+func List(ctx context.Context, stdout io.Writer, verbose bool) error {
+	manager, err := resolveRouteManager(ctx)
 	if err != nil {
 		return err
 	}
 	if manager.Client != nil {
-		statuses, err := adminRouteStatuses(context.Background(), manager.Client)
+		statuses, err := adminRouteStatuses(ctx, manager.Client)
 		if err != nil {
 			if errors.Is(err, admin.ErrUnauthorized) {
 				return staleRouterTokenError()
@@ -1062,13 +1062,13 @@ func printRouteStatuses(stdout io.Writer, statuses []lifecycle.RouteStatus, verb
 	fmt.Fprint(stdout, lifecycle.FormatRoutes(statuses))
 }
 
-func Prune(stdout io.Writer) error {
-	manager, err := resolveRouteManager(context.Background())
+func Prune(ctx context.Context, stdout io.Writer) error {
+	manager, err := resolveRouteManager(ctx)
 	if err != nil {
 		return err
 	}
 	if manager.Client != nil {
-		removed, err := pruneAdminRoutes(context.Background(), manager.Client)
+		removed, err := pruneAdminRoutes(ctx, manager.Client)
 		if err != nil {
 			return err
 		}
@@ -1093,8 +1093,8 @@ func printPruneResult(stdout io.Writer, removed int) error {
 	return nil
 }
 
-func Stop(cwd string, stdout io.Writer) error {
-	manager, err := resolveRouteManager(context.Background())
+func Stop(ctx context.Context, cwd string, stdout io.Writer) error {
+	manager, err := resolveRouteManager(ctx)
 	if err != nil {
 		return err
 	}
@@ -1102,7 +1102,7 @@ func Stop(cwd string, stdout io.Writer) error {
 	var stopped bool
 	var warning string
 	if manager.Client != nil {
-		host, stopped, warning, err = stopAdminCurrent(context.Background(), manager.Client, cwd)
+		host, stopped, warning, err = stopAdminCurrent(ctx, manager.Client, cwd)
 	} else {
 		host, stopped, warning, err = lifecycle.StopCurrent(manager.Store, cwd)
 	}
@@ -1185,11 +1185,21 @@ func pruneAdminRoutes(ctx context.Context, client adminClient) (int, error) {
 			continue
 		}
 		if err := client.DeleteRoute(ctx, status.Route.Host); err != nil {
-			return removed, err
+			if removed > 0 {
+				return removed, fmt.Errorf("removed %d dead route%s before failing to delete %s: %w", removed, pluralS(removed), status.Route.Host, err)
+			}
+			return removed, fmt.Errorf("failed to delete %s: %w", status.Route.Host, err)
 		}
 		removed++
 	}
 	return removed, nil
+}
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func adminRouteStatuses(ctx context.Context, client adminClient) ([]lifecycle.RouteStatus, error) {
@@ -1243,12 +1253,18 @@ func convertAdminStatuses(statuses []router.RouteStatus) []lifecycle.RouteStatus
 }
 
 func adminProbeRouteStatuses(ctx context.Context, client adminClient, probeClient bridgeProbeClient) ([]lifecycle.RouteStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	routes, err := client.Routes(ctx)
 	if err != nil {
 		return nil, err
 	}
 	statuses := make([]lifecycle.RouteStatus, 0, len(routes))
 	for _, route := range routes {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		reachable, err := probeClient.ProbeTarget(ctx, route.Target)
 		status := lifecycle.RouteStatusUnknown
 		if err != nil {
@@ -1317,17 +1333,17 @@ func printStopResult(stdout io.Writer, host string, stopped bool, warning string
 	fmt.Fprintf(stdout, "Stopped %s.\n", host)
 }
 
-func Doctor(stdout io.Writer) error {
+func Doctor(ctx context.Context, stdout io.Writer) error {
 	stateDir := router.DefaultStateDir()
 	client, err := defaultAdminClientFunc()
 	if err != nil {
 		client = nil
 	}
-	return DoctorWithStore(stdout, stateDir, defaultStore(), client)
+	return DoctorWithStore(ctx, stdout, stateDir, defaultStore(), client)
 }
 
-func DoctorWithStore(stdout io.Writer, stateDir string, store router.Store, client adminClient) error {
-	return DoctorWithChecks(stdout, stateDir, store, client, DoctorChecks{Port80Status: port80Status})
+func DoctorWithStore(ctx context.Context, stdout io.Writer, stateDir string, store router.Store, client adminClient) error {
+	return DoctorWithChecks(ctx, stdout, stateDir, store, client, DoctorChecks{Port80Status: port80Status})
 }
 
 type Port80Status struct {
@@ -1344,7 +1360,7 @@ type DoctorChecks struct {
 	GOOS                 string
 }
 
-func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, client adminClient, extra DoctorChecks) error {
+func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, store router.Store, client adminClient, extra DoctorChecks) error {
 	goos := extra.GOOS
 	if goos == "" {
 		goos = runtime.GOOS
@@ -1371,7 +1387,7 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 	}
 	adminHealthy := false
 	if client != nil {
-		adminHealthy = client.Health(context.Background()) == nil
+		adminHealthy = client.Health(ctx) == nil
 		checks = append(checks, lifecycle.DoctorCheck{Name: "admin API health", OK: adminHealthy, Hint: "Try: gohere uninstall, then run gohere again."})
 	}
 	if pid, err := os.ReadFile(pidPath); err == nil {
@@ -1417,7 +1433,7 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 			checks = append(checks, lifecycle.DoctorCheck{Name: "systemd user service", OK: ok, Detail: detail, Hint: "Try: gohere service stop, then run gohere again."})
 		}
 	}
-	checks = append(checks, bridgeDoctorChecks(context.Background())...)
+	checks = append(checks, bridgeDoctorChecks(ctx)...)
 	fmt.Fprint(stdout, lifecycle.FormatDoctor(checks))
 	return nil
 }
@@ -1458,7 +1474,10 @@ func bridgeDoctorChecks(ctx context.Context) []lifecycle.DoctorCheck {
 	}
 	client := newWindowsAdminClientFunc(token)
 	if _, err := client.Routes(ctx); err != nil {
-		return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: false, Detail: "auth failed", Hint: "Try: gohere service stop in the side where the old service is running."})
+		if errors.Is(err, admin.ErrUnauthorized) {
+			return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: false, Detail: "auth failed", Hint: "Try: gohere service stop in the side where the old service is running."})
+		}
+		return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: false, Detail: "unavailable: " + err.Error(), Hint: "Run gohere doctor from Windows for more details."})
 	}
 	return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: true, Detail: "available"})
 }

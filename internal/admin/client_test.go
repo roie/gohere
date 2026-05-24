@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,6 +139,34 @@ func TestClientRouteStatusesReportsUnsupported(t *testing.T) {
 	_, err := NewClient(httpSrv.URL, "secret").RouteStatuses(t.Context())
 	if !errors.Is(err, ErrRouteStatusesUnsupported) {
 		t.Fatalf("RouteStatuses error = %v, want ErrRouteStatusesUnsupported", err)
+	}
+}
+
+func TestClientRouteStatusesIncludesErrorBody(t *testing.T) {
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "route status broken", http.StatusInternalServerError)
+	}))
+	defer httpSrv.Close()
+
+	_, err := NewClient(httpSrv.URL, "secret").RouteStatuses(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "route status broken") {
+		t.Fatalf("RouteStatuses error = %v, want response body", err)
+	}
+}
+
+func TestClientDeleteRouteEscapesHostPathSegment(t *testing.T) {
+	var gotPath string
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer httpSrv.Close()
+
+	if err := NewClient(httpSrv.URL, "secret").DeleteRoute(t.Context(), "weird/host?x#y"); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/routes/weird%2Fhost%3Fx%23y" {
+		t.Fatalf("path = %q", gotPath)
 	}
 }
 

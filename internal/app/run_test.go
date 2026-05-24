@@ -728,6 +728,37 @@ func TestEnsureRouterWaitsForRouterAfterSetup(t *testing.T) {
 	}
 }
 
+func TestEnsureRouterSetupFailureWrapsHealthError(t *testing.T) {
+	oldSetup := setupFunc
+	oldPromptInput := promptInput
+	oldStartInstalledRouter := startInstalledRouterFunc
+	defer func() {
+		setupFunc = oldSetup
+		promptInput = oldPromptInput
+		startInstalledRouterFunc = oldStartInstalledRouter
+	}()
+
+	setupFunc = func(ctx context.Context) error {
+		return nil
+	}
+	startInstalledRouterFunc = func(context.Context) error {
+		return os.ErrNotExist
+	}
+	promptInput = strings.NewReader("\n")
+	healthErr := errors.New("router still starting")
+	var out strings.Builder
+
+	err := ensureRouter(context.Background(), &out, func(context.Context) error {
+		return healthErr
+	})
+	if !errors.Is(err, healthErr) {
+		t.Fatalf("ensureRouter error = %v, want wrapped health error", err)
+	}
+	if !strings.Contains(err.Error(), "service is still not reachable") {
+		t.Fatalf("ensureRouter error = %v", err)
+	}
+}
+
 func TestSetupForGOOSUsesWindowsSetup(t *testing.T) {
 	oldSetupWindows := setupWindowsFunc
 	defer func() {
@@ -2108,7 +2139,7 @@ func TestListUsesWindowsRouterFromWSL(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := List(&out, false); err != nil {
+	if err := List(t.Context(), &out, false); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "web.localhost") {
@@ -2141,7 +2172,7 @@ func TestListUsesServiceComputedRouteStatusFromWSL(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := List(&out, true); err != nil {
+	if err := List(t.Context(), &out, true); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -2173,7 +2204,7 @@ func TestListFallsBackToServiceProbeWhenRouteStatusesEndpointIsMissing(t *testin
 	defer restore()
 
 	var out strings.Builder
-	if err := List(&out, true); err != nil {
+	if err := List(t.Context(), &out, true); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -2202,7 +2233,7 @@ func TestListDoesNotFallbackToProbeForRouteStatusServerError(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	err := List(&out, true)
+	err := List(t.Context(), &out, true)
 	if err == nil || !strings.Contains(err.Error(), "500 Internal Server Error") {
 		t.Fatalf("List error = %v", err)
 	}
@@ -2246,7 +2277,7 @@ func TestPruneUsesWindowsRouterFromWSL(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := Prune(&out); err != nil {
+	if err := Prune(t.Context(), &out); err != nil {
 		t.Fatal(err)
 	}
 	if admin.deleted != "dead.localhost" {
@@ -2277,7 +2308,7 @@ func TestPruneKeepsServiceReadyWindowsLoopbackRouteFromWSL(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := Prune(&out); err != nil {
+	if err := Prune(t.Context(), &out); err != nil {
 		t.Fatal(err)
 	}
 	if admin.deleted != "" {
@@ -2308,7 +2339,7 @@ func TestPruneFallbackProbeKeepsUnreachableRouteUnknown(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := Prune(&out); err != nil {
+	if err := Prune(t.Context(), &out); err != nil {
 		t.Fatal(err)
 	}
 	if admin.deleted != "" {
@@ -2316,6 +2347,46 @@ func TestPruneFallbackProbeKeepsUnreachableRouteUnknown(t *testing.T) {
 	}
 	if out.String() != "No dead routes.\n" {
 		t.Fatalf("prune output = %q", out.String())
+	}
+}
+
+func TestAdminProbeRouteStatusesStopsWhenContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	client := routeStatusesUnsupportedClient{routes: []router.Route{{
+		Host:   "app.localhost",
+		Target: "http://127.0.0.1:3000",
+	}}}
+	probe := &recordingProbeClient{}
+
+	_, err := adminProbeRouteStatuses(ctx, client, probe)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("adminProbeRouteStatuses error = %v, want context.Canceled", err)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("probe calls = %d, want 0", probe.calls)
+	}
+}
+
+func TestPruneAdminRoutesReportsPartialDeletion(t *testing.T) {
+	routes := []router.Route{
+		{Host: "one.localhost", Target: "http://127.0.0.1:1"},
+		{Host: "two.localhost", Target: "http://127.0.0.1:2"},
+	}
+	client := &recordingAdminClient{
+		statuses: []router.RouteStatus{
+			{Route: routes[0], Status: "dead"},
+			{Route: routes[1], Status: "dead"},
+		},
+		deleteErr: errors.New("delete failed"),
+	}
+
+	removed, err := pruneAdminRoutes(context.Background(), client)
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if err == nil || !strings.Contains(err.Error(), "removed 1 dead route") || !strings.Contains(err.Error(), "two.localhost") {
+		t.Fatalf("pruneAdminRoutes error = %v", err)
 	}
 }
 
@@ -2457,7 +2528,7 @@ func TestStopUsesWindowsRouterFromWSL(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := Stop(cwd, &out); err != nil {
+	if err := Stop(t.Context(), cwd, &out); err != nil {
 		t.Fatal(err)
 	}
 	if admin.deleted != "web.localhost" {
@@ -2477,7 +2548,7 @@ func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
 	store.Save([]router.Route{{Host: "app.localhost", Target: "http://127.0.0.1:1234"}})
 	var out strings.Builder
 
-	if err := DoctorWithStore(&out, stateDir, store, fakeAdminClient{}); err != nil {
+	if err := DoctorWithStore(t.Context(), &out, stateDir, store, fakeAdminClient{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "ok active routes 1") {
@@ -2498,7 +2569,7 @@ func TestDoctorReportsWindowsRouterWhenWSLBridgeAvailable(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
 		Port80Available: func() bool { return true },
 	}); err != nil {
 		t.Fatal(err)
@@ -2516,7 +2587,7 @@ func TestDoctorReportsMissingWindowsServiceInstallFromWSL(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
 		Port80Available: func() bool { return true },
 	}); err != nil {
 		t.Fatal(err)
@@ -2536,7 +2607,7 @@ func TestDoctorReportsWindowsServiceNotReachableFromWSL(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
 		Port80Available: func() bool { return true },
 	}); err != nil {
 		t.Fatal(err)
@@ -2556,7 +2627,7 @@ func TestDoctorReportsWindowsTokenMissingFromWSL(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
 		Port80Available: func() bool { return true },
 	}); err != nil {
 		t.Fatal(err)
@@ -2577,7 +2648,7 @@ func TestDoctorReportsWindowsServiceAuthFailureFromWSL(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
 		Port80Available: func() bool { return true },
 	}); err != nil {
 		t.Fatal(err)
@@ -2585,6 +2656,30 @@ func TestDoctorReportsWindowsServiceAuthFailureFromWSL(t *testing.T) {
 	if !strings.Contains(out.String(), "fail windows service auth failed") ||
 		!strings.Contains(out.String(), "gohere service stop") {
 		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorReportsWindowsServiceRouteErrorFromWSL(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		windowsBinary: true,
+		admin:         routesErrorAdminClient{err: errors.New("network timeout")},
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		Port80Available: func() bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail windows service unavailable") ||
+		!strings.Contains(out.String(), "network timeout") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+	if strings.Contains(out.String(), "auth failed") {
+		t.Fatalf("doctor should not report auth failure for network errors: %q", out.String())
 	}
 }
 
@@ -2598,7 +2693,7 @@ func TestDoctorReportsMissingWindowsInstallEvenWhenStaleTokenExists(t *testing.T
 	defer restore()
 
 	var out strings.Builder
-	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
 		Port80Available: func() bool { return true },
 	}); err != nil {
 		t.Fatal(err)
@@ -2621,8 +2716,23 @@ func TestDoctorDoesNotPanicWhenAdminClientCannotBeCreated(t *testing.T) {
 	}
 	var out strings.Builder
 
-	if err := Doctor(&out); err != nil {
+	if err := Doctor(t.Context(), &out); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDoctorWithChecksUsesProvidedContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out strings.Builder
+
+	if err := DoctorWithChecks(ctx, &out, t.TempDir(), router.NewMemoryStore(), contextHealthAdminClient{}, DoctorChecks{
+		Port80Available: func() bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail admin API health") {
+		t.Fatalf("doctor output = %q", out.String())
 	}
 }
 
@@ -2631,7 +2741,7 @@ func TestDoctorWithStoreReportsPort80Availability(t *testing.T) {
 	store := router.NewMemoryStore()
 	var out strings.Builder
 
-	if err := DoctorWithChecks(&out, stateDir, store, fakeAdminClient{}, DoctorChecks{Port80Available: func() bool {
+	if err := DoctorWithChecks(t.Context(), &out, stateDir, store, fakeAdminClient{}, DoctorChecks{Port80Available: func() bool {
 		return true
 	}}); err != nil {
 		t.Fatal(err)
@@ -2646,7 +2756,7 @@ func TestDoctorWithStoreShowsHintWhenPort80Blocked(t *testing.T) {
 	store := router.NewMemoryStore()
 	var out strings.Builder
 
-	if err := DoctorWithChecks(&out, stateDir, store, nil, DoctorChecks{Port80Available: func() bool {
+	if err := DoctorWithChecks(t.Context(), &out, stateDir, store, nil, DoctorChecks{Port80Available: func() bool {
 		return false
 	}}); err != nil {
 		t.Fatal(err)
@@ -2661,7 +2771,7 @@ func TestDoctorWithStoreShowsPermissionHintWhenPort80NeedsSetup(t *testing.T) {
 	store := router.NewMemoryStore()
 	var out strings.Builder
 
-	if err := DoctorWithChecks(&out, stateDir, store, nil, DoctorChecks{Port80Status: func() Port80Status {
+	if err := DoctorWithChecks(t.Context(), &out, stateDir, store, nil, DoctorChecks{Port80Status: func() Port80Status {
 		return Port80Status{OK: false, Detail: "permission required", Hint: "Try: gohere setup"}
 	}}); err != nil {
 		t.Fatal(err)
@@ -2676,7 +2786,7 @@ func TestDoctorWithStoreShowsInUseHintWhenPort80IsOwned(t *testing.T) {
 	store := router.NewMemoryStore()
 	var out strings.Builder
 
-	if err := DoctorWithChecks(&out, stateDir, store, nil, DoctorChecks{Port80Status: func() Port80Status {
+	if err := DoctorWithChecks(t.Context(), &out, stateDir, store, nil, DoctorChecks{Port80Status: func() Port80Status {
 		return Port80Status{OK: false, Detail: "already in use", Hint: "Try: stop the process using port 80, then run gohere again."}
 	}}); err != nil {
 		t.Fatal(err)
@@ -2696,7 +2806,7 @@ func TestAddressInUseDetectionHandlesWindowsBindMessage(t *testing.T) {
 func TestDoctorWithStoreTreatsHealthyRouterAsPort80OK(t *testing.T) {
 	var out strings.Builder
 
-	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{Port80Available: func() bool {
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{Port80Available: func() bool {
 		return false
 	}}); err != nil {
 		t.Fatal(err)
@@ -2720,7 +2830,7 @@ func TestDoctorWithStoreReportsSetcapStatus(t *testing.T) {
 	}
 	var out strings.Builder
 
-	if err := DoctorWithChecks(&out, stateDir, router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+	if err := DoctorWithChecks(t.Context(), &out, stateDir, router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
 		SetcapEnabled: func(path string) bool {
 			return path == binaryPath
 		},
@@ -2746,7 +2856,7 @@ func TestDoctorWithStoreUsesWindowsStableBinary(t *testing.T) {
 	}
 	var out strings.Builder
 
-	if err := DoctorWithChecks(&out, stateDir, router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+	if err := DoctorWithChecks(t.Context(), &out, stateDir, router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
 		GOOS: "windows",
 	}); err != nil {
 		t.Fatal(err)
@@ -2769,7 +2879,7 @@ func TestDoctorWithStoreReportsSystemdStatus(t *testing.T) {
 	}
 	var out strings.Builder
 
-	if err := DoctorWithChecks(&out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
 		SystemdUserServiceOK: func() (bool, bool) {
 			return true, true
 		},
@@ -2823,6 +2933,24 @@ func (fakeAdminClient) ProbeTarget(context.Context, string) (bool, error) {
 	return true, nil
 }
 
+type contextHealthAdminClient struct{}
+
+func (contextHealthAdminClient) Health(ctx context.Context) error {
+	return ctx.Err()
+}
+
+func (contextHealthAdminClient) Routes(context.Context) ([]router.Route, error) {
+	return nil, nil
+}
+
+func (contextHealthAdminClient) UpsertRoute(context.Context, router.Route) error {
+	return nil
+}
+
+func (contextHealthAdminClient) DeleteRoute(context.Context, string) error {
+	return nil
+}
+
 type staleTokenAdminClient struct{}
 
 func (staleTokenAdminClient) Health(context.Context) error {
@@ -2849,6 +2977,30 @@ func (unauthorizedBridgeAdminClient) ProbeTarget(context.Context, string) (bool,
 	return false, admin.ErrUnauthorized
 }
 
+type routesErrorAdminClient struct {
+	err error
+}
+
+func (routesErrorAdminClient) Health(context.Context) error {
+	return nil
+}
+
+func (c routesErrorAdminClient) Routes(context.Context) ([]router.Route, error) {
+	return nil, c.err
+}
+
+func (routesErrorAdminClient) UpsertRoute(context.Context, router.Route) error {
+	return nil
+}
+
+func (routesErrorAdminClient) DeleteRoute(context.Context, string) error {
+	return nil
+}
+
+func (routesErrorAdminClient) ProbeTarget(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 type recordingAdminClient struct {
 	mu             sync.Mutex
 	upserted       chan struct{}
@@ -2859,6 +3011,7 @@ type recordingAdminClient struct {
 	statusErr      error
 	probeReachable map[string]bool
 	deleted        string
+	deleteErr      error
 }
 
 type routeStatusesUnsupportedClient struct {
@@ -2980,6 +3133,9 @@ func (c *recordingAdminClient) UpsertRoute(ctx context.Context, route router.Rou
 func (c *recordingAdminClient) DeleteRoute(ctx context.Context, host string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.deleteErr != nil && c.deleted != "" {
+		return c.deleteErr
+	}
 	c.deleted = host
 	return nil
 }
@@ -2990,6 +3146,15 @@ func (c *recordingAdminClient) ProbeTarget(_ context.Context, target string) (bo
 	if c.probeReachable != nil {
 		return c.probeReachable[target], nil
 	}
+	return true, nil
+}
+
+type recordingProbeClient struct {
+	calls int
+}
+
+func (c *recordingProbeClient) ProbeTarget(context.Context, string) (bool, error) {
+	c.calls++
 	return true, nil
 }
 

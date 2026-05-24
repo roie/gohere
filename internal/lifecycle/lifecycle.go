@@ -120,8 +120,7 @@ func StopCurrent(store router.Store, cwd string) (string, bool, string, error) {
 	warning := ""
 	kept := routes[:0]
 	for _, route := range routes {
-		routeCWD, err := filepath.Abs(route.CWD)
-		if err == nil && routeCWD == absCWD {
+		if routeMatchesCWD(route, absCWD) {
 			stoppedHost = route.Host
 			if !PIDAlive(route.PID) || targetStatus(route.Target) == RouteStatusDead {
 				continue
@@ -141,6 +140,19 @@ func StopCurrent(store router.Store, cwd string) (string, bool, string, error) {
 		return stoppedHost, false, warning, err
 	}
 	return stoppedHost, stopped, warning, nil
+}
+
+func routeMatchesCWD(route router.Route, absCWD string) bool {
+	for _, cwd := range []string{route.OwnerCWD, route.CWD} {
+		if cwd == "" {
+			continue
+		}
+		routeCWD, err := filepath.Abs(cwd)
+		if err == nil && routeCWD == absCWD {
+			return true
+		}
+	}
+	return false
 }
 
 func UnverifiedProcessWarning(pid int) string {
@@ -180,10 +192,6 @@ func currentOwnerEnv() string {
 		return "wsl"
 	}
 	return runtime.GOOS
-}
-
-func isWSLRoute(route router.Route) bool {
-	return route.OwnerEnv == "wsl" || route.Source == "wsl"
 }
 
 func detectCurrentWSL() bool {

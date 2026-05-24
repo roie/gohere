@@ -37,12 +37,12 @@ func main() {
 			os.Exit(1)
 		}
 	case cli.CommandList:
-		if err := app.List(os.Stdout, cmd.Verbose); err != nil {
+		if err := app.List(ctx, os.Stdout, cmd.Verbose); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 	case cli.CommandPrune:
-		if err := app.Prune(os.Stdout); err != nil {
+		if err := app.Prune(ctx, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -52,12 +52,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		if err := app.Stop(cwd, os.Stdout); err != nil {
+		if err := app.Stop(ctx, cwd, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 	case cli.CommandDoctor:
-		if err := app.Doctor(os.Stdout); err != nil {
+		if err := app.Doctor(ctx, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -68,7 +69,7 @@ func (c *Client) Routes(ctx context.Context) ([]router.Route, error) {
 		return nil, ErrUnauthorized
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /routes returned %s", resp.Status)
+		return nil, responseStatusError("GET", "/routes", resp)
 	}
 	var routes []router.Route
 	if err := json.NewDecoder(resp.Body).Decode(&routes); err != nil {
@@ -94,7 +95,7 @@ func (c *Client) RouteStatuses(ctx context.Context) ([]router.RouteStatus, error
 		return nil, ErrRouteStatusesUnsupported
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /route-statuses returned %s", resp.Status)
+		return nil, responseStatusError("GET", "/route-statuses", resp)
 	}
 	var statuses []router.RouteStatus
 	if err := json.NewDecoder(resp.Body).Decode(&statuses); err != nil {
@@ -121,13 +122,14 @@ func (c *Client) UpsertRoute(ctx context.Context, route router.Route) error {
 		return ErrUnauthorized
 	}
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("POST /routes returned %s", resp.Status)
+		return responseStatusError("POST", "/routes", resp)
 	}
 	return nil
 }
 
 func (c *Client) DeleteRoute(ctx context.Context, host string) error {
-	req, err := c.authedRequest(ctx, http.MethodDelete, "/routes/"+host, nil)
+	path := "/routes/" + url.PathEscape(host)
+	req, err := c.authedRequest(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return err
 	}
@@ -140,7 +142,7 @@ func (c *Client) DeleteRoute(ctx context.Context, host string) error {
 		return ErrUnauthorized
 	}
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("DELETE /routes/%s returned %s", host, resp.Status)
+		return responseStatusError("DELETE", path, resp)
 	}
 	return nil
 }
@@ -209,4 +211,16 @@ func (c *Client) authedRequest(ctx context.Context, method, path string, body *b
 		req.Header.Set("Content-Type", "application/json")
 	}
 	return req, nil
+}
+
+func responseStatusError(method, path string, resp *http.Response) error {
+	message := fmt.Sprintf("%s %s returned %s", method, path, resp.Status)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err == nil {
+		detail := strings.TrimSpace(string(body))
+		if detail != "" {
+			message += ": " + detail
+		}
+	}
+	return errors.New(message)
 }

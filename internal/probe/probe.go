@@ -2,6 +2,7 @@ package probe
 
 import (
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -36,16 +37,38 @@ func TargetStatusWithTimeout(target string, timeout time.Duration) string {
 }
 
 func Head(target string, timeout time.Duration) (*http.Response, error) {
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{Timeout: timeout}).DialContext,
+	}
 	client := http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{Timeout: timeout}).DialContext,
-		},
+		Timeout:   timeout,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	return client.Head(target)
+	resp, err := client.Head(target)
+	if err != nil {
+		transport.CloseIdleConnections()
+		return nil, err
+	}
+	if resp == nil || resp.Body == nil {
+		transport.CloseIdleConnections()
+		return resp, nil
+	}
+	resp.Body = transportClosingBody{ReadCloser: resp.Body, transport: transport}
+	return resp, nil
+}
+
+type transportClosingBody struct {
+	io.ReadCloser
+	transport *http.Transport
+}
+
+func (b transportClosingBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.transport.CloseIdleConnections()
+	return err
 }
 
 func IsDefinitiveConnectionFailure(err error) bool {

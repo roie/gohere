@@ -342,6 +342,40 @@ func TestPortReachableUsesHEADWithoutGET(t *testing.T) {
 	}
 }
 
+func TestPortReachableClosesIdleProbeConnection(t *testing.T) {
+	closed := make(chan struct{}, 1)
+	server := &http.Server{
+		Addr: "127.0.0.1:0",
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+		ConnState: func(conn net.Conn, state http.ConnState) {
+			if state == http.StateClosed {
+				select {
+				case closed <- struct{}{}:
+				default:
+				}
+			}
+		},
+	}
+	ln, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	go server.Serve(ln)
+	defer server.Close()
+
+	if !PortReachable(port) {
+		t.Fatal("expected port to be reachable")
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("probe connection was not closed")
+	}
+}
+
 func TestRunCanRequireDetectedPort(t *testing.T) {
 	server := &http.Server{Addr: "127.0.0.1:0"}
 	ln, err := net.Listen("tcp", server.Addr)
