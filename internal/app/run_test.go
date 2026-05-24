@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1412,9 +1413,18 @@ func TestRunVerboseOutputIncludesCleanURLAndMetadata(t *testing.T) {
 }
 
 func TestWithHostRewritesCommonLoopbackHosts(t *testing.T) {
-	command := []string{"vite", "--host", "localhost", "--allowed-hosts", "127.0.0.1", "--listen", "0.0.0.0", "--hostname=localhost"}
+	command := []string{"vite", "--host", "localhost", "--allowed-hosts", "127.0.0.1", "--allowed-hosts=localhost", "--listen", "0.0.0.0", "--hostname=localhost"}
 	got := withHost(command, "192.0.2.10")
-	want := []string{"vite", "--host", "192.0.2.10", "--allowed-hosts", "192.0.2.10", "--listen", "192.0.2.10", "--hostname=192.0.2.10"}
+	want := []string{"vite", "--host", "192.0.2.10", "--allowed-hosts", "192.0.2.10", "--allowed-hosts=192.0.2.10", "--listen", "192.0.2.10", "--hostname=192.0.2.10"}
+	if !sameStrings(got, want) {
+		t.Fatalf("withHost() = %#v, want %#v", got, want)
+	}
+}
+
+func TestWithHostDoesNotRewritePositionalLoopbackHost(t *testing.T) {
+	command := []string{"custom-dev", "localhost", "--host", "127.0.0.1"}
+	got := withHost(command, "192.0.2.10")
+	want := []string{"custom-dev", "localhost", "--host", "192.0.2.10"}
 	if !sameStrings(got, want) {
 		t.Fatalf("withHost() = %#v, want %#v", got, want)
 	}
@@ -1510,6 +1520,61 @@ func TestResolveRunRouterStopsWhenWindowsRouterInstalledButNotRunning(t *testing
 	}
 	if startCalls != 1 {
 		t.Fatalf("start calls = %d, want 1", startCalls)
+	}
+}
+
+func TestStartWindowsServiceReportsMissingStableBinaryPath(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenPath, []byte("token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := startWindowsService(context.Background(), tokenPath)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("error = %v, want os.ErrNotExist", err)
+	}
+	if !strings.Contains(err.Error(), filepath.Join(dir, "bin", "gohere.exe")) {
+		t.Fatalf("error = %q, want missing binary path", err.Error())
+	}
+}
+
+func TestStartWindowsServiceUsesTimeout(t *testing.T) {
+	oldExecCommandContext := execCommandContext
+	oldTimeout := windowsServiceStartTimeout
+	defer func() {
+		execCommandContext = oldExecCommandContext
+		windowsServiceStartTimeout = oldTimeout
+	}()
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	stableBinary := filepath.Join(dir, "bin", "gohere.exe")
+	if err := os.MkdirAll(filepath.Dir(stableBinary), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokenPath, []byte("token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stableBinary, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	windowsServiceStartTimeout = 50 * time.Millisecond
+	execCommandContext = func(ctx context.Context, command string, args ...string) *exec.Cmd {
+		helperArgs := []string{"-test.run=TestAppCommandHelper", "--", command}
+		helperArgs = append(helperArgs, args...)
+		cmd := exec.CommandContext(ctx, os.Args[0], helperArgs...)
+		cmd.Env = append(os.Environ(), "GOHERE_APP_HELPER_PROCESS=1")
+		return cmd
+	}
+
+	started := time.Now()
+	err := startWindowsService(context.Background(), tokenPath)
+	if err == nil {
+		t.Fatal("expected timed out powershell command")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("startWindowsService elapsed = %s, want bounded by timeout", elapsed)
 	}
 }
 
@@ -2143,10 +2208,11 @@ func TestListDoesNotFallbackToProbeForRouteStatusServerError(t *testing.T) {
 	}
 }
 
-func TestListFallsBackToLocalStatusWhenRouteStatusesUnsupportedWithoutProbe(t *testing.T) {
+func TestListFallbackWithoutProbeKeepsStatusUnknown(t *testing.T) {
 	route := router.Route{
 		Host:   "old-local.localhost",
 		Target: "http://127.0.0.1:1",
+		PID:    999999,
 		CWD:    "/tmp/old-local",
 	}
 	client := routeStatusesUnsupportedClient{routes: []router.Route{route}}
@@ -2155,7 +2221,7 @@ func TestListFallsBackToLocalStatusWhenRouteStatusesUnsupportedWithoutProbe(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(statuses) != 1 || statuses[0].Route.Host != "old-local.localhost" || statuses[0].Status == lifecycle.RouteStatusReady {
+	if len(statuses) != 1 || statuses[0].Route.Host != "old-local.localhost" || statuses[0].Status != lifecycle.RouteStatusUnknown {
 		t.Fatalf("statuses = %#v", statuses)
 	}
 }
@@ -3093,6 +3159,30 @@ type failingPromptReader struct{}
 
 func (failingPromptReader) Read([]byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
+}
+
+func TestAppCommandHelper(t *testing.T) {
+	if os.Getenv("GOHERE_APP_HELPER_PROCESS") != "1" {
+		return
+	}
+
+	args := os.Args
+	for len(args) > 0 && args[0] != "--" {
+		args = args[1:]
+	}
+	if len(args) < 2 {
+		os.Exit(2)
+	}
+
+	switch args[1] {
+	case "wslpath":
+		fmt.Fprintln(os.Stdout, `C:\Users\Jessa\.gohere\bin\gohere.exe`)
+	case "powershell.exe":
+		time.Sleep(10 * time.Second)
+	default:
+		os.Exit(2)
+	}
+	os.Exit(0)
 }
 
 func itoa(n int) string {

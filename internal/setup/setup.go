@@ -237,16 +237,51 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if runtime.GOOS == "windows" {
-		if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	if err := os.Rename(tmpPath, dst); err != nil {
+	if err := replaceInstalledFile(tmpPath, dst); err != nil {
 		return err
 	}
 	cleanup = false
 	return os.Chmod(dst, mode)
+}
+
+func replaceInstalledFile(tmpPath, dst string) error {
+	return replaceInstalledFileForGOOS(runtime.GOOS, tmpPath, dst, os.Rename)
+}
+
+func replaceInstalledFileForGOOS(goos, tmpPath, dst string, rename func(string, string) error) error {
+	if goos == "windows" {
+		backup, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*.bak")
+		if err != nil {
+			return err
+		}
+		backupPath := backup.Name()
+		if err := backup.Close(); err != nil {
+			os.Remove(backupPath)
+			return err
+		}
+		if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+
+		hasExisting := true
+		if err := rename(dst, backupPath); err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
+			hasExisting = false
+		}
+		if err := rename(tmpPath, dst); err != nil {
+			if hasExisting {
+				_ = rename(backupPath, dst)
+			}
+			return err
+		}
+		if hasExisting {
+			_ = os.Remove(backupPath)
+		}
+		return nil
+	}
+	return rename(tmpPath, dst)
 }
 
 type realRunner struct{}

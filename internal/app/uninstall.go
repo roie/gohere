@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -67,18 +68,25 @@ func ServiceStopWithConfig(ctx context.Context, stdout io.Writer, cfg ServiceSto
 	if shutdownInstalledService(ctx, cfg.StateDir) == nil {
 		stopped = true
 	}
+	var stopErr error
 	servicePath := filepath.Join(cfg.ConfigDir, "systemd", "user", "gohere-router.service")
 	if exists(servicePath) {
-		_ = cfg.CommandRunner.Run(ctx, "systemctl", "--user", "stop", "gohere-router")
-		stopped = true
+		if err := cfg.CommandRunner.Run(ctx, "systemctl", "--user", "stop", "gohere-router"); err != nil {
+			stopErr = errors.Join(stopErr, err)
+		} else {
+			stopped = true
+		}
 	}
 
 	pidPath := filepath.Join(cfg.StateDir, "router.pid")
 	if pid, ok := readRouterPID(pidPath); ok {
 		stableBinary := filepath.Join(cfg.StateDir, "bin", stableBinaryName(runtime.GOOS))
 		if cfg.ProcessMatches(pid, stableBinary) {
-			_ = cfg.ProcessSignal(pid)
-			stopped = true
+			if err := cfg.ProcessSignal(pid); err != nil {
+				stopErr = errors.Join(stopErr, err)
+			} else {
+				stopped = true
+			}
 		}
 	}
 	if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
@@ -88,6 +96,9 @@ func ServiceStopWithConfig(ctx context.Context, stdout io.Writer, cfg ServiceSto
 	if stopped {
 		fmt.Fprintln(stdout, "gohere service stopped.")
 		return nil
+	}
+	if stopErr != nil {
+		return fmt.Errorf("gohere error: could not stop gohere service: %w", stopErr)
 	}
 	fmt.Fprintln(stdout, "No gohere service is running.")
 	return nil
@@ -182,6 +193,8 @@ var adminShutdown = func(ctx context.Context, token string) error {
 	return admin.NewClient("http://127.0.0.1:39399", token).Shutdown(ctx)
 }
 
+var windowsProcessExecutable = realWindowsProcessExecutable
+
 func signalProcess(pid int) error {
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -203,25 +216,51 @@ func terminateProcess(process terminableProcess, goos string) error {
 }
 
 func processMatchesInstalledBinary(pid int, stableBinary string) bool {
+	return processMatchesInstalledBinaryForGOOS(runtime.GOOS, pid, stableBinary)
+}
+
+func processMatchesInstalledBinaryForGOOS(goos string, pid int, stableBinary string) bool {
 	if pid <= 0 || stableBinary == "" {
 		return false
 	}
-	if runtime.GOOS != "linux" {
+	switch goos {
+	case "linux":
+		exe, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+		if err != nil {
+			return false
+		}
+		exe, err = filepath.EvalSymlinks(exe)
+		if err != nil {
+			return false
+		}
+		stableBinary, err = filepath.EvalSymlinks(stableBinary)
+		if err != nil {
+			return false
+		}
+		return exe == stableBinary
+	case "windows":
+		exe, ok := windowsProcessExecutable(pid)
+		if !ok {
+			return false
+		}
+		return strings.EqualFold(filepath.Clean(exe), filepath.Clean(stableBinary))
+	default:
 		return false
 	}
-	exe, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+}
+
+func realWindowsProcessExecutable(pid int) (string, bool) {
+	output, err := exec.Command(
+		"powershell.exe",
+		"-NoProfile",
+		"-Command",
+		fmt.Sprintf("(Get-CimInstance Win32_Process -Filter 'ProcessId = %d').ExecutablePath", pid),
+	).Output()
 	if err != nil {
-		return false
+		return "", false
 	}
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		return false
-	}
-	stableBinary, err = filepath.EvalSymlinks(stableBinary)
-	if err != nil {
-		return false
-	}
-	return exe == stableBinary
+	exe := strings.TrimSpace(string(output))
+	return exe, exe != ""
 }
 
 func removeInstalledFile(path string) error {

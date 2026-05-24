@@ -6,6 +6,10 @@ import (
 	"os/exec"
 )
 
+var startCommand = func(ctx context.Context, command string, args ...string) error {
+	return exec.CommandContext(ctx, command, args...).Start()
+}
+
 func CommandFor(goos string, wsl bool, url string) []string {
 	if wsl {
 		return []string{"cmd.exe", "/c", "start", "", url}
@@ -27,5 +31,8 @@ func Open(ctx context.Context, goos string, wsl bool, url string) error {
 	if len(command) == 0 {
 		return fmt.Errorf("browser opening is not supported on %s", goos)
 	}
-	return exec.CommandContext(ctx, command[0], command[1:]...).Start()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return startCommand(context.WithoutCancel(ctx), command[0], command[1:]...)
 }

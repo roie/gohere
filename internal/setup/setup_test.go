@@ -110,6 +110,36 @@ func TestCopyFileKeepsDestinationWhenCopyFails(t *testing.T) {
 	}
 }
 
+func TestReplaceInstalledFileForWindowsRestoresExistingTargetWhenReplaceFails(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "stable")
+	tmp := filepath.Join(dir, "stable.tmp")
+	if err := os.WriteFile(dst, []byte("old-binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tmp, []byte("new-binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	errReplaceFailed := errors.New("replace failed")
+	err := replaceInstalledFileForGOOS("windows", tmp, dst, func(oldPath, newPath string) error {
+		if oldPath == tmp && newPath == dst {
+			return errReplaceFailed
+		}
+		return os.Rename(oldPath, newPath)
+	})
+	if !errors.Is(err, errReplaceFailed) {
+		t.Fatalf("err = %v, want replace failure", err)
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "old-binary" {
+		t.Fatalf("destination = %q, want old contents restored", string(data))
+	}
+}
+
 func TestLinuxSetupDetachedFallbackWritesRouterPID(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source-gohere")

@@ -117,6 +117,23 @@ func TestRouteStatusTreatsRedirectAsReadyWithoutFollowing(t *testing.T) {
 	}
 }
 
+func TestRouteStatusUsesSharedProbeTimeout(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	statuses := RouteStatuses([]router.Route{{
+		Host:   "slow.localhost",
+		Target: backend.URL,
+	}})
+
+	if len(statuses) != 1 || statuses[0].Status != RouteStatusReady {
+		t.Fatalf("statuses = %#v, want ready for slow-but-alive target", statuses)
+	}
+}
+
 func TestPruneRemovesDeadRoutes(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{
@@ -191,6 +208,28 @@ func TestRouteStatusesDoNotUseWSLPIDOutsideWSL(t *testing.T) {
 
 	if len(statuses) != 1 || statuses[0].Status != RouteStatusReady {
 		t.Fatalf("statuses = %#v, want ready", statuses)
+	}
+}
+
+func TestRouteStatusesDoNotUseWindowsPIDInsideWSL(t *testing.T) {
+	oldCurrentIsWSL := currentIsWSL
+	defer func() {
+		currentIsWSL = oldCurrentIsWSL
+	}()
+	currentIsWSL = func() bool { return true }
+
+	statuses := RouteStatuses([]router.Route{{
+		Host:     "windows.localhost",
+		Target:   "://bad-target",
+		PID:      999999,
+		OwnerEnv: "windows",
+	}})
+
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %#v", statuses)
+	}
+	if statuses[0].Status == RouteStatusDead {
+		t.Fatalf("status = %s, want not dead from WSL PID namespace", statuses[0].Status)
 	}
 }
 
@@ -368,6 +407,14 @@ func TestRouteProcessVerifiedUsesProcessIdentity(t *testing.T) {
 	route.ProcessIdentity = "linux:789"
 	if RouteProcessVerified(route) {
 		t.Fatal("expected mismatched process identity to be rejected")
+	}
+}
+
+func TestTasklistContainsPIDScansAllCSVFields(t *testing.T) {
+	output := `"gohere.exe","Console","12345","10,000 K"` + "\n"
+
+	if !tasklistContainsPID(output, 12345) {
+		t.Fatal("expected tasklist parser to find PID outside second column")
 	}
 }
 

@@ -107,8 +107,8 @@ func TestFirstIPv4ReportsMissingIP(t *testing.T) {
 	}
 }
 
-func TestProbeServerListensOnAllInterfaces(t *testing.T) {
-	probe, err := StartProbeServer(context.Background())
+func TestProbeServerListensOnRequestedHost(t *testing.T) {
+	probe, err := StartProbeServer(context.Background(), "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,13 +118,13 @@ func TestProbeServerListensOnAllInterfaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if host != "0.0.0.0" && host != "" {
-		t.Fatalf("probe addr = %q, want wildcard", probe.Addr)
+	if host != "127.0.0.1" {
+		t.Fatalf("probe addr = %q, want 127.0.0.1", probe.Addr)
 	}
 }
 
 func TestProbeServerRequiresToken(t *testing.T) {
-	probe, err := StartProbeServer(context.Background())
+	probe, err := StartProbeServer(context.Background(), "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestProbeServerRequiresToken(t *testing.T) {
 func TestProbeBridgeAsksWindowsRouterToReachWSL(t *testing.T) {
 	client := &fakeProbeClient{reachable: true}
 
-	ok, target, err := ProbeBridge(context.Background(), client, "172.20.10.2")
+	ok, target, err := ProbeBridge(context.Background(), client, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestProbeBridgeAsksWindowsRouterToReachWSL(t *testing.T) {
 func TestProbeBridgeReportsUnreachable(t *testing.T) {
 	client := &fakeProbeClient{reachable: false}
 
-	ok, _, err := ProbeBridge(context.Background(), client, "172.20.10.2")
+	ok, _, err := ProbeBridge(context.Background(), client, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}

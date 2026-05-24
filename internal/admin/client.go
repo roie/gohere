@@ -27,7 +27,7 @@ func NewClient(baseURL, token string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
-		http:    &http.Client{Timeout: 2 * time.Second},
+		http:    &http.Client{Timeout: 10 * time.Second},
 	}
 }
 

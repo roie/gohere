@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -363,6 +364,34 @@ func TestRunCanRequireDetectedPort(t *testing.T) {
 
 	if _, err := Start(context.Background(), cfg); err == nil {
 		t.Fatal("expected no detected port error")
+	}
+}
+
+func TestStreamAndScanHandlesLongLines(t *testing.T) {
+	line := strings.Repeat("x", 70*1024) + " http://localhost:5173"
+	detected := make(chan int, 1)
+	var wg sync.WaitGroup
+	var out bytes.Buffer
+	wg.Add(1)
+	streamAndScan(strings.NewReader(line+"\n"), &out, detected, &wg)
+	wg.Wait()
+
+	if !strings.Contains(out.String(), "http://localhost:5173") {
+		t.Fatal("long line was not copied to output")
+	}
+	select {
+	case port := <-detected:
+		if port != 5173 {
+			t.Fatalf("port = %d, want 5173", port)
+		}
+	default:
+		t.Fatal("port was not detected from long line")
+	}
+}
+
+func TestDetectPortFromOutputDoesNotMatchPortInsideWord(t *testing.T) {
+	if port, ok := DetectPortFromOutput("http://localhost:3000abc"); ok {
+		t.Fatalf("detected port = %d, want no match", port)
 	}
 }
 

@@ -201,7 +201,7 @@ func TestNewClientUsesBoundedTimeout(t *testing.T) {
 	if client.http.Timeout <= 0 {
 		t.Fatal("client timeout must be bounded")
 	}
-	if client.http.Timeout > 2*time.Second {
-		t.Fatalf("client timeout = %s, want at most 2s", client.http.Timeout)
+	if client.http.Timeout < 5*time.Second {
+		t.Fatalf("client timeout = %s, want at least 5s for route status probes", client.http.Timeout)
 	}
 }

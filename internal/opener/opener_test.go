@@ -1,6 +1,9 @@
 package opener
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestCommandFor(t *testing.T) {
 	tests := []struct {
@@ -44,6 +47,33 @@ func TestCommandFor(t *testing.T) {
 				t.Fatalf("CommandFor() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestOpenStartsCommandWithNonCanceledContext(t *testing.T) {
+	oldStartCommand := startCommand
+	defer func() {
+		startCommand = oldStartCommand
+	}()
+	called := false
+	startCommand = func(ctx context.Context, command string, args ...string) error {
+		called = true
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("open command context is canceled: %v", err)
+		}
+		if command != "xdg-open" {
+			t.Fatalf("command = %q", command)
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := Open(ctx, "linux", false, "http://project.localhost"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("start command was not called")
 	}
 }
 

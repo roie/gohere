@@ -172,6 +172,36 @@ func TestReplaceFileForWindowsReplacesExistingTarget(t *testing.T) {
 	}
 }
 
+func TestReplaceFileForWindowsRestoresExistingTargetWhenReplaceFails(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "token")
+	tmp := filepath.Join(dir, "token.tmp")
+	if err := os.WriteFile(dst, []byte("old\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tmp, []byte("new\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	errReplaceFailed := errors.New("replace failed")
+	err := replaceFileForGOOSWithRename("windows", tmp, dst, func(oldPath, newPath string) error {
+		if oldPath == tmp && newPath == dst {
+			return errReplaceFailed
+		}
+		return os.Rename(oldPath, newPath)
+	})
+	if !errors.Is(err, errReplaceFailed) {
+		t.Fatalf("err = %v, want replace failure", err)
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "old\n" {
+		t.Fatalf("target file = %q, want old contents restored", string(data))
+	}
+}
+
 func TestRouteStoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	store := NewRouteStore(filepath.Join(dir, "routes.json"))
@@ -431,6 +461,74 @@ func TestAdminAPIProbeTargetRejectsNonHTTPURL(t *testing.T) {
 	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
 
 	req := httptest.NewRequest(http.MethodPost, "/probe-target", strings.NewReader(`{"target":"file:///etc/passwd"}`))
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /probe-target = %d body %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminAPIRoutesRejectsHugeBody(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+
+	body := &countingReader{Reader: strings.NewReader(strings.Repeat("x", maxAdminBodyBytes+1024))}
+	req := httptest.NewRequest(http.MethodPost, "/routes", body)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /routes = %d body %q", rec.Code, rec.Body.String())
+	}
+	if body.read > maxAdminBodyBytes {
+		t.Fatalf("read %d bytes, want at most %d", body.read, maxAdminBodyBytes)
+	}
+}
+
+func TestProxyWebSocketUpstreamErrorDoesNotReturnHTMLPage(t *testing.T) {
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{
+		Host:   "web.localhost",
+		Target: "http://127.0.0.1:1",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://web.localhost/socket", nil)
+	req.Host = "web.localhost"
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("websocket error status = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "<!doctype html>") {
+		t.Fatalf("websocket error returned HTML page: %q", rec.Body.String())
+	}
+}
+
+func TestMissingRoutePageStripsIPv6Port(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	missingRoutePage(rec, "[::1]:8080")
+
+	if !strings.Contains(rec.Body.String(), "No gohere route is running for ::1") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "for [") {
+		t.Fatalf("body kept bracket fragment: %q", rec.Body.String())
+	}
+}
+
+func TestAdminAPIProbeTargetRejectsPublicHosts(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+
+	req := httptest.NewRequest(http.MethodPost, "/probe-target", strings.NewReader(`{"target":"https://example.com"}`))
 	req.Header.Set("X-Gohere-Token", "secret")
 	rec := httptest.NewRecorder()
 	srv.AdminHandler().ServeHTTP(rec, req)
@@ -1070,4 +1168,15 @@ func TestStartRejectsNonLoopbackAdminAddress(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-loopback admin address to be rejected")
 	}
+}
+
+type countingReader struct {
+	*strings.Reader
+	read int64
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.read += int64(n)
+	return n, err
 }

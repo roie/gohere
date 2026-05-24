@@ -41,16 +41,18 @@ var (
 	defaultAdminClientFunc   func() (adminClient, error) = func() (adminClient, error) {
 		return defaultAdminClient()
 	}
-	startRunnerFunc           = runner.Start
-	detectWSLFunc             = bridge.DetectWSL
-	routerHealthFunc          = func(ctx context.Context) error { return admin.NewClient("http://127.0.0.1:39399", "").Health(ctx) }
-	windowsRouterHealthFunc   = func(ctx context.Context) error { return admin.NewClient(windowsAdminBaseURL, "").Health(ctx) }
-	discoverWindowsTokenFunc  = bridge.DiscoverWindowsToken
-	windowsStableBinaryExists = bridge.WindowsStableBinaryExists
-	startWindowsServiceFunc   = startWindowsService
-	newWindowsAdminClientFunc = func(token string) bridgeAdminClient { return admin.NewClient(windowsAdminBaseURL, token) }
-	currentWSLIPFunc          = bridge.CurrentWSLIP
-	probeBridgeFunc           = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
+	startRunnerFunc            = runner.Start
+	detectWSLFunc              = bridge.DetectWSL
+	routerHealthFunc           = func(ctx context.Context) error { return admin.NewClient("http://127.0.0.1:39399", "").Health(ctx) }
+	windowsRouterHealthFunc    = func(ctx context.Context) error { return admin.NewClient(windowsAdminBaseURL, "").Health(ctx) }
+	discoverWindowsTokenFunc   = bridge.DiscoverWindowsToken
+	windowsStableBinaryExists  = bridge.WindowsStableBinaryExists
+	startWindowsServiceFunc    = startWindowsService
+	execCommandContext         = exec.CommandContext
+	windowsServiceStartTimeout = routerStartTimeout
+	newWindowsAdminClientFunc  = func(token string) bridgeAdminClient { return admin.NewClient(windowsAdminBaseURL, token) }
+	currentWSLIPFunc           = bridge.CurrentWSLIP
+	probeBridgeFunc            = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
 		return bridge.ProbeBridge(ctx, client, wslIP)
 	}
 	openBrowserFunc = func(ctx context.Context, url string) error {
@@ -461,6 +463,10 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 	}
 	plan.Host = resolveRouteHost(plan, toRegisteredRoutes(routes))
 	processIdentity, _ := lifecycle.ProcessIdentity(pid)
+	ownerEnv := plan.OwnerEnv
+	if ownerEnv == "" {
+		ownerEnv = runOwnerEnv()
+	}
 	route := router.Route{
 		Host:            plan.Host,
 		Target:          routeTarget(plan.RouteTargetHost, port),
@@ -469,7 +475,7 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		Name:            plan.Name,
 		Source:          plan.RouteSource,
 		OwnerCWD:        plan.CWD,
-		OwnerEnv:        plan.OwnerEnv,
+		OwnerEnv:        ownerEnv,
 		StartedAt:       time.Now().UTC(),
 		ProcessIdentity: processIdentity,
 	}
@@ -502,6 +508,13 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 	return func() {
 		adminClient.DeleteRoute(context.Background(), route.Host)
 	}, nil
+}
+
+func runOwnerEnv() string {
+	if detectWSLFunc() {
+		return "wsl"
+	}
+	return runtime.GOOS
 }
 
 func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) {
@@ -635,22 +648,40 @@ func withHost(command []string, host string) []string {
 		return command
 	}
 	out := append([]string(nil), command...)
+	rewriteNext := false
 	for i := range out {
+		if rewriteNext {
+			if isCommonLoopbackHost(out[i]) {
+				out[i] = host
+			}
+			rewriteNext = false
+			continue
+		}
+		if isSeparateHostFlag(out[i]) {
+			rewriteNext = true
+			continue
+		}
 		out[i] = replaceCommandHost(out[i], host)
 	}
 	return out
 }
 
 func replaceCommandHost(arg, host string) string {
-	if isCommonLoopbackHost(arg) {
-		return host
-	}
-	for _, prefix := range []string{"--host=", "--hostname=", "--listen="} {
+	for _, prefix := range []string{"--host=", "--hostname=", "--listen=", "--allowed-hosts="} {
 		if strings.HasPrefix(arg, prefix) && isCommonLoopbackHost(strings.TrimPrefix(arg, prefix)) {
 			return prefix + host
 		}
 	}
 	return arg
+}
+
+func isSeparateHostFlag(flag string) bool {
+	switch flag {
+	case "--host", "--hostname", "--listen", "--allowed-hosts":
+		return true
+	default:
+		return false
+	}
 }
 
 func isCommonLoopbackHost(host string) bool {
@@ -672,17 +703,20 @@ func startWindowsService(ctx context.Context, tokenPath string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(ctx, windowsServiceStartTimeout)
+	defer cancel()
+
 	stableBinary := filepath.Join(filepath.Dir(tokenPath), "bin", "gohere.exe")
 	if !exists(stableBinary) {
-		return os.ErrNotExist
+		return fmt.Errorf("%s: %w", stableBinary, os.ErrNotExist)
 	}
-	output, err := exec.CommandContext(ctx, "wslpath", "-w", stableBinary).Output()
+	output, err := execCommandContext(ctx, "wslpath", "-w", stableBinary).Output()
 	if err != nil {
 		return err
 	}
 	windowsBinary := strings.TrimSpace(string(output))
 	command := "Start-Process -FilePath " + powerShellQuote(windowsBinary) + " -ArgumentList @('service','run')"
-	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-Command", command)
+	cmd := execCommandContext(ctx, "powershell.exe", "-NoProfile", "-Command", command)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Stdin = nil
@@ -1190,7 +1224,11 @@ func fallbackLocalRouteStatuses(ctx context.Context, client adminClient) ([]life
 	if err != nil {
 		return nil, err
 	}
-	return lifecycle.RouteStatuses(routes), nil
+	statuses := make([]lifecycle.RouteStatus, 0, len(routes))
+	for _, route := range routes {
+		statuses = append(statuses, lifecycle.RouteStatus{Route: route, Status: lifecycle.RouteStatusUnknown})
+	}
+	return statuses, nil
 }
 
 func convertAdminStatuses(statuses []router.RouteStatus) []lifecycle.RouteStatus {
@@ -1246,7 +1284,7 @@ func stopAdminCurrent(ctx context.Context, client adminClient, cwd string) (stri
 		if err != nil || absRouteCWD != absCWD {
 			continue
 		}
-		if route.OwnerEnv != "" && route.OwnerEnv != "wsl" {
+		if route.OwnerEnv != "" && route.OwnerEnv != runOwnerEnv() {
 			continue
 		}
 		if !lifecycle.PIDAlive(route.PID) || lifecycle.RouteStatuses([]router.Route{route})[0].Status == lifecycle.RouteStatusDead {
@@ -1376,7 +1414,7 @@ func DoctorWithChecks(stdout io.Writer, stateDir string, store router.Store, cli
 			if ok {
 				detail = "active"
 			}
-			checks = append(checks, lifecycle.DoctorCheck{Name: "systemd user service", OK: ok, Detail: detail, Hint: "Try: systemctl --user restart gohere-router"})
+			checks = append(checks, lifecycle.DoctorCheck{Name: "systemd user service", OK: ok, Detail: detail, Hint: "Try: gohere service stop, then run gohere again."})
 		}
 	}
 	checks = append(checks, bridgeDoctorChecks(context.Background())...)
@@ -1441,7 +1479,7 @@ func projectDir(packagePath string) string {
 }
 
 func defaultStore() router.Store {
-	return router.NewRouteStore(filepath.Join(router.DefaultStateDir(), "routes.json"))
+	return router.NewRouteStore(filepath.Join(router.DefaultStateDir(), router.RoutesFilename))
 }
 
 func defaultAdminClient() (*admin.Client, error) {

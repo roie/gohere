@@ -2,9 +2,7 @@ package lifecycle
 
 import (
 	"encoding/csv"
-	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/roie/gohere/internal/probe"
 	"github.com/roie/gohere/internal/router"
 )
 
@@ -159,10 +158,28 @@ func classifyRoute(route router.Route) RouteStatusKind {
 }
 
 func routePIDIsLocal(route router.Route) bool {
-	if isWSLRoute(route) && !currentIsWSL() {
-		return false
+	ownerEnv := routeOwnerEnv(route)
+	if ownerEnv == "" {
+		return true
 	}
-	return true
+	return ownerEnv == currentOwnerEnv()
+}
+
+func routeOwnerEnv(route router.Route) string {
+	if route.OwnerEnv != "" {
+		return route.OwnerEnv
+	}
+	if route.Source == "wsl" {
+		return "wsl"
+	}
+	return ""
+}
+
+func currentOwnerEnv() string {
+	if currentIsWSL() {
+		return "wsl"
+	}
+	return runtime.GOOS
 }
 
 func isWSLRoute(route router.Route) bool {
@@ -185,25 +202,7 @@ func detectCurrentWSL() bool {
 }
 
 func targetStatus(target string) RouteStatusKind {
-	client := http.Client{
-		Timeout: 200 * time.Millisecond,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := client.Head(target)
-	if err != nil {
-		if isDefinitiveConnectionFailure(err) {
-			return RouteStatusDead
-		}
-		return RouteStatusUnknown
-	}
-	resp.Body.Close()
-	return RouteStatusReady
-}
-
-func isDefinitiveConnectionFailure(err error) bool {
-	return errors.Is(err, syscall.ECONNREFUSED)
+	return RouteStatusKind(probe.TargetStatus(target))
 }
 
 func StopPID(pid int) {
@@ -402,12 +401,11 @@ func tasklistContainsPID(output string, pid int) bool {
 		if err != nil {
 			return false
 		}
-		if len(record) < 2 {
-			continue
-		}
-		got, err := strconv.Atoi(strings.TrimSpace(record[1]))
-		if err == nil && got == pid {
-			return true
+		for _, field := range record {
+			got, err := strconv.Atoi(strings.TrimSpace(field))
+			if err == nil && got == pid {
+				return true
+			}
 		}
 	}
 }

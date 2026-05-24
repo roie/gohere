@@ -132,6 +132,31 @@ func TestServiceStopStopsRuntimeButKeepsInstallAndState(t *testing.T) {
 	}
 }
 
+func TestServiceStopReportsSystemdStopFailure(t *testing.T) {
+	stateDir := t.TempDir()
+	configDir := t.TempDir()
+	writeFile(t, filepath.Join(configDir, "systemd", "user", "gohere-router.service"), "service")
+	runner := &uninstallRecordingRunner{err: errors.New("systemctl failed")}
+	oldAdminShutdown := adminShutdown
+	defer func() {
+		adminShutdown = oldAdminShutdown
+	}()
+	adminShutdown = func(context.Context, string) error { return errors.New("service unavailable") }
+
+	var out strings.Builder
+	err := ServiceStopWithConfig(context.Background(), &out, ServiceStopConfig{
+		StateDir:      stateDir,
+		ConfigDir:     configDir,
+		CommandRunner: runner,
+	})
+	if err == nil || !strings.Contains(err.Error(), "systemctl failed") {
+		t.Fatalf("error = %v, want systemctl failure", err)
+	}
+	if strings.Contains(out.String(), "gohere service stopped") {
+		t.Fatalf("output claimed success: %q", out.String())
+	}
+}
+
 func TestServiceStopDoesNotSignalUnverifiedPID(t *testing.T) {
 	stateDir := t.TempDir()
 	configDir := t.TempDir()
@@ -292,6 +317,26 @@ func TestTerminateProcessUsesKillOnWindows(t *testing.T) {
 	}
 }
 
+func TestProcessMatchesInstalledBinaryUsesWindowsExecutablePath(t *testing.T) {
+	oldWindowsProcessExecutable := windowsProcessExecutable
+	defer func() {
+		windowsProcessExecutable = oldWindowsProcessExecutable
+	}()
+	windowsProcessExecutable = func(pid int) (string, bool) {
+		if pid != 12345 {
+			return "", false
+		}
+		return `C:\Users\Jessa\.gohere\bin\gohere.exe`, true
+	}
+
+	if !processMatchesInstalledBinaryForGOOS("windows", 12345, `C:\Users\Jessa\.gohere\bin\gohere.exe`) {
+		t.Fatal("expected Windows process executable to match stable binary")
+	}
+	if processMatchesInstalledBinaryForGOOS("windows", 12345, `C:\Other\gohere.exe`) {
+		t.Fatal("expected different Windows executable to be rejected")
+	}
+}
+
 func TestTerminateProcessUsesSigtermOnLinux(t *testing.T) {
 	process := &fakeProcess{}
 
@@ -339,11 +384,12 @@ func TestRemovePathWithRetryIgnoresMissingPath(t *testing.T) {
 
 type uninstallRecordingRunner struct {
 	commands [][]string
+	err      error
 }
 
 func (r *uninstallRecordingRunner) Run(ctx context.Context, command string, args ...string) error {
 	r.commands = append(r.commands, append([]string{command}, args...))
-	return nil
+	return r.err
 }
 
 func (r *uninstallRecordingRunner) saw(items ...string) bool {

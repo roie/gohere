@@ -18,12 +18,15 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/roie/gohere/internal/probe"
 )
 
 const maxLogSize = 1024 * 1024
 const tokenLength = 64
+const maxAdminBodyBytes = 1024 * 1024
+const RoutesFilename = "routes.json"
 
 type Route struct {
 	Host            string    `json:"host"`
@@ -130,6 +133,10 @@ func writeToken(path string) (string, error) {
 		tmp.Close()
 		return "", err
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return "", err
+	}
 	if err := tmp.Close(); err != nil {
 		return "", err
 	}
@@ -148,12 +155,43 @@ func replaceFile(tmpPath, path string) error {
 }
 
 func replaceFileForGOOS(goos, tmpPath, path string) error {
+	return replaceFileForGOOSWithRename(goos, tmpPath, path, os.Rename)
+}
+
+func replaceFileForGOOSWithRename(goos, tmpPath, path string, rename func(string, string) error) error {
 	if goos == "windows" {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		backup, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.bak")
+		if err != nil {
 			return err
 		}
+		backupPath := backup.Name()
+		if err := backup.Close(); err != nil {
+			os.Remove(backupPath)
+			return err
+		}
+		if err := os.Remove(backupPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+
+		hasExisting := true
+		if err := rename(path, backupPath); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			hasExisting = false
+		}
+		if err := rename(tmpPath, path); err != nil {
+			if hasExisting {
+				_ = rename(backupPath, path)
+			}
+			return err
+		}
+		if hasExisting {
+			_ = os.Remove(backupPath)
+		}
+		return nil
 	}
-	return os.Rename(tmpPath, path)
+	return rename(tmpPath, path)
 }
 
 func validToken(token string) bool {
@@ -285,6 +323,10 @@ func (s *Server) HTTPHandler() http.Handler {
 			return
 		}
 		if !ok {
+			if isUpgradeRequest(r) {
+				http.Error(w, "gohere websocket route missing", http.StatusBadGateway)
+				return
+			}
 			missingRoutePage(w, r.Host)
 			return
 		}
@@ -296,10 +338,19 @@ func (s *Server) HTTPHandler() http.Handler {
 		}
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			if isUpgradeRequest(r) {
+				http.Error(w, "gohere websocket upstream unavailable", http.StatusBadGateway)
+				return
+			}
 			missingRoutePage(w, r.Host)
 		}
 		proxy.ServeHTTP(w, r)
 	})
+}
+
+func isUpgradeRequest(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") ||
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
 }
 
 func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
@@ -319,7 +370,7 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(routes)
 	case http.MethodPost:
 		var route Route
-		if err := json.NewDecoder(r.Body).Decode(&route); err != nil {
+		if err := json.NewDecoder(io.LimitReader(r.Body, maxAdminBodyBytes)).Decode(&route); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -403,17 +454,7 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func targetStatus(target string) string {
-	resp, err := probeTarget(target, 500*time.Millisecond)
-	if err != nil {
-		if errors.Is(err, syscall.ECONNREFUSED) {
-			return "dead"
-		}
-		return "unknown"
-	}
-	if resp != nil && resp.Body != nil {
-		resp.Body.Close()
-	}
-	return "ready"
+	return probe.TargetStatus(target)
 }
 
 func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
@@ -429,7 +470,7 @@ func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Target string `json:"target"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxAdminBodyBytes)).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -442,8 +483,12 @@ func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "target must use http or https", http.StatusBadRequest)
 		return
 	}
+	if !allowedProbeTarget(target) {
+		http.Error(w, "target must be local", http.StatusBadRequest)
+		return
+	}
 
-	resp, err := probeTarget(target.String(), 500*time.Millisecond)
+	resp, err := probe.Head(target.String(), probe.DefaultTimeout)
 	reachable := err == nil
 	if resp != nil && resp.Body != nil {
 		resp.Body.Close()
@@ -455,17 +500,16 @@ func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
 	}{Reachable: reachable})
 }
 
-func probeTarget(target string, timeout time.Duration) (*http.Response, error) {
-	client := http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{Timeout: timeout}).DialContext,
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+func allowedProbeTarget(target *url.URL) bool {
+	host := target.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
 	}
-	return client.Head(target)
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
@@ -479,7 +523,12 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 	if s.shutdown != nil {
-		go s.shutdown()
+		go func() {
+			defer func() {
+				_ = recover()
+			}()
+			s.shutdown()
+		}()
 	}
 }
 
@@ -488,9 +537,7 @@ func (s *Server) authorized(r *http.Request) bool {
 }
 
 func (s *Server) routeForHost(host string) (Route, bool, error) {
-	if before, _, ok := strings.Cut(host, ":"); ok {
-		host = before
-	}
+	host = hostWithoutPort(host)
 	host = strings.ToLower(host)
 	routes, err := s.loadRoutes()
 	if err != nil {
@@ -536,12 +583,24 @@ func RotateLog(logPath string) error {
 }
 
 func missingRoutePage(w http.ResponseWriter, host string) {
-	if before, _, ok := strings.Cut(host, ":"); ok {
-		host = before
-	}
+	host = hostWithoutPort(host)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusBadGateway)
 	io.WriteString(w, "<!doctype html><title>gohere route missing</title><h1>No gohere route is running for "+html.EscapeString(host)+"</h1>")
+}
+
+func hostWithoutPort(host string) string {
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		return strings.Trim(parsed, "[]")
+	}
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		return strings.Trim(host, "[]")
+	}
+	if strings.Count(host, ":") == 1 {
+		before, _, _ := strings.Cut(host, ":")
+		return before
+	}
+	return host
 }
 
 func upsertRoute(routes []Route, route Route) []Route {

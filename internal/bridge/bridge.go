@@ -105,8 +105,9 @@ func CurrentWSLIP(ctx context.Context) (string, error) {
 	return FirstIPv4(string(output))
 }
 
-func StartProbeServer(ctx context.Context) (*ProbeServer, error) {
-	ln, err := net.Listen("tcp4", "0.0.0.0:0")
+func StartProbeServer(ctx context.Context, host string) (*ProbeServer, error) {
+	bindHost := probeBindHost(host)
+	ln, err := net.Listen("tcp4", net.JoinHostPort(bindHost, "0"))
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +133,13 @@ func StartProbeServer(ctx context.Context) (*ProbeServer, error) {
 		probe.Close()
 	}()
 	return probe, nil
+}
+
+func probeBindHost(host string) string {
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return "127.0.0.1"
+	}
+	return host
 }
 
 func probeToken() (string, error) {
@@ -161,7 +169,7 @@ func (s *ProbeServer) Close() error {
 }
 
 func ProbeBridge(ctx context.Context, client ProbeClient, wslIP string) (bool, string, error) {
-	probe, err := StartProbeServer(ctx)
+	probe, err := StartProbeServer(ctx, wslIP)
 	if err != nil {
 		return false, "", err
 	}

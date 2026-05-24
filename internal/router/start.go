@@ -66,7 +66,7 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		logFile.Close()
 		return nil, err
 	}
-	store := NewRouteStore(filepath.Join(cfg.StateDir, "routes.json"))
+	store := NewRouteStore(filepath.Join(cfg.StateDir, RoutesFilename))
 	var running *Running
 	server := NewServer(Config{Token: token, Store: store, Shutdown: func() {
 		if running != nil {

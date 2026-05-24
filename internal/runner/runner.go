@@ -219,6 +219,7 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		stdout.Close()
 		return nil, err
 	}
 
@@ -266,6 +267,7 @@ func streamAndScan(r io.Reader, w io.Writer, detected chan<- int, wg *sync.WaitG
 	defer wg.Done()
 
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		io.WriteString(w, line+"\n")
@@ -312,7 +314,7 @@ func firstCommandWord(command string) string {
 	return strings.ToLower(word)
 }
 
-var localURLPort = regexp.MustCompile(`https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0):([0-9]{1,5})`)
+var localURLPort = regexp.MustCompile(`https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0):([0-9]{1,5})(?:[/?#\s]|$)`)
 
 var (
 	ErrProcessFinished = errors.New("process finished before a local URL was detected")
