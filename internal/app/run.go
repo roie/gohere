@@ -567,10 +567,10 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 			return local()
 		}
 		if err := startWindowsServiceFunc(ctx, tokenPath); err != nil {
-			return runRouter{}, windowsRouterUnavailableError(err)
+			return local()
 		}
 		if err := waitForRouterHealth(ctx, windowsRouterHealthFunc, routerStartTimeout); err != nil {
-			return runRouter{}, windowsRouterUnavailableError(err)
+			return local()
 		}
 	}
 	client := newWindowsAdminClientFunc(token)
@@ -1155,10 +1155,10 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 			return local(), nil
 		}
 		if err := startWindowsServiceFunc(ctx, tokenPath); err != nil {
-			return routeManager{}, windowsRouterUnavailableError(err)
+			return local(), nil
 		}
 		if err := waitForRouterHealth(ctx, windowsRouterHealthFunc, routerStartTimeout); err != nil {
-			return routeManager{}, windowsRouterUnavailableError(err)
+			return local(), nil
 		}
 	}
 	client := newWindowsAdminClientFunc(token)

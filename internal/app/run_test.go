@@ -1530,7 +1530,7 @@ func TestResolveRunRouterFallsBackWhenWindowsRouterAbsent(t *testing.T) {
 	}
 }
 
-func TestResolveRunRouterStopsWhenWindowsRouterInstalledButNotRunning(t *testing.T) {
+func TestResolveRunRouterFallsBackWhenWindowsRouterInstalledButCannotStart(t *testing.T) {
 	startCalls := 0
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:             true,
@@ -1539,18 +1539,19 @@ func TestResolveRunRouterStopsWhenWindowsRouterInstalledButNotRunning(t *testing
 		windowsBinary:     true,
 		startWindowsErr:   errors.New("start failed"),
 		startWindowsCalls: &startCalls,
+		localAdmin:        fakeAdminClient{},
 	})
 	defer restore()
 
-	_, err := resolveRunRouter(context.Background(), io.Discard)
-	if err == nil {
-		t.Fatal("expected windows router unavailable error")
-	}
-	if !strings.Contains(err.Error(), "Windows gohere is installed, but WSL could not start its service") {
-		t.Fatalf("error = %q", err.Error())
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if startCalls != 1 {
 		t.Fatalf("start calls = %d, want 1", startCalls)
+	}
+	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
+		t.Fatalf("runRouter = %#v", runRouter)
 	}
 }
 
@@ -2425,7 +2426,7 @@ func TestRouteManagerFallsBackWhenOnlyWSLLocalRouterLooksHealthy(t *testing.T) {
 	}
 }
 
-func TestRouteManagerStopsWhenWindowsRouterInstalledButNotRunning(t *testing.T) {
+func TestRouteManagerFallsBackWhenWindowsRouterInstalledButCannotStart(t *testing.T) {
 	startCalls := 0
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:             true,
@@ -2434,18 +2435,19 @@ func TestRouteManagerStopsWhenWindowsRouterInstalledButNotRunning(t *testing.T) 
 		windowsBinary:     true,
 		startWindowsErr:   errors.New("start failed"),
 		startWindowsCalls: &startCalls,
+		localAdmin:        fakeAdminClient{},
 	})
 	defer restore()
 
-	_, err := resolveRouteManager(context.Background())
-	if err == nil {
-		t.Fatal("expected windows router unavailable error")
-	}
-	if !strings.Contains(err.Error(), "Windows gohere is installed, but WSL could not start its service") {
-		t.Fatalf("error = %q", err.Error())
+	manager, err := resolveRouteManager(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
 	if startCalls != 1 {
 		t.Fatalf("start calls = %d, want 1", startCalls)
+	}
+	if manager.Client == nil || !manager.RouterReady {
+		t.Fatalf("manager = %#v, want local ready router manager", manager)
 	}
 }
 
