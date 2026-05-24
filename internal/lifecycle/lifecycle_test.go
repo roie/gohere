@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -544,5 +545,91 @@ func TestParseWindowsProcessStartTime(t *testing.T) {
 func TestParseWindowsProcessStartTimeRejectsInvalidOutput(t *testing.T) {
 	if _, ok := parseWindowsProcessStartTime("Saturday, May 23, 2026"); ok {
 		t.Fatal("expected localized output to be rejected")
+	}
+}
+
+func TestWindowsPIDAliveUsesBoundedCommand(t *testing.T) {
+	oldCommandOutput := commandOutput
+	defer func() {
+		commandOutput = oldCommandOutput
+	}()
+	var gotTimeout time.Duration
+	var gotName string
+	commandOutput = func(timeout time.Duration, name string, args ...string) ([]byte, error) {
+		gotTimeout = timeout
+		gotName = name
+		return []byte(`"node.exe","26312","Console","1","30,000 K"`), nil
+	}
+
+	if !windowsPIDAlive(26312) {
+		t.Fatal("expected PID to be alive")
+	}
+	if gotName != "tasklist" {
+		t.Fatalf("command = %q, want tasklist", gotName)
+	}
+	if gotTimeout <= 0 {
+		t.Fatalf("timeout = %s, want bounded timeout", gotTimeout)
+	}
+}
+
+func TestWindowsProcessStartTimeUsesBoundedCommand(t *testing.T) {
+	oldCommandOutput := commandOutput
+	defer func() {
+		commandOutput = oldCommandOutput
+	}()
+	var gotTimeout time.Duration
+	var gotName string
+	commandOutput = func(timeout time.Duration, name string, args ...string) ([]byte, error) {
+		gotTimeout = timeout
+		gotName = name
+		return []byte("2026-05-23T21:15:42.1234567Z\r\n"), nil
+	}
+
+	if _, ok := windowsProcessStartTime(26312); !ok {
+		t.Fatal("expected start time")
+	}
+	if gotName != "powershell.exe" {
+		t.Fatalf("command = %q, want powershell.exe", gotName)
+	}
+	if gotTimeout <= 0 {
+		t.Fatalf("timeout = %s, want bounded timeout", gotTimeout)
+	}
+}
+
+func TestLinuxClockTicksUsesBoundedCommand(t *testing.T) {
+	oldCommandOutput := commandOutput
+	defer func() {
+		commandOutput = oldCommandOutput
+	}()
+	var gotTimeout time.Duration
+	var gotName string
+	commandOutput = func(timeout time.Duration, name string, args ...string) ([]byte, error) {
+		gotTimeout = timeout
+		gotName = name
+		return []byte("250\n"), nil
+	}
+
+	if ticks := linuxClockTicks(); ticks != 250 {
+		t.Fatalf("ticks = %d, want 250", ticks)
+	}
+	if gotName != "getconf" {
+		t.Fatalf("command = %q, want getconf", gotName)
+	}
+	if gotTimeout <= 0 {
+		t.Fatalf("timeout = %s, want bounded timeout", gotTimeout)
+	}
+}
+
+func TestLinuxClockTicksFallsBackWhenBoundedCommandFails(t *testing.T) {
+	oldCommandOutput := commandOutput
+	defer func() {
+		commandOutput = oldCommandOutput
+	}()
+	commandOutput = func(timeout time.Duration, name string, args ...string) ([]byte, error) {
+		return nil, errors.New("timeout")
+	}
+
+	if ticks := linuxClockTicks(); ticks != 100 {
+		t.Fatalf("ticks = %d, want fallback 100", ticks)
 	}
 }

@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"context"
 	"encoding/csv"
 	"fmt"
 	"os"
@@ -20,6 +21,9 @@ var currentIsWSL = detectCurrentWSL
 var processStartTime = realProcessStartTime
 var processIdentity = realProcessIdentity
 var stopPID = StopPID
+var commandOutput = commandOutputWithTimeout
+
+const processCommandTimeout = 2 * time.Second
 
 type RouteStatusKind string
 
@@ -321,12 +325,13 @@ func realProcessStartTime(pid int) (time.Time, bool) {
 }
 
 func windowsProcessStartTime(pid int) (time.Time, bool) {
-	output, err := exec.Command(
+	output, err := commandOutput(
+		processCommandTimeout,
 		"powershell.exe",
 		"-NoProfile",
 		"-Command",
 		fmt.Sprintf(`$p = Get-Process -Id %d -ErrorAction Stop; $p.StartTime.ToUniversalTime().ToString("o")`, pid),
-	).Output()
+	)
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -382,7 +387,7 @@ func linuxBootTime() (time.Time, bool) {
 }
 
 func linuxClockTicks() int64 {
-	output, err := exec.Command("getconf", "CLK_TCK").Output()
+	output, err := commandOutput(processCommandTimeout, "getconf", "CLK_TCK")
 	if err != nil {
 		return 100
 	}
@@ -394,11 +399,17 @@ func linuxClockTicks() int64 {
 }
 
 func windowsPIDAlive(pid int) bool {
-	output, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH").Output()
+	output, err := commandOutput(processCommandTimeout, "tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH")
 	if err != nil {
 		return false
 	}
 	return tasklistContainsPID(string(output), pid)
+}
+
+func commandOutputWithTimeout(timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
 }
 
 func tasklistContainsPID(output string, pid int) bool {
