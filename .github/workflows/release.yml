@@ -6,13 +6,40 @@ on:
       - "v*"
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Test
+        run: go test ./...
+
   release:
-    name: Release
+    name: Publish
+    needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
 
     steps:
       - name: Checkout
@@ -29,9 +56,7 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-
-      - name: Test
-        run: go test ./...
+          package-manager-cache: false
 
       - name: Build package binaries
         env:
@@ -111,17 +136,19 @@ jobs:
           chmod +x bin/gohere.js
 
       - name: Pack and smoke test npm package
+        id: pack
         env:
           VERSION: ${{ github.ref_name }}
         run: |
           version="${VERSION#v}"
           tarball="$(npm pack)"
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
           install_dir="$(mktemp -d)"
           npm install --prefix "$install_dir" "$tarball"
           test "$("$install_dir/node_modules/.bin/gohere" --version)" = "gohere ${version}"
 
       - name: Publish npm package
-        run: npm publish --access public
+        run: npm publish "${{ steps.pack.outputs.tarball }}" --access public
 
       - name: Create GitHub release
         env:
