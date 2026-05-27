@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/roie/gohere/internal/router"
+	"github.com/roie/gohere/internal/userpath"
 )
 
 type CommandRunner interface {
@@ -50,7 +51,7 @@ func Linux(ctx context.Context, cfg Config) error {
 		cfg.StateDir = router.DefaultStateDir()
 	}
 	if cfg.ConfigDir == "" {
-		cfg.ConfigDir = filepath.Join(homeDir(), ".config")
+		cfg.ConfigDir = filepath.Join(userpath.HomeDir(), ".config")
 	}
 	if cfg.CurrentBinary == "" {
 		exe, err := os.Executable()
@@ -307,11 +308,4 @@ func (realRunner) StartDetached(ctx context.Context, command string, args ...str
 		return 0, err
 	}
 	return cmd.Process.Pid, cmd.Process.Release()
-}
-
-func homeDir() string {
-	if home, err := os.UserHomeDir(); err == nil {
-		return home
-	}
-	return "."
 }

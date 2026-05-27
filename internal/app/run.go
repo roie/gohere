@@ -196,7 +196,7 @@ func applyAsAlias(cmd cli.Command, plan RunPlan) (RunPlan, error) {
 	}
 	name, ok := project.NormalizeHostnameAlias(cmd.As)
 	if !ok {
-		return RunPlan{}, fmt.Errorf("Invalid alias: %s", cmd.As)
+		return RunPlan{}, fmt.Errorf("Invalid alias: %s\nAliases can contain letters, numbers, spaces, dots, underscores, and hyphens.", cmd.As)
 	}
 	plan.Name = name
 	plan.Host = name + ".localhost"

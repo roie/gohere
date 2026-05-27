@@ -626,6 +626,11 @@ func upsertRoute(routes []Route, route Route) []Route {
 
 func sortRoutes(routes []Route) {
 	sort.Slice(routes, func(i, j int) bool {
-		return routes[i].Host < routes[j].Host
+		left := strings.ToLower(routes[i].Host)
+		right := strings.ToLower(routes[j].Host)
+		if left == right {
+			return routes[i].Host < routes[j].Host
+		}
+		return left < right
 	})
 }

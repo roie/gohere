@@ -71,6 +71,9 @@ func TestUninstallRemovesRouterInstallButKeepsStateByDefault(t *testing.T) {
 	if !strings.Contains(out.String(), "gohere service removed") {
 		t.Fatalf("output = %q", out.String())
 	}
+	if !strings.Contains(out.String(), "gohere service removed.\n\nRemove gohere local state too?") {
+		t.Fatalf("state prompt should be separated from removal output: %q", out.String())
+	}
 }
 
 func TestServiceStopStopsRuntimeButKeepsInstallAndState(t *testing.T) {

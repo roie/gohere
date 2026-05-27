@@ -274,7 +274,7 @@ func TestStopTerminatesChildProcessTree(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if !processAlive(childPID) {
+		if !processAliveForTest(childPID) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)

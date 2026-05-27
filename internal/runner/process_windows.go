@@ -27,7 +27,3 @@ func terminateProcessTree(cmd *exec.Cmd) error {
 	}
 	return nil
 }
-
-func processAlive(pid int) bool {
-	return false
-}

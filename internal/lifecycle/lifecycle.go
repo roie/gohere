@@ -13,11 +13,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/roie/gohere/internal/bridge"
 	"github.com/roie/gohere/internal/probe"
 	"github.com/roie/gohere/internal/router"
 )
 
-var currentIsWSL = detectCurrentWSL
+var currentIsWSL = bridge.DetectWSL
 var processStartTime = realProcessStartTime
 var processIdentity = realProcessIdentity
 var stopPID = StopPID
@@ -196,21 +197,6 @@ func currentOwnerEnv() string {
 		return "wsl"
 	}
 	return runtime.GOOS
-}
-
-func detectCurrentWSL() bool {
-	if runtime.GOOS != "linux" {
-		return false
-	}
-	if os.Getenv("WSL_DISTRO_NAME") != "" || os.Getenv("WSL_INTEROP") != "" {
-		return true
-	}
-	data, err := os.ReadFile("/proc/version")
-	if err != nil {
-		return false
-	}
-	version := strings.ToLower(string(data))
-	return strings.Contains(version, "microsoft") || strings.Contains(version, "wsl")
 }
 
 func targetStatus(target string) RouteStatusKind {

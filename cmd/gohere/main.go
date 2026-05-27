@@ -103,7 +103,11 @@ func waitForRouter(ctx context.Context, done <-chan struct{}) {
 
 func printUsage(out io.Writer, topic string) {
 	if topic != "" {
-		fmt.Fprintf(out, "Usage: gohere %s\n\n", topic)
+		if usage, ok := topicUsage(topic); ok {
+			fmt.Fprint(out, usage)
+			return
+		}
+		fmt.Fprintf(out, "Usage:\n  gohere %s\n\n", topic)
 	}
 	fmt.Fprint(out, `Usage:
   gohere [script|file] [script ...] [--as NAME] [--open] [--verbose] [--target PORT] [--port-flag FLAG]
@@ -125,6 +129,62 @@ Flags:
   --target PORT     use an existing local port
   --port-flag FLAG  override the dev server port flag
 `)
+}
+
+func topicUsage(topic string) (string, bool) {
+	switch topic {
+	case "list":
+		return `Usage:
+  gohere list [--verbose]
+
+Shows active .localhost routes.
+
+`, true
+	case "stop":
+		return `Usage:
+  gohere stop
+
+Stops the gohere route for the current folder.
+
+`, true
+	case "prune":
+		return `Usage:
+  gohere prune
+
+Removes routes whose targets are confidently dead.
+
+`, true
+	case "doctor":
+		return `Usage:
+  gohere doctor
+
+Checks the gohere service, state files, route status, and platform setup.
+
+`, true
+	case "service":
+		return `Usage:
+  gohere service stop
+
+Stops the background .localhost service without uninstalling gohere.
+
+`, true
+	case "setup":
+		return `Usage:
+  gohere setup
+
+Installs or refreshes the local gohere service.
+
+`, true
+	case "uninstall":
+		return `Usage:
+  gohere uninstall
+
+Removes the local gohere service install and optionally removes local state.
+
+`, true
+	default:
+		return "", false
+	}
 }
 
 func printVersion(out io.Writer) {

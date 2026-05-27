@@ -18,6 +18,7 @@ import (
 	"github.com/roie/gohere/internal/admin"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/setup"
+	"github.com/roie/gohere/internal/userpath"
 )
 
 type UninstallConfig struct {
@@ -52,7 +53,7 @@ func ServiceStopWithConfig(ctx context.Context, stdout io.Writer, cfg ServiceSto
 		cfg.StateDir = router.DefaultStateDir()
 	}
 	if cfg.ConfigDir == "" {
-		cfg.ConfigDir = filepath.Join(homeDir(), ".config")
+		cfg.ConfigDir = filepath.Join(userpath.HomeDir(), ".config")
 	}
 	if cfg.CommandRunner == nil {
 		cfg.CommandRunner = uninstallRealRunner{}
@@ -112,7 +113,7 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 		cfg.StateDir = router.DefaultStateDir()
 	}
 	if cfg.ConfigDir == "" {
-		cfg.ConfigDir = filepath.Join(homeDir(), ".config")
+		cfg.ConfigDir = filepath.Join(userpath.HomeDir(), ".config")
 	}
 	if cfg.CommandRunner == nil {
 		cfg.CommandRunner = uninstallRealRunner{}
@@ -151,7 +152,7 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 	}
 	fmt.Fprintln(stdout, "gohere service removed.")
 
-	fmt.Fprint(stdout, "Remove gohere local state too? This deletes routes, token, and logs. [y/N] ")
+	fmt.Fprint(stdout, "\nRemove gohere local state too? This deletes routes, token, and logs. [y/N] ")
 	answer, _ := bufio.NewReader(promptInput).ReadString('\n')
 	if shouldRemoveStateFromAnswer(answer) {
 		if err := os.RemoveAll(cfg.StateDir); err != nil {
@@ -293,11 +294,4 @@ func (uninstallRealRunner) Run(ctx context.Context, command string, args ...stri
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
-}
-
-func homeDir() string {
-	if home, err := os.UserHomeDir(); err == nil {
-		return home
-	}
-	return "."
 }

@@ -229,6 +229,22 @@ func TestRouteStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSortRoutesCaseInsensitive(t *testing.T) {
+	routes := []Route{
+		{Host: "c.localhost"},
+		{Host: "B.localhost"},
+		{Host: "a.localhost"},
+	}
+
+	sortRoutes(routes)
+
+	got := []string{routes[0].Host, routes[1].Host, routes[2].Host}
+	want := []string{"a.localhost", "B.localhost", "c.localhost"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("routes sorted as %#v, want %#v", got, want)
+	}
+}
+
 func TestAdminRoutesReadWaitsForStoreWriteLock(t *testing.T) {
 	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
 	srv.storeMu.Lock()

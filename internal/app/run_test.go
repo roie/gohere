@@ -242,7 +242,7 @@ func TestPrepareRunRejectsEmptyAsAlias(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	want := "Invalid alias: !!!"
+	want := "Invalid alias: !!!\nAliases can contain letters, numbers, spaces, dots, underscores, and hyphens."
 	if err.Error() != want {
 		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}

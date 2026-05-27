@@ -88,3 +88,37 @@ func TestPrintUsageDescribesFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintUsageDoctorTopicIsSpecific(t *testing.T) {
+	var out bytes.Buffer
+	printUsage(&out, "doctor")
+
+	for _, want := range []string{
+		"Usage:\n  gohere doctor\n",
+		"Checks the gohere service",
+	} {
+		if !bytes.Contains(out.Bytes(), []byte(want)) {
+			t.Fatalf("doctor usage missing %q:\n%s", want, out.String())
+		}
+	}
+	if bytes.Contains(out.Bytes(), []byte("gohere pages/about.html")) {
+		t.Fatalf("doctor usage should not include generic examples:\n%s", out.String())
+	}
+}
+
+func TestPrintUsageListTopicIsSpecific(t *testing.T) {
+	var out bytes.Buffer
+	printUsage(&out, "list")
+
+	for _, want := range []string{
+		"Usage:\n  gohere list [--verbose]\n",
+		"Shows active .localhost routes",
+	} {
+		if !bytes.Contains(out.Bytes(), []byte(want)) {
+			t.Fatalf("list usage missing %q:\n%s", want, out.String())
+		}
+	}
+	if bytes.Contains(out.Bytes(), []byte("gohere pages/about.html")) {
+		t.Fatalf("list usage should not include generic examples:\n%s", out.String())
+	}
+}

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/roie/gohere/internal/userpath"
 )
 
 type StartConfig struct {
@@ -207,14 +209,7 @@ func (r *Running) Done() <-chan struct{} {
 }
 
 func DefaultStateDir() string {
-	return filepath.Join(homeDir(), ".gohere")
-}
-
-func homeDir() string {
-	if home, err := os.UserHomeDir(); err == nil {
-		return home
-	}
-	return "."
+	return filepath.Join(userpath.HomeDir(), ".gohere")
 }
 
 func writeRouterPID(pidPath string) error {
