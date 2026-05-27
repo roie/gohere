@@ -201,6 +201,143 @@ func TestProjectHostname(t *testing.T) {
 	}
 }
 
+func TestDiscoverWorkspacePackagesFromPackageJSONWorkspaces(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"ctrltube","workspaces":["apps/*","packages/*"],"scripts":{"dev":"pnpm --parallel --filter @ctrltube/worker --filter @ctrltube/web dev"}}`,
+		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"wrangler dev"}}`,
+		"packages/ui/package.json": `{"name":"@ctrltube/ui","scripts":{"build":"tsc"}}`,
+		"apps/ignored/readme.md":   "not a package",
+	})
+
+	packages, found, err := DiscoverWorkspacePackages(root, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected workspace root")
+	}
+	if len(packages) != 2 {
+		t.Fatalf("packages = %#v, want 2 dev packages", packages)
+	}
+	if packages[0].Name != "@ctrltube/web" || packages[0].ShortName != "web" || packages[0].Dir != filepath.Join(root, "apps", "web") {
+		t.Fatalf("first package = %#v", packages[0])
+	}
+	if packages[1].Name != "@ctrltube/worker" || packages[1].ShortName != "worker" || packages[1].Dir != filepath.Join(root, "apps", "worker") {
+		t.Fatalf("second package = %#v", packages[1])
+	}
+}
+
+func TestDiscoverWorkspacePackagesFromPackageJSONWorkspacesObject(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json":          `{"name":"repo","workspaces":{"packages":["apps/*"]}}`,
+		"apps/api/package.json": `{"name":"api","scripts":{"start":"node server.js"}}`,
+		"apps/web/package.json": `{"name":"web","scripts":{"dev":"vite","start":"vite --host 0.0.0.0"}}`,
+	})
+
+	packages, found, err := DiscoverWorkspacePackages(root, "start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected workspace root")
+	}
+	if len(packages) != 2 || packages[0].ShortName != "api" || packages[1].ShortName != "web" {
+		t.Fatalf("packages = %#v", packages)
+	}
+}
+
+func TestDiscoverWorkspacePackagesFromPNPMWorkspace(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json":              `{"name":"repo"}`,
+		"pnpm-workspace.yaml":       "packages:\n  - 'apps/*'\n  - \"services/*\"\n",
+		"apps/web/package.json":     `{"name":"web","scripts":{"dev":"vite"}}`,
+		"services/api/package.json": `{"name":"api","scripts":{"dev":"node index.js"}}`,
+	})
+
+	packages, found, err := DiscoverWorkspacePackages(root, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected workspace root")
+	}
+	if len(packages) != 2 || packages[0].ShortName != "web" || packages[1].ShortName != "api" {
+		t.Fatalf("packages = %#v", packages)
+	}
+}
+
+func TestDiscoverWorkspacePackagesFromPNPMWorkspaceInlineListAndComments(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json":              `{"name":"repo"}`,
+		"pnpm-workspace.yaml":       "packages: ['apps/*', \"services/*\"] # app workspaces\n",
+		"apps/web/package.json":     `{"name":"web","scripts":{"dev":"vite"}}`,
+		"services/api/package.json": `{"name":"api","scripts":{"dev":"node index.js"}}`,
+	})
+
+	packages, found, err := DiscoverWorkspacePackages(root, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected workspace root")
+	}
+	if len(packages) != 2 || packages[0].ShortName != "web" || packages[1].ShortName != "api" {
+		t.Fatalf("packages = %#v", packages)
+	}
+}
+
+func TestDiscoverWorkspacePackagesExcludesRootPackage(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json":          `{"name":"repo","workspaces":[".","apps/*"],"scripts":{"dev":"pnpm --parallel --filter web dev"}}`,
+		"apps/web/package.json": `{"name":"web","scripts":{"dev":"vite"}}`,
+	})
+
+	packages, found, err := DiscoverWorkspacePackages(root, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected workspace root")
+	}
+	if len(packages) != 1 || packages[0].ShortName != "web" {
+		t.Fatalf("packages = %#v, want only web package", packages)
+	}
+}
+
+func TestDiscoverWorkspacePackagesAppliesNegatedPatterns(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"repo","workspaces":["apps/*","!apps/legacy"]}`,
+		"apps/web/package.json":    `{"name":"web","scripts":{"dev":"vite"}}`,
+		"apps/legacy/package.json": `{"name":"legacy","scripts":{"dev":"vite --legacy"}}`,
+	})
+
+	packages, found, err := DiscoverWorkspacePackages(root, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected workspace root")
+	}
+	if len(packages) != 1 || packages[0].ShortName != "web" {
+		t.Fatalf("packages = %#v, want only non-negated web package", packages)
+	}
+}
+
+func TestDiscoverWorkspacePackagesReportsNonWorkspaceRoot(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json": `{"name":"app","scripts":{"dev":"vite"}}`,
+	})
+
+	packages, found, err := DiscoverWorkspacePackages(root, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found || len(packages) != 0 {
+		t.Fatalf("packages = %#v, found=%v; want non-workspace", packages, found)
+	}
+}
+
 func TestResolveHostnameConflict(t *testing.T) {
 	active := map[string]string{
 		"myproject.localhost":        "/other/myproject",

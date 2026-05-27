@@ -312,6 +312,28 @@ func TestRunFallsBackToChosenPortWhenReachable(t *testing.T) {
 	}
 }
 
+func TestStartRunsCommandInConfiguredDir(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{
+		Command:        []string{os.Args[0], "-test.run=TestHelperProcess", "--", "print-cwd-port"},
+		Dir:            dir,
+		Env:            []string{"GOHERE_HELPER_PROCESS=1"},
+		Stdout:         &bytes.Buffer{},
+		Stderr:         &bytes.Buffer{},
+		StartupTimeout: 2 * time.Second,
+	}
+
+	result, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stop()
+
+	if got := firstNonEmptyLine(cfg.Stdout.(*bytes.Buffer).String()); got != dir {
+		t.Fatalf("child cwd = %q, want %q", got, dir)
+	}
+}
+
 func TestPortReachableUsesHEADWithoutGET(t *testing.T) {
 	methods := make(chan string, 1)
 	server := &http.Server{Addr: "127.0.0.1:0", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -481,6 +503,14 @@ func TestHelperProcess(t *testing.T) {
 		os.Stderr.WriteString("diagnostic line\n")
 		os.Stdout.WriteString("Local: http://127.0.0.1:47654\n")
 	case "print-port-sleep":
+		os.Stdout.WriteString("Local: http://127.0.0.1:47654\n")
+		time.Sleep(2 * time.Second)
+	case "print-cwd-port":
+		cwd, err := os.Getwd()
+		if err != nil {
+			os.Exit(2)
+		}
+		os.Stdout.WriteString(cwd + "\n")
 		os.Stdout.WriteString("Local: http://127.0.0.1:47654\n")
 		time.Sleep(2 * time.Second)
 	case "sleep":

@@ -26,6 +26,14 @@ type PackageJSON struct {
 	Workspaces     json.RawMessage   `json:"workspaces"`
 }
 
+type WorkspacePackage struct {
+	Dir         string
+	PackagePath string
+	Name        string
+	ShortName   string
+	Script      string
+}
+
 func ReadPackageJSON(path string) (PackageJSON, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -282,6 +290,264 @@ func workspaceRootName(dir string) (string, bool, error) {
 		return packageNameOrFolder(pkg.Name, dir), true, nil
 	}
 	return "", false, nil
+}
+
+func DiscoverWorkspacePackages(root, script string) ([]WorkspacePackage, bool, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, false, err
+	}
+	if script == "" {
+		script = "dev"
+	}
+
+	patterns, found, err := workspacePatterns(root)
+	if err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, nil
+	}
+
+	rootPackagePath := filepath.Join(root, "package.json")
+	seen := map[string]bool{}
+	excluded := map[string]bool{}
+	dirs := map[string]string{}
+	var ordered []string
+	var packages []WorkspacePackage
+	for _, rawPattern := range patterns {
+		pattern := strings.TrimSpace(rawPattern)
+		if pattern == "" {
+			continue
+		}
+		negated := strings.HasPrefix(pattern, "!")
+		if negated {
+			pattern = strings.TrimSpace(strings.TrimPrefix(pattern, "!"))
+		}
+		if pattern == "" {
+			continue
+		}
+		matches, err := workspacePackageMatches(root, pattern)
+		if err != nil {
+			return nil, true, err
+		}
+		for _, match := range matches {
+			if samePath(match.PackagePath, rootPackagePath) {
+				continue
+			}
+			if negated {
+				excluded[match.PackagePath] = true
+				continue
+			}
+			if seen[match.PackagePath] {
+				continue
+			}
+			seen[match.PackagePath] = true
+			dirs[match.PackagePath] = match.Dir
+			ordered = append(ordered, match.PackagePath)
+		}
+	}
+
+	for _, packagePath := range ordered {
+		if excluded[packagePath] {
+			continue
+		}
+		dir := dirs[packagePath]
+		pkg, err := ReadPackageJSON(packagePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, true, err
+		}
+		scriptCommand, ok := pkg.Script(script)
+		if !ok {
+			continue
+		}
+		shortName := packageNameOrFolder(pkg.Name, dir)
+		packages = append(packages, WorkspacePackage{
+			Dir:         dir,
+			PackagePath: packagePath,
+			Name:        pkg.Name,
+			ShortName:   shortName,
+			Script:      scriptCommand,
+		})
+	}
+	return packages, true, nil
+}
+
+func workspacePackageMatches(root, pattern string) ([]WorkspacePackage, error) {
+	matches, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(pattern)))
+	if err != nil {
+		return nil, err
+	}
+	var packages []WorkspacePackage
+	for _, match := range matches {
+		dir := match
+		info, err := os.Stat(match)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			if filepath.Base(match) != "package.json" {
+				continue
+			}
+			dir = filepath.Dir(match)
+		}
+		packagePath := filepath.Clean(filepath.Join(dir, "package.json"))
+		packages = append(packages, WorkspacePackage{
+			Dir:         filepath.Clean(dir),
+			PackagePath: packagePath,
+		})
+	}
+	return packages, nil
+}
+
+func workspacePatterns(root string) ([]string, bool, error) {
+	pnpmPath := filepath.Join(root, "pnpm-workspace.yaml")
+	if data, err := os.ReadFile(pnpmPath); err == nil {
+		return parsePNPMWorkspacePackages(string(data)), true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, false, err
+	}
+
+	pkg, err := ReadPackageJSON(filepath.Join(root, "package.json"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return packageJSONWorkspacePatterns(pkg.Workspaces)
+}
+
+func packageJSONWorkspacePatterns(raw json.RawMessage) ([]string, bool, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, false, nil
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err == nil {
+		return list, true, nil
+	}
+	var object struct {
+		Packages []string `json:"packages"`
+	}
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, true, err
+	}
+	return object.Packages, true, nil
+}
+
+func parsePNPMWorkspacePackages(data string) []string {
+	var patterns []string
+	inPackages := false
+	for _, line := range strings.Split(data, "\n") {
+		withoutComment := stripYAMLComment(line)
+		trimmed := strings.TrimSpace(withoutComment)
+		if trimmed == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			inPackages = false
+			key, value, ok := strings.Cut(trimmed, ":")
+			if !ok || strings.TrimSpace(key) != "packages" {
+				continue
+			}
+			inPackages = true
+			value = strings.TrimSpace(value)
+			if value != "" {
+				patterns = append(patterns, parseYAMLPatternValues(value)...)
+				inPackages = false
+			}
+			continue
+		}
+		if !inPackages || !strings.HasPrefix(trimmed, "- ") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+		patterns = append(patterns, parseYAMLPatternValues(value)...)
+	}
+	return patterns
+}
+
+func parseYAMLPatternValues(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		var patterns []string
+		for _, item := range splitYAMLInlineList(strings.TrimSpace(value[1 : len(value)-1])) {
+			if pattern := trimYAMLScalar(item); pattern != "" {
+				patterns = append(patterns, pattern)
+			}
+		}
+		return patterns
+	}
+	if pattern := trimYAMLScalar(value); pattern != "" {
+		return []string{pattern}
+	}
+	return nil
+}
+
+func splitYAMLInlineList(value string) []string {
+	if value == "" {
+		return nil
+	}
+	var parts []string
+	var current strings.Builder
+	var quote rune
+	for _, r := range value {
+		if quote != 0 {
+			current.WriteRune(r)
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+			current.WriteRune(r)
+		case ',':
+			parts = append(parts, current.String())
+			current.Reset()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	parts = append(parts, current.String())
+	return parts
+}
+
+func trimYAMLScalar(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		quote := value[0]
+		if (quote == '\'' || quote == '"') && value[len(value)-1] == quote {
+			value = value[1 : len(value)-1]
+		}
+	}
+	return strings.TrimSpace(value)
+}
+
+func stripYAMLComment(line string) string {
+	var quote rune
+	for i, r := range line {
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+		case '#':
+			return line[:i]
+		}
+	}
+	return line
 }
 
 func nameFromPackageOrFolder(dir string) (string, bool, error) {

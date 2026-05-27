@@ -999,6 +999,150 @@ func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
 	}
 }
 
+func TestRunImplicitDevAtWorkspaceRootLaunchesWorkspacePackages(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	var commands []string
+	var dirs []string
+	ports := []int{5101, 5102}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		commands = append(commands, strings.Join(cfg.Command, " "))
+		dirs = append(dirs, cfg.Dir)
+		port := ports[0]
+		ports = ports[1:]
+		return &runner.Result{Port: port}, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"ctrltube","workspaces":["apps/*"],"scripts":{"dev":"pnpm --parallel --filter @ctrltube/worker --filter @ctrltube/web dev"}}`,
+		"pnpm-lock.yaml":           "",
+		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"wrangler dev"}}`,
+	})
+
+	var stdout, stderr strings.Builder
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	wantHosts := []string{"web.ctrltube.localhost", "worker.ctrltube.localhost"}
+	if !sameStrings(admin.upsertedHosts(), wantHosts) {
+		t.Fatalf("upserted hosts = %#v, want %#v", admin.upsertedHosts(), wantHosts)
+	}
+	wantDirs := []string{filepath.Join(root, "apps", "web"), filepath.Join(root, "apps", "worker")}
+	if !sameStrings(dirs, wantDirs) {
+		t.Fatalf("runner dirs = %#v, want %#v", dirs, wantDirs)
+	}
+	if len(commands) != 2 || !strings.Contains(commands[0], "pnpm run dev") || !strings.Contains(commands[1], "pnpm run dev") {
+		t.Fatalf("commands = %#v, want package dev commands", commands)
+	}
+	if strings.Contains(strings.Join(commands, "\n"), "--parallel --filter") {
+		t.Fatalf("workspace mode should not run root aggregate script, commands = %#v", commands)
+	}
+	wantOut := "gohere web \u2192 http://web.ctrltube.localhost\n" +
+		"gohere worker \u2192 http://worker.ctrltube.localhost\n"
+	if stdout.String() != wantOut || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
+	}
+}
+
+func TestRunImplicitDevAtWorkspaceRootWithoutDevPackagesDoesNotRunRootScript(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	var commands []string
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		commands = append(commands, strings.Join(cfg.Command, " "))
+		return &runner.Result{Port: 5173}, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":          `{"name":"ctrltube","workspaces":["apps/*"],"scripts":{"dev":"pnpm --parallel --filter @ctrltube/web dev"}}`,
+		"pnpm-lock.yaml":        "",
+		"apps/web/package.json": `{"name":"@ctrltube/web","scripts":{"build":"vite build"}}`,
+	})
+
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), `No workspace packages with a "dev" script found`) {
+		t.Fatalf("Run() error = %v, want missing workspace dev scripts error", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("workspace mode should not fall back to root aggregate script, commands = %#v", commands)
+	}
+	if len(admin.upsertedHosts()) != 0 {
+		t.Fatalf("upserted hosts = %#v, want none", admin.upsertedHosts())
+	}
+	if stdout.String() != "" || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want both empty", stdout.String(), stderr.String())
+	}
+}
+
+func TestRunExplicitScriptAtWorkspaceRootRunsRootScriptAsSingleRoute(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	var commands []string
+	var dirs []string
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		commands = append(commands, strings.Join(cfg.Command, " "))
+		dirs = append(dirs, cfg.Dir)
+		return &runner.Result{Port: 5173}, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"ctrltube","workspaces":["apps/*"],"scripts":{"preview":"pnpm --parallel --filter @ctrltube/worker --filter @ctrltube/web preview"}}`,
+		"pnpm-lock.yaml":           "",
+		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"preview":"vite preview"}}`,
+		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"preview":"wrangler dev --env preview"}}`,
+	})
+
+	var stdout, stderr strings.Builder
+	cmd := cli.Command{Kind: cli.CommandRun, Script: "preview", ExplicitScript: true}
+	if err := Run(context.Background(), cmd, root, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	if !sameStrings(admin.upsertedHosts(), []string{"ctrltube.localhost"}) {
+		t.Fatalf("upserted hosts = %#v, want root route", admin.upsertedHosts())
+	}
+	if len(commands) != 1 || !strings.Contains(commands[0], "pnpm run preview") {
+		t.Fatalf("commands = %#v, want one root preview command", commands)
+	}
+	if !sameStrings(dirs, []string{""}) {
+		t.Fatalf("runner dirs = %#v, want empty root dir for existing behavior", dirs)
+	}
+	wantOut := "gohere preview \u2192 http://ctrltube.localhost\n"
+	if stdout.String() != wantOut || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
+	}
+}
+
 func TestRunMultiAppliesRouterTargetToEveryRoute(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc

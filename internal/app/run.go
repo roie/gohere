@@ -207,6 +207,12 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if shouldRunWorkspace(cmd) {
+		ran, err := runWorkspaceIfAvailable(ctx, cmd, cwd, stdout, stderr)
+		if err != nil || ran {
+			return err
+		}
+	}
 	if cmd.Kind == cli.CommandRun && len(cmd.Scripts) > 1 {
 		return runMulti(ctx, cmd, cwd, stdout, stderr)
 	}
@@ -292,6 +298,160 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	}
 	defer cleanup()
 	return result.Wait()
+}
+
+func shouldRunWorkspace(cmd cli.Command) bool {
+	return cmd.Kind == cli.CommandRun &&
+		cmd.Script == "dev" &&
+		len(cmd.Scripts) == 0 &&
+		!cmd.ExplicitScript &&
+		cmd.As == "" &&
+		cmd.TargetPort == 0
+}
+
+func runWorkspaceIfAvailable(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Writer) (bool, error) {
+	packages, found, err := project.DiscoverWorkspacePackages(cwd, cmd.Script)
+	if err != nil || !found {
+		return false, err
+	}
+	if len(packages) == 0 {
+		return true, noWorkspacePackageScriptError(cmd.Script)
+	}
+
+	pm, _, err := project.DetectPackageManager(cwd)
+	if err != nil {
+		return true, err
+	}
+
+	return true, runWorkspace(ctx, cmd, cwd, pm, packages, stdout, stderr)
+}
+
+func noWorkspacePackageScriptError(script string) error {
+	return fmt.Errorf("gohere error: No workspace packages with a %q script found.\nRun `gohere %s` to run the current package script exactly as written.", script, script)
+}
+
+func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.PackageManager, packages []project.WorkspacePackage, stdout, stderr io.Writer) error {
+	var items []multiRunItem
+	cleanupStarted := func() {
+		for i := len(items) - 1; i >= 0; i-- {
+			if items[i].cleanup != nil {
+				items[i].cleanup()
+			}
+			if items[i].result != nil {
+				items[i].result.Stop()
+			}
+		}
+	}
+	defer cleanupStarted()
+
+	var adminClient adminClient
+	routerResolved := false
+	ensureRunRouter := func() (runRouter, error) {
+		if routerResolved {
+			return runRouter{Client: adminClient}, nil
+		}
+		rr, err := resolveRunRouter(ctx, stderr)
+		if err != nil {
+			return runRouter{}, err
+		}
+		adminClient = rr.Client
+		routerResolved = true
+		return rr, nil
+	}
+
+	var resolvedRouter runRouter
+	if detectWSLFunc() {
+		rr, err := ensureRunRouter()
+		if err != nil {
+			return err
+		}
+		resolvedRouter = rr
+	}
+
+	for _, workspacePackage := range packages {
+		plan, err := prepareWorkspacePackageRun(cmd, root, pm, workspacePackage)
+		if err != nil {
+			return err
+		}
+		if detectWSLFunc() {
+			applyRunRouter(&plan, resolvedRouter)
+		}
+		itemCmd := cmd
+		itemCmd.Script = workspacePackage.ShortName
+		itemCmd.Scripts = nil
+		itemCmd.ExplicitScript = true
+		items = append(items, multiRunItem{cmd: itemCmd, plan: plan})
+	}
+
+	for i := range items {
+		itemCmd := items[i].cmd
+		plan := items[i].plan
+		if routerResolved {
+			applyRunRouter(&plan, resolvedRouter)
+		}
+		childStdout := newLimitedCapture(32 * 1024)
+		childStderr := newLimitedCapture(32 * 1024)
+		result, err := startRunnerFunc(ctx, runner.Config{
+			Command:        plan.Command,
+			Dir:            plan.CWD,
+			Env:            plan.Env,
+			ChosenPort:     plan.Port,
+			Stdout:         childStdout,
+			Stderr:         childStderr,
+			StartupTimeout: 15 * time.Second,
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			replayCapturedOutput(stderr, childStdout, childStderr)
+			return formatMultiRunError(itemCmd, err)
+		}
+
+		if !routerResolved {
+			rr, err := ensureRunRouter()
+			if err != nil {
+				result.Stop()
+				return err
+			}
+			resolvedRouter = rr
+			applyRunRouter(&plan, rr)
+		}
+
+		cleanup, err := registerRoute(ctx, adminClient, itemCmd, plan, result.Port, result.PID(), stdout, stderr)
+		if err != nil {
+			result.Stop()
+			return err
+		}
+		items[i].plan = plan
+		items[i].result = result
+		items[i].cleanup = cleanup
+	}
+
+	return waitForMulti(ctx, items)
+}
+
+func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.PackageManager, workspacePackage project.WorkspacePackage) (RunPlan, error) {
+	port, err := runner.ChooseFreePort()
+	if err != nil {
+		return RunPlan{}, err
+	}
+	env := runner.ChildEnv(os.Environ(), port)
+	injected := runner.InjectPortArgs(workspacePackage.Script, port, cmd.PortFlag)
+	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
+	host, err := project.HostnameForProject(workspacePackage.Dir)
+	if err != nil {
+		return RunPlan{}, err
+	}
+	return RunPlan{
+		Command:     command,
+		Env:         env,
+		Port:        port,
+		Host:        host,
+		Name:        strings.TrimSuffix(host, ".localhost"),
+		CWD:         workspacePackage.Dir,
+		ProjectRoot: root,
+	}, nil
 }
 
 type multiRunItem struct {

@@ -10,6 +10,9 @@ func TestParseDefaultRun(t *testing.T) {
 	if cmd.Kind != CommandRun || cmd.Script != "dev" {
 		t.Fatalf("Parse default = %#v", cmd)
 	}
+	if cmd.ExplicitScript {
+		t.Fatalf("bare gohere should not mark dev as explicit: %#v", cmd)
+	}
 }
 
 func TestParseScriptRun(t *testing.T) {
@@ -19,6 +22,29 @@ func TestParseScriptRun(t *testing.T) {
 	}
 	if cmd.Kind != CommandRun || cmd.Script != "dev:web" {
 		t.Fatalf("Parse script = %#v", cmd)
+	}
+	if !cmd.ExplicitScript {
+		t.Fatalf("script argument should be explicit: %#v", cmd)
+	}
+}
+
+func TestParseExplicitDefaultScriptRun(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandRun || cmd.Script != "dev" || !cmd.ExplicitScript {
+		t.Fatalf("Parse explicit dev = %#v", cmd)
+	}
+}
+
+func TestParseExplicitNonDefaultScriptRun(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "build"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandRun || cmd.Script != "build" || !cmd.ExplicitScript {
+		t.Fatalf("Parse explicit build = %#v", cmd)
 	}
 }
 

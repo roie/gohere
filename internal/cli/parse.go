@@ -25,16 +25,17 @@ const (
 )
 
 type Command struct {
-	Kind       CommandKind
-	Script     string
-	Scripts    []string
-	Raw        []string
-	Verbose    bool
-	Open       bool
-	As         string
-	TargetPort int
-	PortFlag   string
-	HelpTopic  string
+	Kind           CommandKind
+	Script         string
+	Scripts        []string
+	ExplicitScript bool
+	Raw            []string
+	Verbose        bool
+	Open           bool
+	As             string
+	TargetPort     int
+	PortFlag       string
+	HelpTopic      string
 }
 
 func Parse(args []string) (Command, error) {
@@ -167,6 +168,7 @@ func Parse(args []string) (Command, error) {
 				return Command{}, unknownOptionError(arg)
 			}
 			cmd.Kind = CommandRun
+			cmd.ExplicitScript = true
 			if cmd.Script == "dev" && len(cmd.Scripts) == 0 {
 				cmd.Script = arg
 			}

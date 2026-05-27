@@ -6,7 +6,7 @@ Tiny local dev URL launcher for `.localhost` projects.
 http://myproject.localhost
 ```
 
-Run `gohere` inside a package project or static folder. It starts or serves the project on a hidden local port, routes a clean `.localhost` hostname to it, and prints the URL.
+Run `gohere` inside a package project, workspace root, or static folder. It starts or serves the project on a hidden local port, routes a clean `.localhost` hostname to it, and prints the URL.
 
 No script edits. No port memorization. No repo config.
 
@@ -26,12 +26,19 @@ go install github.com/roie/gohere/cmd/gohere@latest
 
 ## Quick start
 
-`gohere` supports package projects and static files.
+`gohere` supports package projects, workspace roots, and static files.
 
-Run the default `dev` script from the nearest `package.json`:
+Run the default command:
 
 ```bash
 gohere
+```
+
+In a package project, this runs the nearest `package.json` `dev` script. In a workspace root, this discovers workspace packages from `pnpm-workspace.yaml` or `package.json` workspaces, starts each package with a `dev` script, and gives each package its own route:
+
+```text
+gohere web    -> http://web.myrepo.localhost
+gohere worker -> http://worker.myrepo.localhost
 ```
 
 Run a named package script:
@@ -44,6 +51,14 @@ Run multiple server scripts:
 
 ```bash
 gohere dev:web dev:api
+```
+
+Run any current package script exactly as written by naming it explicitly:
+
+```bash
+gohere dev
+gohere build
+gohere preview
 ```
 
 Run a raw command:

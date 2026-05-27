@@ -20,6 +20,7 @@ import (
 
 type Config struct {
 	Command             []string
+	Dir                 string
 	Env                 []string
 	ChosenPort          int
 	RequireDetectedPort bool
@@ -204,6 +205,7 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.Command[0], cfg.Command[1:]...)
+	cmd.Dir = cfg.Dir
 	cmd.Env = cfg.Env
 	if len(cmd.Env) == 0 {
 		cmd.Env = os.Environ()
