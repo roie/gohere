@@ -52,7 +52,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		if err := app.Stop(ctx, cwd, os.Stdout); err != nil {
+		if err := app.StopWithCommand(ctx, cmd, cwd, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -142,9 +142,9 @@ Shows active .localhost routes.
 `, true
 	case "stop":
 		return `Usage:
-  gohere stop
+  gohere stop [route|project|--all]
 
-Stops the gohere route for the current folder.
+Stops routes by current context, active route/project name, or all safe routes.
 
 `, true
 	case "prune":

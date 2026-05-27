@@ -36,6 +36,8 @@ type Route struct {
 	PID             int       `json:"pid"`
 	CWD             string    `json:"cwd"`
 	Name            string    `json:"name"`
+	ProjectRoot     string    `json:"projectRoot,omitempty"`
+	ProjectName     string    `json:"projectName,omitempty"`
 	Source          string    `json:"source,omitempty"`
 	OwnerCWD        string    `json:"ownerCwd,omitempty"`
 	OwnerEnv        string    `json:"ownerEnv,omitempty"`

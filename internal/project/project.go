@@ -247,6 +247,21 @@ func packageNameOrFolder(name, dir string) string {
 	return name
 }
 
+func ProjectNameForRoot(root string) (string, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	pkg, err := ReadPackageJSON(filepath.Join(root, "package.json"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return NormalizeHostnameName(filepath.Base(root)), nil
+		}
+		return "", err
+	}
+	return NormalizeHostnameName(packageNameOrFolder(pkg.Name, root)), nil
+}
+
 func findWorkspaceRoot(start string) (string, string, bool, error) {
 	dir, err := filepath.Abs(start)
 	if err != nil {

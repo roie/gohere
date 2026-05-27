@@ -36,6 +36,8 @@ type Command struct {
 	TargetPort     int
 	PortFlag       string
 	HelpTopic      string
+	StopTarget     string
+	StopAll        bool
 }
 
 func Parse(args []string) (Command, error) {
@@ -112,7 +114,7 @@ func Parse(args []string) (Command, error) {
 				cmd.Scripts = append(cmd.Scripts, arg)
 				continue
 			}
-			return fixedCommand(CommandStop, arg, rest)
+			return parseStop(rest)
 		case "prune":
 			if sawScript {
 				cmd.Kind = CommandRun
@@ -194,6 +196,30 @@ func validateMultiRun(cmd Command) error {
 		return parseError("--target can only be used with one project")
 	}
 	return nil
+}
+
+func parseStop(args []string) (Command, error) {
+	cmd := Command{Kind: CommandStop}
+	for _, arg := range args {
+		switch arg {
+		case "--help", "-h":
+			return helpCommand("stop"), nil
+		case "--all":
+			if cmd.StopTarget != "" {
+				return Command{}, parseError("stop accepts either --all or one route/project")
+			}
+			cmd.StopAll = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return Command{}, unknownOptionError(arg)
+			}
+			if cmd.StopAll || cmd.StopTarget != "" {
+				return Command{}, parseError("stop accepts either --all or one route/project")
+			}
+			cmd.StopTarget = arg
+		}
+	}
+	return cmd, nil
 }
 
 func parseService(args []string) (Command, error) {

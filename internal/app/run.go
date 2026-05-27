@@ -105,6 +105,7 @@ type RunPlan struct {
 	Name                string
 	CWD                 string
 	ProjectRoot         string
+	ProjectName         string
 	Static              bool
 	URLPath             string
 	RequireDetectedPort bool
@@ -135,6 +136,8 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 			Host:                host,
 			Name:                strings.TrimSuffix(host, ".localhost"),
 			CWD:                 cwd,
+			ProjectRoot:         cwd,
+			ProjectName:         project.NormalizeHostnameName(filepath.Base(cwd)),
 			RequireDetectedPort: cmd.TargetPort == 0,
 		})
 	}
@@ -150,7 +153,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	}
 	if cmd.Script == "dev" && staticserver.IsStaticProject(cwd) && !hasCurrentPackage {
 		host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
-		return applyAsAlias(cmd, RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, Static: true})
+		return applyAsAlias(cmd, RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: cwd, ProjectName: project.NormalizeHostnameName(filepath.Base(cwd)), Static: true})
 	}
 
 	packagePath, found, err := project.FindNearestPackageJSON(cwd)
@@ -163,7 +166,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 		}
 		if staticserver.IsStaticProject(cwd) {
 			host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
-			return applyAsAlias(cmd, RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, Static: true})
+			return applyAsAlias(cmd, RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: cwd, ProjectName: project.NormalizeHostnameName(filepath.Base(cwd)), Static: true})
 		}
 		return RunPlan{}, errors.New("No package.json or index.html found; use gohere -- <command>.")
 	}
@@ -187,7 +190,12 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	if err != nil {
 		return RunPlan{}, err
 	}
-	return applyAsAlias(cmd, RunPlan{Command: command, Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: projectDir(packagePath)})
+	projectRoot := projectDir(packagePath)
+	projectName, err := project.ProjectNameForRoot(projectRoot)
+	if err != nil {
+		return RunPlan{}, err
+	}
+	return applyAsAlias(cmd, RunPlan{Command: command, Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: projectRoot, ProjectName: projectName})
 }
 
 func applyAsAlias(cmd cli.Command, plan RunPlan) (RunPlan, error) {
@@ -443,6 +451,10 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 	if err != nil {
 		return RunPlan{}, err
 	}
+	projectName, err := project.ProjectNameForRoot(root)
+	if err != nil {
+		return RunPlan{}, err
+	}
 	return RunPlan{
 		Command:     command,
 		Env:         env,
@@ -451,6 +463,7 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 		Name:        strings.TrimSuffix(host, ".localhost"),
 		CWD:         workspacePackage.Dir,
 		ProjectRoot: root,
+		ProjectName: projectName,
 	}, nil
 }
 
@@ -633,6 +646,8 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		PID:             pid,
 		CWD:             plan.CWD,
 		Name:            plan.Name,
+		ProjectRoot:     plan.ProjectRoot,
+		ProjectName:     plan.ProjectName,
 		Source:          plan.RouteSource,
 		OwnerCWD:        plan.CWD,
 		OwnerEnv:        ownerEnv,
@@ -969,12 +984,14 @@ func prepareStaticFileTarget(cmd cli.Command, cwd string, port int) (RunPlan, er
 
 	host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
 	return applyAsAlias(cmd, RunPlan{
-		Port:    port,
-		Host:    host,
-		Name:    strings.TrimSuffix(host, ".localhost"),
-		CWD:     cwd,
-		Static:  true,
-		URLPath: "/" + filepath.ToSlash(cleanPath),
+		Port:        port,
+		Host:        host,
+		Name:        strings.TrimSuffix(host, ".localhost"),
+		CWD:         cwd,
+		ProjectRoot: cwd,
+		ProjectName: project.NormalizeHostnameName(filepath.Base(cwd)),
+		Static:      true,
+		URLPath:     "/" + filepath.ToSlash(cleanPath),
 	})
 }
 
@@ -1254,9 +1271,16 @@ func printPruneResult(stdout io.Writer, removed int) error {
 }
 
 func Stop(ctx context.Context, cwd string, stdout io.Writer) error {
+	return StopWithCommand(ctx, cli.Command{Kind: cli.CommandStop}, cwd, stdout)
+}
+
+func StopWithCommand(ctx context.Context, cmd cli.Command, cwd string, stdout io.Writer) error {
 	manager, err := resolveRouteManager(ctx)
 	if err != nil {
 		return err
+	}
+	if cmd.StopAll || cmd.StopTarget != "" {
+		return stopExplicitRoutes(ctx, manager, cmd, stdout)
 	}
 	cwds, err := stopCandidateCWDs(cwd)
 	if err != nil {
@@ -1276,6 +1300,58 @@ func Stop(ctx context.Context, cwd string, stdout io.Writer) error {
 	}
 	printStopResults(stdout, result)
 	return nil
+}
+
+func stopExplicitRoutes(ctx context.Context, manager routeManager, cmd cli.Command, stdout io.Writer) error {
+	routes, err := routeManagerRoutes(ctx, manager)
+	if err != nil {
+		return err
+	}
+	var selected []router.Route
+	if cmd.StopAll {
+		selected = routes
+		if len(selected) == 0 {
+			fmt.Fprintln(stdout, "No active routes.")
+			return nil
+		}
+	} else {
+		selected, err = resolveStopTarget(routes, cmd.StopTarget)
+		if err != nil {
+			return err
+		}
+		if len(selected) == 0 {
+			fmt.Fprintln(stdout, "No matching gohere route found.")
+			return nil
+		}
+	}
+	var result lifecycle.StopResult
+	if manager.Client != nil {
+		result, err = stopAdminRoutes(ctx, manager.Client, selected)
+	} else {
+		result, err = stopStoreRoutes(manager.Store, selected)
+	}
+	if err != nil {
+		if result.MatchedHost != "" {
+			return fmt.Errorf("gohere error: could not stop %s.\nTry:\n  gohere doctor", result.MatchedHost)
+		}
+		return fmt.Errorf("gohere error: %w", err)
+	}
+	printStopResults(stdout, result)
+	return nil
+}
+
+func routeManagerRoutes(ctx context.Context, manager routeManager) ([]router.Route, error) {
+	if manager.Client != nil {
+		routes, err := manager.Client.Routes(ctx)
+		if err != nil {
+			if errors.Is(err, admin.ErrUnauthorized) {
+				return nil, staleRouterTokenError()
+			}
+			return nil, err
+		}
+		return routes, nil
+	}
+	return manager.Store.Load()
 }
 
 func stopCandidateCWDs(cwd string) ([]string, error) {
@@ -1346,6 +1422,115 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 		return routeManager{}, err
 	}
 	return routeManager{Client: client, RouterReady: true}, nil
+}
+
+func resolveStopTarget(routes []router.Route, target string) ([]router.Route, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil, nil
+	}
+	for _, route := range routes {
+		if route.Host == target {
+			return []router.Route{route}, nil
+		}
+	}
+	if strings.Contains(target, ".") && !strings.HasSuffix(target, ".localhost") {
+		host := target + ".localhost"
+		for _, route := range routes {
+			if route.Host == host {
+				return []router.Route{route}, nil
+			}
+		}
+	}
+
+	projectMatches := routesMatchingProjectName(routes, target)
+	nameMatches := routesMatchingRouteName(routes, target)
+	if len(projectMatches) > 0 && len(nameMatches) > 0 {
+		if sameRouteHosts(projectMatches, nameMatches) {
+			return projectMatches, nil
+		}
+		return nil, ambiguousProjectAndRouteError(target, projectMatches, nameMatches)
+	}
+	if len(projectMatches) > 0 {
+		return projectMatches, nil
+	}
+	if len(nameMatches) == 1 {
+		return nameMatches, nil
+	}
+	if len(nameMatches) > 1 {
+		return nil, ambiguousRouteNameError(target, nameMatches)
+	}
+	return nil, nil
+}
+
+func routesMatchingProjectName(routes []router.Route, name string) []router.Route {
+	var matches []router.Route
+	for _, route := range routes {
+		if route.ProjectName == name {
+			matches = append(matches, route)
+		}
+	}
+	return matches
+}
+
+func routesMatchingRouteName(routes []router.Route, name string) []router.Route {
+	seen := map[string]bool{}
+	var matches []router.Route
+	for _, route := range routes {
+		if route.Name != name && routeShortName(route) != name {
+			continue
+		}
+		if seen[route.Host] {
+			continue
+		}
+		seen[route.Host] = true
+		matches = append(matches, route)
+	}
+	return matches
+}
+
+func routeShortName(route router.Route) string {
+	host := strings.TrimSuffix(route.Host, ".localhost")
+	before, _, _ := strings.Cut(host, ".")
+	return before
+}
+
+func sameRouteHosts(a, b []router.Route) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	hosts := make(map[string]bool, len(a))
+	for _, route := range a {
+		hosts[route.Host] = true
+	}
+	for _, route := range b {
+		if !hosts[route.Host] {
+			return false
+		}
+	}
+	return true
+}
+
+func ambiguousProjectAndRouteError(target string, projectRoutes, routeMatches []router.Route) error {
+	var out strings.Builder
+	fmt.Fprintf(&out, "gohere error: %q matches a project and a route.\n\nProject:\n  %s\n", target, target)
+	for _, route := range projectRoutes {
+		fmt.Fprintf(&out, "    %s\n", route.Host)
+	}
+	fmt.Fprintln(&out, "\nRoute:")
+	for _, route := range routeMatches {
+		fmt.Fprintf(&out, "  %s\n", route.Host)
+	}
+	return errors.New(strings.TrimRight(out.String(), "\n"))
+}
+
+func ambiguousRouteNameError(target string, routes []router.Route) error {
+	var out strings.Builder
+	fmt.Fprintf(&out, "gohere error: route name %q is ambiguous.\n\nMatches:\n", target)
+	for _, route := range routes {
+		fmt.Fprintf(&out, "  %s\n", route.Host)
+	}
+	return errors.New(strings.TrimRight(out.String(), "\n"))
 }
 
 func pruneAdminRoutes(ctx context.Context, client adminClient) (int, error) {
@@ -1456,6 +1641,82 @@ func adminProbeRouteStatuses(ctx context.Context, client adminClient, probeClien
 	return statuses, nil
 }
 
+func stopAdminRoutes(ctx context.Context, client adminClient, routes []router.Route) (lifecycle.StopResult, error) {
+	var result lifecycle.StopResult
+	for _, route := range routes {
+		result.MatchedHost = route.Host
+		action, reason := stopAction(route)
+		if reason != "" {
+			result.Skipped = append(result.Skipped, lifecycle.StopSkip{Host: route.Host, Reason: reason})
+			continue
+		}
+		if action == stopActionTerminate {
+			lifecycle.StopPID(route.PID)
+			result.Stopped = true
+		}
+		if err := client.DeleteRoute(ctx, route.Host); err != nil {
+			return result, err
+		}
+		result.Hosts = append(result.Hosts, route.Host)
+	}
+	return result, nil
+}
+
+func stopStoreRoutes(store router.Store, selected []router.Route) (lifecycle.StopResult, error) {
+	routes, err := store.Load()
+	if err != nil {
+		return lifecycle.StopResult{}, err
+	}
+	selectedHosts := make(map[string]bool, len(selected))
+	for _, route := range selected {
+		selectedHosts[route.Host] = true
+	}
+	var result lifecycle.StopResult
+	kept := routes[:0]
+	for _, route := range routes {
+		if !selectedHosts[route.Host] {
+			kept = append(kept, route)
+			continue
+		}
+		result.MatchedHost = route.Host
+		action, reason := stopAction(route)
+		if reason != "" {
+			result.Skipped = append(result.Skipped, lifecycle.StopSkip{Host: route.Host, Reason: reason})
+			kept = append(kept, route)
+			continue
+		}
+		if action == stopActionTerminate {
+			lifecycle.StopPID(route.PID)
+			result.Stopped = true
+		}
+		result.Hosts = append(result.Hosts, route.Host)
+	}
+	if err := store.Save(kept); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+type routeStopAction string
+
+const (
+	stopActionDelete    routeStopAction = "delete"
+	stopActionTerminate routeStopAction = "terminate"
+)
+
+func stopAction(route router.Route) (routeStopAction, string) {
+	if route.OwnerEnv != "" && route.OwnerEnv != runOwnerEnv() {
+		return "", "route belongs to another environment."
+	}
+	if !lifecycle.PIDAlive(route.PID) || lifecycle.RouteStatuses([]router.Route{route})[0].Status == lifecycle.RouteStatusDead {
+		return stopActionDelete, ""
+	}
+	if lifecycle.RouteProcessVerified(route) {
+		return stopActionTerminate, ""
+	}
+	return "", "could not verify the original gohere process."
+}
+
 func stopAdminCurrent(ctx context.Context, client adminClient, cwd string) (string, bool, string, error) {
 	result, err := stopAdminCWDs(ctx, client, []string{cwd})
 	return result.MatchedHost, result.Stopped, result.Warning, err
@@ -1553,8 +1814,11 @@ func printStopResults(stdout io.Writer, result lifecycle.StopResult) {
 	if result.Warning != "" {
 		fmt.Fprintln(stdout, result.Warning)
 	}
+	for _, skipped := range result.Skipped {
+		fmt.Fprintf(stdout, "Skipped %s: %s\n", skipped.Host, skipped.Reason)
+	}
 	if len(result.Hosts) == 0 {
-		if result.Warning != "" {
+		if result.Warning != "" || len(result.Skipped) > 0 {
 			return
 		}
 		fmt.Fprintln(stdout, "No running gohere project found for this folder.")

@@ -122,3 +122,20 @@ func TestPrintUsageListTopicIsSpecific(t *testing.T) {
 		t.Fatalf("list usage should not include generic examples:\n%s", out.String())
 	}
 }
+
+func TestPrintUsageStopTopicIsSpecific(t *testing.T) {
+	var out bytes.Buffer
+	printUsage(&out, "stop")
+
+	for _, want := range []string{
+		"Usage:\n  gohere stop [route|project|--all]\n",
+		"Stops routes by current context",
+	} {
+		if !bytes.Contains(out.Bytes(), []byte(want)) {
+			t.Fatalf("stop usage missing %q:\n%s", want, out.String())
+		}
+	}
+	if bytes.Contains(out.Bytes(), []byte("gohere pages/about.html")) {
+		t.Fatalf("stop usage should not include generic examples:\n%s", out.String())
+	}
+}

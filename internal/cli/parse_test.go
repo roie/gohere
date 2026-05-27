@@ -235,6 +235,43 @@ func TestParseFixedCommands(t *testing.T) {
 	}
 }
 
+func TestParseStopTarget(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "stop", "ctrltube"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandStop {
+		t.Fatalf("kind = %v, want %v", cmd.Kind, CommandStop)
+	}
+	if cmd.StopTarget != "ctrltube" {
+		t.Fatalf("StopTarget = %q, want ctrltube", cmd.StopTarget)
+	}
+}
+
+func TestParseStopAll(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "stop", "--all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandStop {
+		t.Fatalf("kind = %v, want %v", cmd.Kind, CommandStop)
+	}
+	if !cmd.StopAll {
+		t.Fatal("StopAll = false, want true")
+	}
+}
+
+func TestParseStopRejectsAllWithTarget(t *testing.T) {
+	_, err := Parse([]string{"gohere", "stop", "--all", "web"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: stop accepts either --all or one route/project"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestParseRouterIsScriptName(t *testing.T) {
 	cmd, err := Parse([]string{"gohere", "router"})
 	if err != nil {

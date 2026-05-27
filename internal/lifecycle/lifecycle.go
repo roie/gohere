@@ -44,6 +44,12 @@ type StopResult struct {
 	MatchedHost string
 	Stopped     bool
 	Warning     string
+	Skipped     []StopSkip
+}
+
+type StopSkip struct {
+	Host   string
+	Reason string
 }
 
 func FormatRoutes(statuses []RouteStatus) string {

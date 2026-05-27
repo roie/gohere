@@ -1048,6 +1048,11 @@ func TestRunImplicitDevAtWorkspaceRootLaunchesWorkspacePackages(t *testing.T) {
 	if strings.Contains(strings.Join(commands, "\n"), "--parallel --filter") {
 		t.Fatalf("workspace mode should not run root aggregate script, commands = %#v", commands)
 	}
+	for _, route := range admin.upsertedRoutes() {
+		if route.ProjectName != "ctrltube" || route.ProjectRoot != root {
+			t.Fatalf("route project metadata = %q/%q, want ctrltube/%s", route.ProjectName, route.ProjectRoot, root)
+		}
+	}
 	wantOut := "gohere web \u2192 http://web.ctrltube.localhost\n" +
 		"gohere worker \u2192 http://worker.ctrltube.localhost\n"
 	if stdout.String() != wantOut || stderr.String() != "" {
@@ -2718,6 +2723,155 @@ func TestStopAtWorkspaceRootStopsWorkspacePackageRoutes(t *testing.T) {
 	wantOut := "Stopped web.ctrltube.localhost.\nStopped worker.ctrltube.localhost.\n"
 	if out.String() != wantOut {
 		t.Fatalf("stop output = %q, want %q", out.String(), wantOut)
+	}
+}
+
+func TestStopTargetProjectStopsProjectRoutes(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+	}()
+
+	admin := &multiRecordingAdminClient{routes: []router.Route{
+		{Host: "web.ctrltube.localhost", Name: "web", ProjectName: "ctrltube"},
+		{Host: "worker.ctrltube.localhost", Name: "worker", ProjectName: "ctrltube"},
+		{Host: "api.other.localhost", Name: "api", ProjectName: "other"},
+	}}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+
+	var out strings.Builder
+	cmd := cli.Command{Kind: cli.CommandStop, StopTarget: "ctrltube"}
+	if err := StopWithCommand(t.Context(), cmd, t.TempDir(), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	wantDeleted := []string{"web.ctrltube.localhost", "worker.ctrltube.localhost"}
+	if !sameStrings(admin.deletedHosts(), wantDeleted) {
+		t.Fatalf("deleted hosts = %#v, want %#v", admin.deletedHosts(), wantDeleted)
+	}
+	wantOut := "Stopped web.ctrltube.localhost.\nStopped worker.ctrltube.localhost.\n"
+	if out.String() != wantOut {
+		t.Fatalf("stop output = %q, want %q", out.String(), wantOut)
+	}
+}
+
+func TestStopTargetHostWithoutLocalhostStopsOneRoute(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+	}()
+
+	admin := &multiRecordingAdminClient{routes: []router.Route{
+		{Host: "web.ctrltube.localhost", Name: "web", ProjectName: "ctrltube"},
+		{Host: "worker.ctrltube.localhost", Name: "worker", ProjectName: "ctrltube"},
+	}}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+
+	var out strings.Builder
+	cmd := cli.Command{Kind: cli.CommandStop, StopTarget: "web.ctrltube"}
+	if err := StopWithCommand(t.Context(), cmd, t.TempDir(), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	if !sameStrings(admin.deletedHosts(), []string{"web.ctrltube.localhost"}) {
+		t.Fatalf("deleted hosts = %#v, want web route", admin.deletedHosts())
+	}
+	if out.String() != "Stopped web.ctrltube.localhost.\n" {
+		t.Fatalf("stop output = %q", out.String())
+	}
+}
+
+func TestStopTargetAmbiguousProjectAndRouteNameErrors(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+	}()
+
+	admin := &multiRecordingAdminClient{routes: []router.Route{
+		{Host: "web.ctrltube.localhost", Name: "web", ProjectName: "ctrltube"},
+		{Host: "worker.ctrltube.localhost", Name: "worker", ProjectName: "ctrltube"},
+		{Host: "ctrltube.tools.localhost", Name: "ctrltube", ProjectName: "tools"},
+	}}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+
+	var out strings.Builder
+	cmd := cli.Command{Kind: cli.CommandStop, StopTarget: "ctrltube"}
+	err := StopWithCommand(t.Context(), cmd, t.TempDir(), &out)
+	if err == nil {
+		t.Fatal("expected ambiguity error")
+	}
+	if !strings.Contains(err.Error(), `"ctrltube" matches a project and a route`) ||
+		!strings.Contains(err.Error(), "web.ctrltube.localhost") ||
+		!strings.Contains(err.Error(), "ctrltube.tools.localhost") {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if len(admin.deletedHosts()) != 0 {
+		t.Fatalf("deleted hosts = %#v, want none", admin.deletedHosts())
+	}
+	if out.String() != "" {
+		t.Fatalf("stdout = %q, want empty", out.String())
+	}
+}
+
+func TestStopTargetNoMatchReportsNoMatchingRoute(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+	}()
+
+	admin := &multiRecordingAdminClient{routes: []router.Route{{
+		Host: "web.ctrltube.localhost", Name: "web", ProjectName: "ctrltube",
+	}}}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+
+	var out strings.Builder
+	cmd := cli.Command{Kind: cli.CommandStop, StopTarget: "missing"}
+	if err := StopWithCommand(t.Context(), cmd, t.TempDir(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(admin.deletedHosts()) != 0 {
+		t.Fatalf("deleted hosts = %#v, want none", admin.deletedHosts())
+	}
+	if out.String() != "No matching gohere route found.\n" {
+		t.Fatalf("stop output = %q", out.String())
+	}
+}
+
+func TestStopAllStopsDeadRoutesAndSkipsUnverifiedLiveRoutes(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+	}()
+
+	admin := &multiRecordingAdminClient{routes: []router.Route{
+		{Host: "dead.localhost", Name: "dead"},
+		{Host: "live.localhost", Name: "live", PID: os.Getpid()},
+	}}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+
+	var out strings.Builder
+	cmd := cli.Command{Kind: cli.CommandStop, StopAll: true}
+	if err := StopWithCommand(t.Context(), cmd, t.TempDir(), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	if !sameStrings(admin.deletedHosts(), []string{"dead.localhost"}) {
+		t.Fatalf("deleted hosts = %#v, want dead route only", admin.deletedHosts())
+	}
+	text := out.String()
+	if !strings.Contains(text, "Stopped dead.localhost.") ||
+		!strings.Contains(text, "Skipped live.localhost: could not verify the original gohere process.") {
+		t.Fatalf("stop output = %q", text)
 	}
 }
 
