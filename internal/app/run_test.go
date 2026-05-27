@@ -2685,6 +2685,42 @@ func TestStopUsesWindowsRouterFromWSL(t *testing.T) {
 	}
 }
 
+func TestStopAtWorkspaceRootStopsWorkspacePackageRoutes(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+	}()
+
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"ctrltube","workspaces":["apps/*"]}`,
+		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"wrangler dev"}}`,
+	})
+	webDir := filepath.Join(root, "apps", "web")
+	workerDir := filepath.Join(root, "apps", "worker")
+	admin := &multiRecordingAdminClient{routes: []router.Route{
+		{Host: "web.ctrltube.localhost", CWD: webDir, OwnerCWD: webDir},
+		{Host: "worker.ctrltube.localhost", CWD: workerDir, OwnerCWD: workerDir},
+	}}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+
+	var out strings.Builder
+	if err := Stop(t.Context(), root, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	wantDeleted := []string{"web.ctrltube.localhost", "worker.ctrltube.localhost"}
+	if !sameStrings(admin.deletedHosts(), wantDeleted) {
+		t.Fatalf("deleted hosts = %#v, want %#v", admin.deletedHosts(), wantDeleted)
+	}
+	wantOut := "Stopped web.ctrltube.localhost.\nStopped worker.ctrltube.localhost.\n"
+	if out.String() != wantOut {
+		t.Fatalf("stop output = %q, want %q", out.String(), wantOut)
+	}
+}
+
 func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "router.pid"), []byte("12345\n"), 0600); err != nil {

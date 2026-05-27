@@ -39,6 +39,13 @@ type RouteStatus struct {
 	Status RouteStatusKind
 }
 
+type StopResult struct {
+	Hosts       []string
+	MatchedHost string
+	Stopped     bool
+	Warning     string
+}
+
 func FormatRoutes(statuses []RouteStatus) string {
 	if len(statuses) == 0 {
 		return "No active routes.\n"
@@ -111,40 +118,47 @@ func PruneWithRouterReady(store router.Store, routerReady bool) (int, error) {
 }
 
 func StopCurrent(store router.Store, cwd string) (string, bool, string, error) {
+	result, err := StopCWDs(store, []string{cwd})
+	return result.MatchedHost, result.Stopped, result.Warning, err
+}
+
+func StopCWDs(store router.Store, cwds []string) (StopResult, error) {
 	routes, err := store.Load()
 	if err != nil {
-		return "", false, "", err
+		return StopResult{}, err
 	}
-	absCWD, err := filepath.Abs(cwd)
+	absCWDs, err := absCWDSet(cwds)
 	if err != nil {
-		return "", false, "", err
+		return StopResult{}, err
 	}
 
-	stopped := false
-	stoppedHost := ""
-	warning := ""
+	var result StopResult
 	kept := routes[:0]
 	for _, route := range routes {
-		if routeMatchesCWD(route, absCWD) {
-			stoppedHost = route.Host
+		if routeMatchesAnyCWD(route, absCWDs) {
+			result.MatchedHost = route.Host
 			if !PIDAlive(route.PID) || targetStatus(route.Target) == RouteStatusDead {
+				result.Hosts = append(result.Hosts, route.Host)
 				continue
 			}
 			if RouteProcessVerified(route) {
 				stopPID(route.PID)
-				stopped = true
+				result.Hosts = append(result.Hosts, route.Host)
+				result.Stopped = true
 				continue
 			}
-			warning = UnverifiedProcessWarning(route.PID)
+			if result.Warning == "" {
+				result.Warning = UnverifiedProcessWarning(route.PID)
+			}
 			kept = append(kept, route)
 			continue
 		}
 		kept = append(kept, route)
 	}
 	if err := store.Save(kept); err != nil {
-		return stoppedHost, false, warning, err
+		return result, err
 	}
-	return stoppedHost, stopped, warning, nil
+	return result, nil
 }
 
 func routeMatchesCWD(route router.Route, absCWD string) bool {
@@ -154,6 +168,30 @@ func routeMatchesCWD(route router.Route, absCWD string) bool {
 		}
 		routeCWD, err := filepath.Abs(cwd)
 		if err == nil && routeCWD == absCWD {
+			return true
+		}
+	}
+	return false
+}
+
+func absCWDSet(cwds []string) (map[string]bool, error) {
+	absCWDs := make(map[string]bool, len(cwds))
+	for _, cwd := range cwds {
+		if cwd == "" {
+			continue
+		}
+		absCWD, err := filepath.Abs(cwd)
+		if err != nil {
+			return nil, err
+		}
+		absCWDs[absCWD] = true
+	}
+	return absCWDs, nil
+}
+
+func routeMatchesAnyCWD(route router.Route, absCWDs map[string]bool) bool {
+	for absCWD := range absCWDs {
+		if routeMatchesCWD(route, absCWD) {
 			return true
 		}
 	}

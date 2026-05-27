@@ -293,12 +293,37 @@ func workspaceRootName(dir string) (string, bool, error) {
 }
 
 func DiscoverWorkspacePackages(root, script string) ([]WorkspacePackage, bool, error) {
-	root, err := filepath.Abs(root)
-	if err != nil {
-		return nil, false, err
+	packages, found, err := DiscoverWorkspacePackageDirs(root)
+	if err != nil || !found {
+		return packages, found, err
 	}
 	if script == "" {
 		script = "dev"
+	}
+
+	filtered := packages[:0]
+	for _, workspacePackage := range packages {
+		pkg, err := ReadPackageJSON(workspacePackage.PackagePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, true, err
+		}
+		scriptCommand, ok := pkg.Script(script)
+		if !ok {
+			continue
+		}
+		workspacePackage.Script = scriptCommand
+		filtered = append(filtered, workspacePackage)
+	}
+	return filtered, true, nil
+}
+
+func DiscoverWorkspacePackageDirs(root string) ([]WorkspacePackage, bool, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, false, err
 	}
 
 	patterns, found, err := workspacePatterns(root)
@@ -360,17 +385,12 @@ func DiscoverWorkspacePackages(root, script string) ([]WorkspacePackage, bool, e
 			}
 			return nil, true, err
 		}
-		scriptCommand, ok := pkg.Script(script)
-		if !ok {
-			continue
-		}
 		shortName := packageNameOrFolder(pkg.Name, dir)
 		packages = append(packages, WorkspacePackage{
 			Dir:         dir,
 			PackagePath: packagePath,
 			Name:        pkg.Name,
 			ShortName:   shortName,
-			Script:      scriptCommand,
 		})
 	}
 	return packages, true, nil

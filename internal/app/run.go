@@ -1258,22 +1258,39 @@ func Stop(ctx context.Context, cwd string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	var host string
-	var stopped bool
-	var warning string
+	cwds, err := stopCandidateCWDs(cwd)
+	if err != nil {
+		return err
+	}
+	var result lifecycle.StopResult
 	if manager.Client != nil {
-		host, stopped, warning, err = stopAdminCurrent(ctx, manager.Client, cwd)
+		result, err = stopAdminCWDs(ctx, manager.Client, cwds)
 	} else {
-		host, stopped, warning, err = lifecycle.StopCurrent(manager.Store, cwd)
+		result, err = lifecycle.StopCWDs(manager.Store, cwds)
 	}
 	if err != nil {
-		if host != "" {
-			return fmt.Errorf("gohere error: could not stop %s.\nTry:\n  gohere doctor", host)
+		if result.MatchedHost != "" {
+			return fmt.Errorf("gohere error: could not stop %s.\nTry:\n  gohere doctor", result.MatchedHost)
 		}
 		return fmt.Errorf("gohere error: %w", err)
 	}
-	printStopResult(stdout, host, stopped, warning)
+	printStopResults(stdout, result)
 	return nil
+}
+
+func stopCandidateCWDs(cwd string) ([]string, error) {
+	cwds := []string{cwd}
+	packages, found, err := project.DiscoverWorkspacePackageDirs(cwd)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return cwds, nil
+	}
+	for _, workspacePackage := range packages {
+		cwds = append(cwds, workspacePackage.Dir)
+	}
+	return cwds, nil
 }
 
 type routeManager struct {
@@ -1440,57 +1457,112 @@ func adminProbeRouteStatuses(ctx context.Context, client adminClient, probeClien
 }
 
 func stopAdminCurrent(ctx context.Context, client adminClient, cwd string) (string, bool, string, error) {
+	result, err := stopAdminCWDs(ctx, client, []string{cwd})
+	return result.MatchedHost, result.Stopped, result.Warning, err
+}
+
+func stopAdminCWDs(ctx context.Context, client adminClient, cwds []string) (lifecycle.StopResult, error) {
 	routes, err := client.Routes(ctx)
 	if err != nil {
 		if errors.Is(err, admin.ErrUnauthorized) {
-			return "", false, "", staleRouterTokenError()
+			return lifecycle.StopResult{}, staleRouterTokenError()
 		}
-		return "", false, "", err
+		return lifecycle.StopResult{}, err
 	}
-	absCWD, err := filepath.Abs(cwd)
+	absCWDs, err := absCWDSet(cwds)
 	if err != nil {
-		return "", false, "", err
+		return lifecycle.StopResult{}, err
 	}
+	var result lifecycle.StopResult
 	for _, route := range routes {
-		routeCWD := route.OwnerCWD
-		if routeCWD == "" {
-			routeCWD = route.CWD
-		}
-		absRouteCWD, err := filepath.Abs(routeCWD)
-		if err != nil || absRouteCWD != absCWD {
+		if !routeMatchesAnyCWD(route, absCWDs) {
 			continue
 		}
 		if route.OwnerEnv != "" && route.OwnerEnv != runOwnerEnv() {
 			continue
 		}
+		result.MatchedHost = route.Host
 		if !lifecycle.PIDAlive(route.PID) || lifecycle.RouteStatuses([]router.Route{route})[0].Status == lifecycle.RouteStatusDead {
 			if err := client.DeleteRoute(ctx, route.Host); err != nil {
-				return route.Host, false, "", err
+				return result, err
 			}
-			return route.Host, false, "", nil
+			result.Hosts = append(result.Hosts, route.Host)
+			continue
 		}
 		if lifecycle.RouteProcessVerified(route) {
 			lifecycle.StopPID(route.PID)
 			if err := client.DeleteRoute(ctx, route.Host); err != nil {
-				return route.Host, false, "", err
+				return result, err
 			}
-			return route.Host, true, "", nil
+			result.Hosts = append(result.Hosts, route.Host)
+			result.Stopped = true
+			continue
 		}
-		return route.Host, false, lifecycle.UnverifiedProcessWarning(route.PID), nil
+		if result.Warning == "" {
+			result.Warning = lifecycle.UnverifiedProcessWarning(route.PID)
+		}
 	}
-	return "", false, "", nil
+	return result, nil
+}
+
+func absCWDSet(cwds []string) (map[string]bool, error) {
+	absCWDs := make(map[string]bool, len(cwds))
+	for _, cwd := range cwds {
+		if cwd == "" {
+			continue
+		}
+		absCWD, err := filepath.Abs(cwd)
+		if err != nil {
+			return nil, err
+		}
+		absCWDs[absCWD] = true
+	}
+	return absCWDs, nil
+}
+
+func routeMatchesAnyCWD(route router.Route, absCWDs map[string]bool) bool {
+	for _, cwd := range []string{route.OwnerCWD, route.CWD} {
+		if cwd == "" {
+			continue
+		}
+		absRouteCWD, err := filepath.Abs(cwd)
+		if err == nil && absCWDs[absRouteCWD] {
+			return true
+		}
+	}
+	return false
 }
 
 func printStopResult(stdout io.Writer, host string, stopped bool, warning string) {
-	if warning != "" {
-		fmt.Fprintln(stdout, warning)
-		return
+	printStopResults(stdout, lifecycle.StopResult{
+		Hosts:       stopResultHosts(host, warning),
+		MatchedHost: host,
+		Stopped:     stopped,
+		Warning:     warning,
+	})
+}
+
+func stopResultHosts(host, warning string) []string {
+	if host == "" || warning != "" {
+		return nil
 	}
-	if host == "" {
+	return []string{host}
+}
+
+func printStopResults(stdout io.Writer, result lifecycle.StopResult) {
+	if result.Warning != "" {
+		fmt.Fprintln(stdout, result.Warning)
+	}
+	if len(result.Hosts) == 0 {
+		if result.Warning != "" {
+			return
+		}
 		fmt.Fprintln(stdout, "No running gohere project found for this folder.")
 		return
 	}
-	fmt.Fprintf(stdout, "Stopped %s.\n", host)
+	for _, host := range result.Hosts {
+		fmt.Fprintf(stdout, "Stopped %s.\n", host)
+	}
 }
 
 func Doctor(ctx context.Context, stdout io.Writer) error {
