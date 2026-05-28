@@ -27,6 +27,7 @@ const maxLogSize = 1024 * 1024
 const tokenLength = 64
 const maxAdminBodyBytes = 1024 * 1024
 const RoutesFilename = "routes.json"
+const gohereRouteHeader = "X-Gohere-Route"
 
 var rotateOpenFile = os.OpenFile
 
@@ -335,6 +336,10 @@ func (s *Server) HTTPHandler() http.Handler {
 			missingRoutePage(w, r.Host)
 			return
 		}
+		if routeLoopDetected(r, route.Host) {
+			routeLoopPage(w, route.Host)
+			return
+		}
 
 		target, err := url.Parse(route.Target)
 		if err != nil {
@@ -353,8 +358,48 @@ func (s *Server) HTTPHandler() http.Handler {
 			}
 			http.Error(w, "gohere upstream unavailable", http.StatusBadGateway)
 		}
+		director := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			director(req)
+			appendRouteHop(req, route.Host)
+		}
 		proxy.ServeHTTP(w, r)
 	})
+}
+
+func routeLoopDetected(r *http.Request, host string) bool {
+	host = canonicalRouteHop(host)
+	if host == "" {
+		return false
+	}
+	for _, value := range r.Header.Values(gohereRouteHeader) {
+		for _, hop := range strings.Split(value, ",") {
+			if canonicalRouteHop(hop) == host {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appendRouteHop(r *http.Request, host string) {
+	host = canonicalRouteHop(host)
+	if host == "" {
+		return
+	}
+	r.Header.Add(gohereRouteHeader, host)
+}
+
+func canonicalRouteHop(host string) string {
+	return strings.ToLower(hostWithoutPort(strings.TrimSpace(host)))
+}
+
+func routeLoopPage(w http.ResponseWriter, host string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusLoopDetected)
+	fmt.Fprintf(w, "gohere proxy loop detected for %s.\n\n", hostWithoutPort(host))
+	io.WriteString(w, "This usually happens when a dev server proxies to another gohere URL but keeps the original Host header.\n")
+	io.WriteString(w, "For Vite, webpack, and similar dev-server proxies, set changeOrigin: true for that proxy target.\n")
 }
 
 func isUpgradeRequest(r *http.Request) bool {

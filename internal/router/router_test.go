@@ -772,6 +772,85 @@ func TestProxyRoutesByHostHeader(t *testing.T) {
 	}
 }
 
+func TestProxyAddsRouteHopHeader(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Backend-Route-Hop", r.Header.Get(gohereRouteHeader))
+		io.WriteString(w, "proxied response")
+	}))
+	defer backend.Close()
+
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "eventca.localhost", Target: backend.URL}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://eventca.localhost/", nil)
+	req.Host = "eventca.localhost"
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d body %q", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Backend-Route-Hop") != "eventca.localhost" {
+		t.Fatalf("route hop header = %q, want eventca.localhost", rec.Header().Get("X-Backend-Route-Hop"))
+	}
+}
+
+func TestProxyAllowsDifferentRouteHopHeader(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Backend-Route-Hop", strings.Join(r.Header.Values(gohereRouteHeader), ","))
+		io.WriteString(w, "proxied response")
+	}))
+	defer backend.Close()
+
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "worker.localhost", Target: backend.URL}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://worker.localhost/", nil)
+	req.Host = "worker.localhost"
+	req.Header.Set(gohereRouteHeader, "web.localhost")
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d body %q", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Backend-Route-Hop") != "web.localhost,worker.localhost" {
+		t.Fatalf("route hop header = %q, want web.localhost,worker.localhost", rec.Header().Get("X-Backend-Route-Hop"))
+	}
+}
+
+func TestProxyDetectsRouteLoop(t *testing.T) {
+	upstreamHit := false
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+		io.WriteString(w, "unexpected upstream")
+	}))
+	defer backend.Close()
+
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "web.localhost", Target: backend.URL}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://web.localhost/api", nil)
+	req.Host = "web.localhost"
+	req.Header.Set(gohereRouteHeader, "web.localhost")
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusLoopDetected {
+		t.Fatalf("proxy status = %d body %q", rec.Code, rec.Body.String())
+	}
+	if upstreamHit {
+		t.Fatal("looping request should not hit upstream")
+	}
+	if !strings.Contains(rec.Body.String(), "gohere proxy loop detected") ||
+		!strings.Contains(rec.Body.String(), "changeOrigin: true") {
+		t.Fatalf("loop response body = %q", rec.Body.String())
+	}
+}
+
 func TestProxyHostMatchIsCaseInsensitive(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "proxied response")
