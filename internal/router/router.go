@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -333,21 +334,31 @@ func (s *Server) HTTPHandler() http.Handler {
 				http.Error(w, "gohere websocket route missing", http.StatusBadGateway)
 				return
 			}
-			missingRoutePage(w, r.Host)
+			missingRouteResponse(w, r)
 			return
 		}
 		if routeLoopDetected(r, route.Host) {
-			routeLoopPage(w, route.Host)
+			routeLoopResponse(w, r, route.Host)
 			return
 		}
 
 		target, err := url.Parse(route.Target)
 		if err != nil {
-			http.Error(w, "invalid gohere route target", http.StatusBadGateway)
+			writeProxyError(w, r, http.StatusBadGateway, proxyErrorPayload{
+				Error:   "invalid_route_target",
+				Message: "invalid gohere route target",
+				Host:    route.Host,
+				Target:  route.Target,
+			})
 			return
 		}
 		if err := validateRouteTarget(target); err != nil {
-			http.Error(w, "invalid gohere route target", http.StatusBadGateway)
+			writeProxyError(w, r, http.StatusBadGateway, proxyErrorPayload{
+				Error:   "invalid_route_target",
+				Message: "invalid gohere route target",
+				Host:    route.Host,
+				Target:  route.Target,
+			})
 			return
 		}
 		proxy := httputil.NewSingleHostReverseProxy(target)
@@ -356,7 +367,12 @@ func (s *Server) HTTPHandler() http.Handler {
 				http.Error(w, "gohere websocket upstream unavailable", http.StatusBadGateway)
 				return
 			}
-			http.Error(w, "gohere upstream unavailable", http.StatusBadGateway)
+			writeProxyError(w, r, http.StatusBadGateway, proxyErrorPayload{
+				Error:   "upstream_unavailable",
+				Message: "gohere upstream unavailable",
+				Host:    route.Host,
+				Target:  route.Target,
+			})
 		}
 		director := proxy.Director
 		proxy.Director = func(req *http.Request) {
@@ -392,6 +408,27 @@ func appendRouteHop(r *http.Request, host string) {
 
 func canonicalRouteHop(host string) string {
 	return strings.ToLower(hostWithoutPort(strings.TrimSpace(host)))
+}
+
+type proxyErrorPayload struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+	Host    string `json:"host,omitempty"`
+	Target  string `json:"target,omitempty"`
+}
+
+func routeLoopResponse(w http.ResponseWriter, r *http.Request, host string) {
+	host = hostWithoutPort(host)
+	payload := proxyErrorPayload{
+		Error:   "proxy_loop_detected",
+		Message: "gohere proxy loop detected for " + host,
+		Host:    host,
+	}
+	if requestAcceptsJSON(r) {
+		writeProxyError(w, r, http.StatusLoopDetected, payload)
+		return
+	}
+	routeLoopPage(w, host)
 }
 
 func routeLoopPage(w http.ResponseWriter, host string) {
@@ -672,6 +709,62 @@ func missingRoutePage(w http.ResponseWriter, host string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusBadGateway)
 	io.WriteString(w, "<!doctype html><title>gohere route missing</title><h1>No gohere route is running for "+html.EscapeString(host)+"</h1>")
+}
+
+func missingRouteResponse(w http.ResponseWriter, r *http.Request) {
+	host := hostWithoutPort(r.Host)
+	if requestAcceptsHTML(r) && !requestAcceptsJSON(r) {
+		missingRoutePage(w, host)
+		return
+	}
+	writeProxyError(w, r, http.StatusBadGateway, proxyErrorPayload{
+		Error:   "route_missing",
+		Message: "No gohere route is running for " + host,
+		Host:    host,
+	})
+}
+
+func writeProxyError(w http.ResponseWriter, r *http.Request, status int, payload proxyErrorPayload) {
+	if requestAcceptsJSON(r) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(payload)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	io.WriteString(w, payload.Message+"\n")
+}
+
+func requestAcceptsHTML(r *http.Request) bool {
+	return requestAcceptMatches(r, func(mediaType string) bool {
+		return mediaType == "text/html"
+	})
+}
+
+func requestAcceptsJSON(r *http.Request) bool {
+	return requestAcceptMatches(r, func(mediaType string) bool {
+		return mediaType == "application/json" ||
+			strings.HasSuffix(mediaType, "+json")
+	})
+}
+
+func requestAcceptMatches(r *http.Request, match func(string) bool) bool {
+	for _, value := range r.Header.Values("Accept") {
+		for _, item := range strings.Split(value, ",") {
+			mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(item))
+			if err != nil {
+				continue
+			}
+			if params["q"] == "0" {
+				continue
+			}
+			if match(strings.ToLower(mediaType)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hostWithoutPort(host string) string {

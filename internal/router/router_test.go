@@ -554,6 +554,37 @@ func TestProxyHTTPUpstreamErrorDoesNotReturnMissingRoutePage(t *testing.T) {
 	}
 }
 
+func TestProxyHTTPUpstreamErrorReturnsJSONForAPIClient(t *testing.T) {
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{
+		Host:   "web.localhost",
+		Target: "http://127.0.0.1:1",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://web.localhost/", nil)
+	req.Host = "web.localhost"
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("upstream error status = %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content type = %q, want application/json", got)
+	}
+	var payload proxyErrorPayload
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error != "upstream_unavailable" || payload.Host != "web.localhost" || payload.Target != "http://127.0.0.1:1" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
 func TestMissingRoutePageStripsIPv6Port(t *testing.T) {
 	rec := httptest.NewRecorder()
 
@@ -851,6 +882,34 @@ func TestProxyDetectsRouteLoop(t *testing.T) {
 	}
 }
 
+func TestProxyLoopReturnsJSONForAPIClient(t *testing.T) {
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "web.localhost", Target: "http://127.0.0.1:1"}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://web.localhost/api", nil)
+	req.Host = "web.localhost"
+	req.Header.Set(gohereRouteHeader, "web.localhost")
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusLoopDetected {
+		t.Fatalf("proxy status = %d body %q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content type = %q, want application/json", got)
+	}
+	var payload proxyErrorPayload
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error != "proxy_loop_detected" || payload.Host != "web.localhost" ||
+		!strings.Contains(payload.Message, "gohere proxy loop detected") {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
 func TestProxyHostMatchIsCaseInsensitive(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "proxied response")
@@ -945,6 +1004,7 @@ func TestMissingRouteShowsFriendlyPage(t *testing.T) {
 	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
 	req := httptest.NewRequest(http.MethodGet, "http://missing.localhost/", nil)
 	req.Host = "missing.localhost"
+	req.Header.Set("Accept", "text/html")
 	rec := httptest.NewRecorder()
 
 	srv.HTTPHandler().ServeHTTP(rec, req)
@@ -954,6 +1014,73 @@ func TestMissingRouteShowsFriendlyPage(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "No gohere route is running for missing.localhost") {
 		t.Fatalf("missing route body = %q", rec.Body.String())
+	}
+}
+
+func TestMissingRouteReturnsPlainTextForNonBrowserClient(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+	req := httptest.NewRequest(http.MethodGet, "http://missing.localhost/", nil)
+	req.Host = "missing.localhost"
+	req.Header.Set("Accept", "*/*")
+	rec := httptest.NewRecorder()
+
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("missing route status = %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("content type = %q, want text/plain", got)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "<!doctype html>") || !strings.Contains(body, "No gohere route is running for missing.localhost") {
+		t.Fatalf("missing route body = %q", body)
+	}
+}
+
+func TestMissingRouteReturnsJSONForAPIClient(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+	req := httptest.NewRequest(http.MethodGet, "http://missing.localhost/", nil)
+	req.Host = "missing.localhost"
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("missing route status = %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content type = %q, want application/json", got)
+	}
+	var payload proxyErrorPayload
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error != "route_missing" || payload.Host != "missing.localhost" ||
+		payload.Message != "No gohere route is running for missing.localhost" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestMissingRouteReturnsJSONForStructuredJSONClient(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+	req := httptest.NewRequest(http.MethodGet, "http://missing.localhost/", nil)
+	req.Host = "missing.localhost"
+	req.Header.Set("Accept", "application/problem+json")
+	rec := httptest.NewRecorder()
+
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content type = %q, want application/json", got)
+	}
+	var payload proxyErrorPayload
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error != "route_missing" {
+		t.Fatalf("payload = %#v", payload)
 	}
 }
 
