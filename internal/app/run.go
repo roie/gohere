@@ -63,6 +63,7 @@ var (
 	openBrowserFunc         = func(ctx context.Context, url string) error {
 		return opener.Open(ctx, runtime.GOOS, detectWSLFunc(), url)
 	}
+	chooseFreePortForHostFunc = runner.ChooseFreePortForHost
 )
 
 const routerStartTimeout = 10 * time.Second
@@ -130,16 +131,20 @@ type RunPlan struct {
 }
 
 func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
+	return prepareRunWithHost(cmd, cwd, "127.0.0.1")
+}
+
+func prepareRunWithHost(cmd cli.Command, cwd, childHost string) (RunPlan, error) {
 	port := cmd.TargetPort
 	if port == 0 {
 		var err error
-		port, err = runner.ChooseFreePort()
+		port, err = chooseFreePortForHostFunc(childHost)
 		if err != nil {
 			return RunPlan{}, err
 		}
 	}
 
-	env := runner.ChildEnv(os.Environ(), port)
+	env := runner.ChildEnvForHost(os.Environ(), port, childHost)
 	if cmd.Kind == cli.CommandRaw {
 		host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
 		return applyRunOptions(cmd, RunPlan{
@@ -156,7 +161,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	}
 
 	if cmd.TargetPath != "" {
-		return preparePathTarget(cmd, cwd, port)
+		return preparePathTarget(cmd, cwd, port, childHost)
 	}
 	if isFileTarget(cmd) {
 		return prepareStaticFileTarget(cmd, cwd, port)
@@ -200,7 +205,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	if err != nil {
 		return RunPlan{}, err
 	}
-	injected := runner.InjectPortArgs(scriptCommand, port, cmd.PortFlag)
+	injected := runner.InjectPortArgsForHost(scriptCommand, port, cmd.PortFlag, childHost)
 	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
 	managedPort := len(injected) > 0
 	host, err := project.HostnameForProject(cwd)
@@ -275,13 +280,10 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		return runMulti(ctx, cmd, cwd, stdout, stderr)
 	}
 
-	plan, err := PrepareRun(cmd, cwd)
-	if err != nil {
-		return err
-	}
-
 	var adminClient adminClient
 	routerResolved := false
+	var resolvedRouter runRouter
+	var plan RunPlan
 	ensureRunRouter := func() error {
 		if routerResolved {
 			return nil
@@ -292,8 +294,28 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		}
 		adminClient = rr.Client
 		applyRunRouter(&plan, rr)
+		resolvedRouter = rr
 		routerResolved = true
 		return nil
+	}
+
+	var err error
+	plan, err = PrepareRun(cmd, cwd)
+	if err != nil {
+		return err
+	}
+
+	if detectWSLFunc() {
+		if err := ensureRunRouter(); err != nil {
+			return err
+		}
+		if shouldPrepareForChildBindHost(cmd, resolvedRouter.ChildHost) {
+			plan, err = prepareRunWithHost(cmd, cwd, resolvedRouter.ChildHost)
+			if err != nil {
+				return err
+			}
+			applyRunRouter(&plan, resolvedRouter)
+		}
 	}
 
 	if plan.Static {
@@ -322,12 +344,6 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 
 	childStdout := newLimitedCapture(32 * 1024)
 	childStderr := newLimitedCapture(32 * 1024)
-
-	if detectWSLFunc() {
-		if err := ensureRunRouter(); err != nil {
-			return err
-		}
-	}
 
 	result, err := startRunnerFunc(ctx, runner.Config{
 		Command:             plan.Command,
@@ -432,16 +448,20 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 	}
 
 	var resolvedRouter runRouter
+	prepareHost := "127.0.0.1"
 	if detectWSLFunc() {
 		rr, err := ensureRunRouter()
 		if err != nil {
 			return err
 		}
 		resolvedRouter = rr
+		if rr.ChildHost != "" {
+			prepareHost = rr.ChildHost
+		}
 	}
 
 	for _, workspacePackage := range packages {
-		plan, err := prepareWorkspacePackageRun(cmd, root, pm, workspacePackage)
+		plan, err := prepareWorkspacePackageRun(cmd, root, pm, workspacePackage, prepareHost)
 		if err != nil {
 			return err
 		}
@@ -506,13 +526,13 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 	return waitForMulti(ctx, items)
 }
 
-func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.PackageManager, workspacePackage project.WorkspacePackage) (RunPlan, error) {
-	port, err := runner.ChooseFreePort()
+func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.PackageManager, workspacePackage project.WorkspacePackage, childHost string) (RunPlan, error) {
+	port, err := chooseFreePortForHostFunc(childHost)
 	if err != nil {
 		return RunPlan{}, err
 	}
-	env := runner.ChildEnv(os.Environ(), port)
-	injected := runner.InjectPortArgs(workspacePackage.Script, port, cmd.PortFlag)
+	env := runner.ChildEnvForHost(os.Environ(), port, childHost)
+	injected := runner.InjectPortArgsForHost(workspacePackage.Script, port, cmd.PortFlag, childHost)
 	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
 	managedPort := len(injected) > 0
 	host, err := project.HostnameForProject(workspacePackage.Dir)
@@ -573,19 +593,23 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 	}
 
 	var resolvedRouter runRouter
+	prepareHost := "127.0.0.1"
 	if detectWSLFunc() {
 		rr, err := ensureRunRouter()
 		if err != nil {
 			return err
 		}
 		resolvedRouter = rr
+		if rr.ChildHost != "" {
+			prepareHost = rr.ChildHost
+		}
 	}
 
 	for _, script := range cmd.Scripts {
 		itemCmd := cmd
 		itemCmd.Script = script
 		itemCmd.Scripts = nil
-		plan, err := PrepareRun(itemCmd, cwd)
+		plan, err := prepareRunWithHost(itemCmd, cwd, prepareHost)
 		if err != nil {
 			return err
 		}
@@ -1056,6 +1080,13 @@ func applyRunRouter(plan *RunPlan, rr runRouter) {
 	}
 }
 
+func shouldPrepareForChildBindHost(cmd cli.Command, childHost string) bool {
+	if cmd.TargetPort != 0 {
+		return false
+	}
+	return childHost != "" && childHost != "127.0.0.1" && !strings.EqualFold(childHost, "localhost")
+}
+
 func withHost(command []string, host string) []string {
 	if host == "" || host == "127.0.0.1" {
 		return command
@@ -1221,7 +1252,7 @@ func isFileTarget(cmd cli.Command) bool {
 	return cmd.Kind == cli.CommandRun && cmd.Script != "" && filepath.Ext(cmd.Script) != ""
 }
 
-func preparePathTarget(cmd cli.Command, cwd string, port int) (RunPlan, error) {
+func preparePathTarget(cmd cli.Command, cwd string, port int, childHost string) (RunPlan, error) {
 	targetPath, info, err := resolvePathTarget(cwd, cmd.TargetPath)
 	if err != nil {
 		return RunPlan{}, err
@@ -1236,7 +1267,7 @@ func preparePathTarget(cmd cli.Command, cwd string, port int) (RunPlan, error) {
 	targetCmd.Scripts = nil
 	targetCmd.ExplicitScript = false
 	targetCmd.TargetPort = port
-	return PrepareRun(targetCmd, targetPath)
+	return prepareRunWithHost(targetCmd, targetPath, childHost)
 }
 
 func resolvePathTarget(cwd, input string) (string, os.FileInfo, error) {

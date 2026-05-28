@@ -67,7 +67,14 @@ func (r *Result) PID() int {
 }
 
 func ChooseFreePort() (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	return ChooseFreePortForHost("127.0.0.1")
+}
+
+func ChooseFreePortForHost(host string) (int, error) {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
 		return 0, err
 	}

@@ -35,6 +35,19 @@ func TestChooseFreePortReturnsFreePort(t *testing.T) {
 	ln.Close()
 }
 
+func TestChooseFreePortForHostReturnsFreePortOnRequestedHost(t *testing.T) {
+	port, err := ChooseFreePortForHost("0.0.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "0.0.0.0:"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatalf("port %d should be free on 0.0.0.0: %v", port, err)
+	}
+	ln.Close()
+}
+
 func TestChildEnvSetsHiddenPortAndHost(t *testing.T) {
 	env := ChildEnv([]string{"PATH=/bin", "PORT=3000"}, 49231)
 

@@ -2871,6 +2871,118 @@ func TestResolveRunRouterBindsAllInterfacesOnlyWhenWSLIPIsRequired(t *testing.T)
 	}
 }
 
+func TestRunWSLBridgeChoosesPackagePortForChildBindHost(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		wslIP:         "172.20.10.2",
+		windowsBinary: true,
+		probeReachable: map[string]bool{
+			"127.0.0.1":   false,
+			"localhost":   false,
+			"172.20.10.2": true,
+		},
+		admin: &recordingAdminClient{},
+	})
+	defer restore()
+
+	oldChooseFreePortForHost := chooseFreePortForHostFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		chooseFreePortForHostFunc = oldChooseFreePortForHost
+		startRunnerFunc = oldStartRunner
+	}()
+
+	var chosenHosts []string
+	chooseFreePortForHostFunc = func(host string) (int, error) {
+		chosenHosts = append(chosenHosts, host)
+		return 5173, nil
+	}
+	var got runner.Config
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		got = cfg
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite"}}`,
+	})
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(chosenHosts) == 0 || chosenHosts[len(chosenHosts)-1] != "0.0.0.0" {
+		t.Fatalf("chosen hosts = %#v, want final selection on 0.0.0.0", chosenHosts)
+	}
+	assertEnv(t, got.Env, "HOST", "0.0.0.0")
+	assertEnv(t, got.Env, "PORT", "5173")
+	wantCommand := []string{"npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"}
+	if !sameStrings(got.Command, wantCommand) {
+		t.Fatalf("command = %#v, want %#v", got.Command, wantCommand)
+	}
+}
+
+func TestRunWorkspaceWSLBridgeChoosesPortsForChildBindHost(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		wslIP:         "172.20.10.2",
+		windowsBinary: true,
+		probeReachable: map[string]bool{
+			"127.0.0.1":   false,
+			"localhost":   false,
+			"172.20.10.2": true,
+		},
+		admin: &recordingAdminClient{},
+	})
+	defer restore()
+
+	oldChooseFreePortForHost := chooseFreePortForHostFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		chooseFreePortForHostFunc = oldChooseFreePortForHost
+		startRunnerFunc = oldStartRunner
+	}()
+
+	var chosenHosts []string
+	nextPort := 5173
+	chooseFreePortForHostFunc = func(host string) (int, error) {
+		chosenHosts = append(chosenHosts, host)
+		port := nextPort
+		nextPort++
+		return port, nil
+	}
+	var configs []runner.Config
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		configs = append(configs, cfg)
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"ctrltube","workspaces":["apps/*"]}`,
+		"pnpm-lock.yaml":           "",
+		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"wrangler dev"}}`,
+	})
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	if !sameStrings(chosenHosts, []string{"0.0.0.0", "0.0.0.0"}) {
+		t.Fatalf("chosen hosts = %#v, want two 0.0.0.0 selections", chosenHosts)
+	}
+	if len(configs) != 2 {
+		t.Fatalf("configs = %#v, want two workspace services", configs)
+	}
+	for _, cfg := range configs {
+		assertEnv(t, cfg.Env, "HOST", "0.0.0.0")
+		command := strings.Join(cfg.Command, " ")
+		if strings.Contains(command, "--host") && !strings.Contains(command, "0.0.0.0") {
+			t.Fatalf("command = %#v, want child bind host when host args are injected", cfg.Command)
+		}
+	}
+}
+
 func TestBridgeTargetCandidatesPreferLoopbackThenLocalhostThenWSLIP(t *testing.T) {
 	got := bridgeTargetCandidates("172.20.10.2")
 	want := []string{"127.0.0.1", "localhost", "172.20.10.2"}
