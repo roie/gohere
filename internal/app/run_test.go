@@ -27,8 +27,17 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if runtime.GOOS == "windows" && isFakeWindowsNPMInvocation() {
+		runFakeWindowsNPM()
+		os.Exit(0)
+	}
 	detectWSLFunc = func() bool { return false }
 	os.Exit(m.Run())
+}
+
+func isFakeWindowsNPMInvocation() bool {
+	return (strings.EqualFold(filepath.Base(os.Args[0]), "npm.exe") ||
+		(len(os.Args) > 1 && os.Args[1] == "run" && os.Getenv("PORT") != ""))
 }
 
 func TestPrepareScriptRun(t *testing.T) {
@@ -125,6 +134,45 @@ func TestPrepareRunDoesNotMarkUnknownScriptManaged(t *testing.T) {
 	}
 	if plan.ManagedPort {
 		t.Fatalf("ManagedPort = true, want false when no port args were injected")
+	}
+}
+
+func TestRunPackageScriptWithWindowsLongPathSmoke(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows PATH smoke")
+	}
+
+	oldDefaultAdminClient := defaultAdminClientFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+	}()
+	admin := &recordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+
+	fakeNPMDir := t.TempDir()
+	installFakeWindowsNPM(t, filepath.Join(fakeNPMDir, "npm.exe"))
+	longPath := windowsLongPathEndingWith(t, fakeNPMDir, 8192)
+	if len(longPath) <= 8191 {
+		t.Fatalf("PATH length = %d, want > 8191", len(longPath))
+	}
+	t.Setenv("PATH", longPath)
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"custom-dev"}}`,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var stdout, stderr strings.Builder
+	if err := Run(ctx, cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, &stdout, &stderr); err != nil {
+		t.Fatalf("Run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if admin.route.Host == "" || admin.route.Target == "" {
+		t.Fatalf("route = %#v, want package script route registered\nstdout=%s\nstderr=%s", admin.route, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "gohere") || !strings.Contains(stdout.String(), ".localhost") {
+		t.Fatalf("stdout = %q, want run success output", stdout.String())
 	}
 }
 
@@ -4505,6 +4553,53 @@ func stubLocalhostHTTPStatus(t *testing.T, status LocalhostHTTPStatus) func() {
 	}
 	return func() {
 		localhostHTTPStatusFunc = oldLocalhostHTTPStatus
+	}
+}
+
+func runFakeWindowsNPM() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "47654"
+	}
+	fmt.Fprintf(os.Stdout, "Local: http://127.0.0.1:%s\n", port)
+	time.Sleep(10 * time.Second)
+}
+
+func installFakeWindowsNPM(t *testing.T, output string) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := os.Open(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	outputFile, err := os.OpenFile(output, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(outputFile, input); err != nil {
+		outputFile.Close()
+		t.Fatal(err)
+	}
+	if err := outputFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func windowsLongPathEndingWith(t *testing.T, last string, minLength int) string {
+	t.Helper()
+	root := t.TempDir()
+	entries := []string{}
+	for i := 0; ; i++ {
+		name := fmt.Sprintf("missing-%03d-%s", i, strings.Repeat("x", 64))
+		entries = append(entries, filepath.Join(root, name))
+		path := strings.Join(append(append([]string(nil), entries...), last), string(os.PathListSeparator))
+		if len(path) >= minLength {
+			return path
+		}
 	}
 }
 
