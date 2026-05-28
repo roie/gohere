@@ -1115,17 +1115,25 @@ func startWindowsService(ctx context.Context, tokenPath string) error {
 	if !exists(stableBinary) {
 		return fmt.Errorf("%s: %w", stableBinary, os.ErrNotExist)
 	}
-	output, err := execCommandContext(ctx, "wslpath", "-w", stableBinary).Output()
+	output, err := execCommandContext(ctx, "wslpath", "-w", stableBinary).CombinedOutput()
 	if err != nil {
-		return err
+		return commandOutputError("wslpath", output, err)
 	}
 	windowsBinary := strings.TrimSpace(string(output))
 	command := "Start-Process -FilePath " + powerShellQuote(windowsBinary) + " -ArgumentList @('service','run')"
-	cmd := execCommandContext(ctx, "powershell.exe", "-NoProfile", "-Command", command)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.Stdin = nil
-	return cmd.Run()
+	output, err = execCommandContext(ctx, "powershell.exe", "-NoProfile", "-Command", command).CombinedOutput()
+	if err != nil {
+		return commandOutputError("powershell.exe", output, err)
+	}
+	return nil
+}
+
+func commandOutputError(command string, output []byte, err error) error {
+	detail := strings.TrimSpace(string(output))
+	if detail == "" {
+		return fmt.Errorf("%s failed: %w", command, err)
+	}
+	return fmt.Errorf("%s failed: %w: %s", command, err, detail)
 }
 
 func powerShellQuote(value string) string {

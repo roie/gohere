@@ -2313,6 +2313,64 @@ func TestStartWindowsServiceUsesTimeout(t *testing.T) {
 	}
 }
 
+func TestStartWindowsServiceIncludesWSLPathOutputOnFailure(t *testing.T) {
+	oldExecCommandContext := execCommandContext
+	defer func() {
+		execCommandContext = oldExecCommandContext
+	}()
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	stableBinary := filepath.Join(dir, "bin", "gohere.exe")
+	if err := os.MkdirAll(filepath.Dir(stableBinary), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokenPath, []byte("token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stableBinary, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	execCommandContext = appHelperExecCommand("GOHERE_APP_HELPER_FAIL_WSLPATH")
+
+	err := startWindowsService(context.Background(), tokenPath)
+	if err == nil {
+		t.Fatal("expected wslpath error")
+	}
+	if !strings.Contains(err.Error(), "wslpath failed") || !strings.Contains(err.Error(), "wslpath exploded") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestStartWindowsServiceIncludesPowerShellOutputOnFailure(t *testing.T) {
+	oldExecCommandContext := execCommandContext
+	defer func() {
+		execCommandContext = oldExecCommandContext
+	}()
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	stableBinary := filepath.Join(dir, "bin", "gohere.exe")
+	if err := os.MkdirAll(filepath.Dir(stableBinary), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokenPath, []byte("token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stableBinary, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	execCommandContext = appHelperExecCommand("GOHERE_APP_HELPER_FAIL_POWERSHELL")
+
+	err := startWindowsService(context.Background(), tokenPath)
+	if err == nil {
+		t.Fatal("expected powershell error")
+	}
+	if !strings.Contains(err.Error(), "powershell.exe failed") || !strings.Contains(err.Error(), "powershell exploded") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
 func TestResolveRunRouterStartsWindowsServiceFromWSLWhenInstalledButStopped(t *testing.T) {
 	startCalls := 0
 	restore := stubBridgeDetection(t, bridgeStub{
@@ -4426,13 +4484,34 @@ func TestAppCommandHelper(t *testing.T) {
 		printAppHelperLocalURL()
 		time.Sleep(10 * time.Second)
 	case "wslpath":
+		if os.Getenv("GOHERE_APP_HELPER_FAIL_WSLPATH") == "1" {
+			fmt.Fprintln(os.Stderr, "wslpath exploded")
+			os.Exit(1)
+		}
 		fmt.Fprintln(os.Stdout, `C:\Users\Jessa\.gohere\bin\gohere.exe`)
 	case "powershell.exe":
+		if os.Getenv("GOHERE_APP_HELPER_FAIL_POWERSHELL") == "1" {
+			fmt.Fprintln(os.Stderr, "powershell exploded")
+			os.Exit(1)
+		}
 		time.Sleep(10 * time.Second)
 	default:
 		os.Exit(2)
 	}
 	os.Exit(0)
+}
+
+func appHelperExecCommand(extraEnv ...string) func(context.Context, string, ...string) *exec.Cmd {
+	return func(ctx context.Context, command string, args ...string) *exec.Cmd {
+		helperArgs := []string{"-test.run=TestAppCommandHelper", "--", command}
+		helperArgs = append(helperArgs, args...)
+		cmd := exec.CommandContext(ctx, os.Args[0], helperArgs...)
+		cmd.Env = append(os.Environ(), "GOHERE_APP_HELPER_PROCESS=1")
+		for _, env := range extraEnv {
+			cmd.Env = append(cmd.Env, env+"=1")
+		}
+		return cmd
+	}
 }
 
 func printAppHelperLocalURL() {
