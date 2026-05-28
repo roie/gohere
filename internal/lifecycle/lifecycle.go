@@ -133,7 +133,7 @@ func StopCWDs(store router.Store, cwds []string) (StopResult, error) {
 	if err != nil {
 		return StopResult{}, err
 	}
-	absCWDs, err := absCWDSet(cwds)
+	absCWDs, err := AbsCWDSet(cwds)
 	if err != nil {
 		return StopResult{}, err
 	}
@@ -141,7 +141,7 @@ func StopCWDs(store router.Store, cwds []string) (StopResult, error) {
 	var result StopResult
 	kept := routes[:0]
 	for _, route := range routes {
-		if routeMatchesAnyCWD(route, absCWDs) {
+		if RouteMatchesAnyCWD(route, absCWDs) {
 			result.MatchedHost = route.Host
 			if !PIDAlive(route.PID) || targetStatus(route.Target) == RouteStatusDead {
 				result.Hosts = append(result.Hosts, route.Host)
@@ -180,7 +180,7 @@ func routeMatchesCWD(route router.Route, absCWD string) bool {
 	return false
 }
 
-func absCWDSet(cwds []string) (map[string]bool, error) {
+func AbsCWDSet(cwds []string) (map[string]bool, error) {
 	absCWDs := make(map[string]bool, len(cwds))
 	for _, cwd := range cwds {
 		if cwd == "" {
@@ -195,7 +195,7 @@ func absCWDSet(cwds []string) (map[string]bool, error) {
 	return absCWDs, nil
 }
 
-func routeMatchesAnyCWD(route router.Route, absCWDs map[string]bool) bool {
+func RouteMatchesAnyCWD(route router.Route, absCWDs map[string]bool) bool {
 	for absCWD := range absCWDs {
 		if routeMatchesCWD(route, absCWD) {
 			return true

@@ -37,6 +37,14 @@ type Running struct {
 	doneOnce    sync.Once
 }
 
+const (
+	proxyReadHeaderTimeout = 5 * time.Second
+	adminReadHeaderTimeout = 5 * time.Second
+	adminReadTimeout       = 10 * time.Second
+	adminWriteTimeout      = 10 * time.Second
+	adminIdleTimeout       = 60 * time.Second
+)
+
 func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 	if cfg.HTTPAddr == "" {
 		cfg.HTTPAddr = "127.0.0.1:80"
@@ -97,15 +105,24 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 	fmt.Fprintf(logFile, "gohere router started http=%s admin=%s\n", httpLn.Addr().String(), adminLn.Addr().String())
 
 	running = &Running{
-		HTTPAddr:    httpLn.Addr().String(),
-		AdminAddr:   adminLn.Addr().String(),
-		httpServer:  &http.Server{Handler: server.HTTPHandler()},
-		adminServer: &http.Server{Handler: server.AdminHandler()},
-		httpLn:      httpLn,
-		adminLn:     adminLn,
-		pidPath:     pidPath,
-		logFile:     logFile,
-		done:        make(chan struct{}),
+		HTTPAddr:  httpLn.Addr().String(),
+		AdminAddr: adminLn.Addr().String(),
+		httpServer: &http.Server{
+			Handler:           server.HTTPHandler(),
+			ReadHeaderTimeout: proxyReadHeaderTimeout,
+		},
+		adminServer: &http.Server{
+			Handler:           server.AdminHandler(),
+			ReadHeaderTimeout: adminReadHeaderTimeout,
+			ReadTimeout:       adminReadTimeout,
+			WriteTimeout:      adminWriteTimeout,
+			IdleTimeout:       adminIdleTimeout,
+		},
+		httpLn:  httpLn,
+		adminLn: adminLn,
+		pidPath: pidPath,
+		logFile: logFile,
+		done:    make(chan struct{}),
 	}
 	go running.httpServer.Serve(httpLn)
 	go running.adminServer.Serve(adminLn)

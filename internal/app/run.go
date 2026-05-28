@@ -799,16 +799,24 @@ func waitForMulti(ctx context.Context, items []multiRunItem) error {
 	if len(items) == 0 {
 		return nil
 	}
-	done := make(chan error, len(items))
+	type waitResult struct {
+		cmd cli.Command
+		err error
+	}
+	done := make(chan waitResult, len(items))
 	for _, item := range items {
+		cmd := item.cmd
 		result := item.result
 		go func() {
-			done <- result.Wait()
+			done <- waitResult{cmd: cmd, err: result.Wait()}
 		}()
 	}
 	select {
-	case err := <-done:
-		return err
+	case result := <-done:
+		if result.err != nil {
+			return formatMultiRunError(result.cmd, errors.Join(runner.ErrProcessFailed, result.err))
+		}
+		return nil
 	case <-ctx.Done():
 		for _, item := range items {
 			if item.result != nil {
@@ -942,10 +950,10 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 			return local()
 		}
 		if err := startWindowsServiceFunc(ctx, tokenPath); err != nil {
-			return local()
+			return runRouter{}, windowsRouterUnavailableError(err)
 		}
 		if err := waitForRouterHealth(ctx, windowsRouterHealthFunc, routerStartTimeout); err != nil {
-			return local()
+			return runRouter{}, windowsRouterUnavailableError(err)
 		}
 	}
 	client := newWindowsAdminClientFunc(token)
@@ -966,7 +974,7 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 	return runRouter{
 		Client:          client,
 		RouteTargetHost: targetHost,
-		ChildHost:       "0.0.0.0",
+		ChildHost:       bridgeChildHost(targetHost),
 		RouteSource:     "wsl",
 		OwnerEnv:        "wsl",
 		RouterLabel:     "Windows",
@@ -994,6 +1002,13 @@ func bridgeTargetCandidates(wslIP string) []string {
 		candidates = append(candidates, wslIP)
 	}
 	return candidates
+}
+
+func bridgeChildHost(targetHost string) string {
+	if targetHost == "127.0.0.1" || strings.EqualFold(targetHost, "localhost") {
+		return "127.0.0.1"
+	}
+	return "0.0.0.0"
 }
 
 func applyRunRouter(plan *RunPlan, rr runRouter) {
@@ -1552,7 +1567,7 @@ func StopWithCommand(ctx context.Context, cmd cli.Command, cwd string, stdout io
 	}
 	if err != nil {
 		if result.MatchedHost != "" {
-			return fmt.Errorf("gohere error: could not stop %s.\nTry:\n  gohere doctor", result.MatchedHost)
+			return fmt.Errorf("gohere error: could not stop %s: %w\nTry:\n  gohere doctor", result.MatchedHost, err)
 		}
 		return fmt.Errorf("gohere error: %w", err)
 	}
@@ -1590,7 +1605,7 @@ func stopExplicitRoutes(ctx context.Context, manager routeManager, cmd cli.Comma
 	}
 	if err != nil {
 		if result.MatchedHost != "" {
-			return fmt.Errorf("gohere error: could not stop %s.\nTry:\n  gohere doctor", result.MatchedHost)
+			return fmt.Errorf("gohere error: could not stop %s: %w\nTry:\n  gohere doctor", result.MatchedHost, err)
 		}
 		return fmt.Errorf("gohere error: %w", err)
 	}
@@ -1666,10 +1681,10 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 			return local(), nil
 		}
 		if err := startWindowsServiceFunc(ctx, tokenPath); err != nil {
-			return local(), nil
+			return routeManager{}, windowsRouterUnavailableError(err)
 		}
 		if err := waitForRouterHealth(ctx, windowsRouterHealthFunc, routerStartTimeout); err != nil {
-			return local(), nil
+			return routeManager{}, windowsRouterUnavailableError(err)
 		}
 	}
 	client := newWindowsAdminClientFunc(token)
@@ -1912,12 +1927,19 @@ func stopAdminRoutes(ctx context.Context, client adminClient, routes []router.Ro
 			lifecycle.StopPID(route.PID)
 			result.Stopped = true
 		}
-		if err := client.DeleteRoute(ctx, route.Host); err != nil {
+		if err := deleteAdminRoute(ctx, client, route.Host); err != nil {
 			return result, err
 		}
 		result.Hosts = append(result.Hosts, route.Host)
 	}
 	return result, nil
+}
+
+func deleteAdminRoute(ctx context.Context, client adminClient, host string) error {
+	if err := client.DeleteRoute(ctx, host); err != nil {
+		return fmt.Errorf("could not delete route %s; route may still appear in gohere list: %w", host, err)
+	}
+	return nil
 }
 
 func stopStoreRoutes(store router.Store, selected []router.Route) (lifecycle.StopResult, error) {
@@ -1988,13 +2010,13 @@ func stopAdminCWDs(ctx context.Context, client adminClient, cwds []string) (life
 		}
 		return lifecycle.StopResult{}, err
 	}
-	absCWDs, err := absCWDSet(cwds)
+	absCWDs, err := lifecycle.AbsCWDSet(cwds)
 	if err != nil {
 		return lifecycle.StopResult{}, err
 	}
 	var result lifecycle.StopResult
 	for _, route := range routes {
-		if !routeMatchesAnyCWD(route, absCWDs) {
+		if !lifecycle.RouteMatchesAnyCWD(route, absCWDs) {
 			continue
 		}
 		if route.OwnerEnv != "" && route.OwnerEnv != runOwnerEnv() {
@@ -2002,7 +2024,7 @@ func stopAdminCWDs(ctx context.Context, client adminClient, cwds []string) (life
 		}
 		result.MatchedHost = route.Host
 		if !lifecycle.PIDAlive(route.PID) || lifecycle.RouteStatuses([]router.Route{route})[0].Status == lifecycle.RouteStatusDead {
-			if err := client.DeleteRoute(ctx, route.Host); err != nil {
+			if err := deleteAdminRoute(ctx, client, route.Host); err != nil {
 				return result, err
 			}
 			result.Hosts = append(result.Hosts, route.Host)
@@ -2010,7 +2032,7 @@ func stopAdminCWDs(ctx context.Context, client adminClient, cwds []string) (life
 		}
 		if lifecycle.RouteProcessVerified(route) {
 			lifecycle.StopPID(route.PID)
-			if err := client.DeleteRoute(ctx, route.Host); err != nil {
+			if err := deleteAdminRoute(ctx, client, route.Host); err != nil {
 				return result, err
 			}
 			result.Hosts = append(result.Hosts, route.Host)
@@ -2022,34 +2044,6 @@ func stopAdminCWDs(ctx context.Context, client adminClient, cwds []string) (life
 		}
 	}
 	return result, nil
-}
-
-func absCWDSet(cwds []string) (map[string]bool, error) {
-	absCWDs := make(map[string]bool, len(cwds))
-	for _, cwd := range cwds {
-		if cwd == "" {
-			continue
-		}
-		absCWD, err := filepath.Abs(cwd)
-		if err != nil {
-			return nil, err
-		}
-		absCWDs[absCWD] = true
-	}
-	return absCWDs, nil
-}
-
-func routeMatchesAnyCWD(route router.Route, absCWDs map[string]bool) bool {
-	for _, cwd := range []string{route.OwnerCWD, route.CWD} {
-		if cwd == "" {
-			continue
-		}
-		absRouteCWD, err := filepath.Abs(cwd)
-		if err == nil && absCWDs[absRouteCWD] {
-			return true
-		}
-	}
-	return false
 }
 
 func printStopResult(stdout io.Writer, host string, stopped bool, warning string) {

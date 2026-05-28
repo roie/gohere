@@ -1761,6 +1761,44 @@ func TestRunMultiScriptFinishedBeforeURLIsErrorAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestRunMultiStartedScriptFailureIncludesScriptName(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return &multiRecordingAdminClient{}, nil
+	}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		helper := "print-port-sleep"
+		if strings.Contains(strings.Join(cfg.Command, " "), "dev:api") {
+			helper = "print-port-fail"
+		}
+		cfg.Command = appHelperCommand(helper)
+		cfg.Env = append(cfg.Env, "GOHERE_APP_HELPER_PROCESS=1")
+		cfg.StartupTimeout = time.Second
+		return runner.Start(ctx, cfg)
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev:web":"vite","dev:api":"vite"}}`,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := cli.Command{Kind: cli.CommandRun, Script: "dev:web", Scripts: []string{"dev:web", "dev:api"}}
+	var stdout, stderr strings.Builder
+	err := Run(ctx, cmd, dir, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	if err.Error() != `gohere error: script "dev:api" failed.` {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
 func TestRunMultiRejectsStaticFileTarget(t *testing.T) {
 	dir := tempProject(t, map[string]string{
 		"package.json": `{"scripts":{"dev:web":"vite"}}`,
@@ -2167,9 +2205,9 @@ func TestRunUsesWindowsRouterBridgeFromWSL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertEnv(t, gotEnv, "HOST", "0.0.0.0")
-	if !strings.Contains(strings.Join(gotCommand, " "), "--host 0.0.0.0") {
-		t.Fatalf("command = %#v, want bridge host injection", gotCommand)
+	assertEnv(t, gotEnv, "HOST", "127.0.0.1")
+	if strings.Contains(strings.Join(gotCommand, " "), "--host 0.0.0.0") {
+		t.Fatalf("command = %#v, should not bind all interfaces when Windows can reach WSL loopback", gotCommand)
 	}
 	if !strings.Contains(stdout.String(), "\ntarget: http://127.0.0.1:5173\n") ||
 		!strings.Contains(stdout.String(), "service: Windows\n") {
@@ -2195,7 +2233,7 @@ func TestResolveRunRouterFallsBackWhenWindowsRouterAbsent(t *testing.T) {
 	}
 }
 
-func TestResolveRunRouterFallsBackWhenWindowsRouterInstalledButCannotStart(t *testing.T) {
+func TestResolveRunRouterReportsWindowsStartFailureWhenInstalled(t *testing.T) {
 	startCalls := 0
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:             true,
@@ -2204,19 +2242,19 @@ func TestResolveRunRouterFallsBackWhenWindowsRouterInstalledButCannotStart(t *te
 		windowsBinary:     true,
 		startWindowsErr:   errors.New("start failed"),
 		startWindowsCalls: &startCalls,
-		localAdmin:        fakeAdminClient{},
 	})
 	defer restore()
 
-	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
-	if err != nil {
-		t.Fatal(err)
+	_, err := resolveRunRouter(context.Background(), io.Discard)
+	if err == nil {
+		t.Fatal("expected Windows start failure")
 	}
 	if startCalls != 1 {
 		t.Fatalf("start calls = %d, want 1", startCalls)
 	}
-	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
-		t.Fatalf("runRouter = %#v", runRouter)
+	if !strings.Contains(err.Error(), "Windows gohere is installed, but WSL could not start its service") ||
+		!strings.Contains(err.Error(), "start failed") {
+		t.Fatalf("error = %q", err.Error())
 	}
 }
 
@@ -2575,10 +2613,40 @@ func TestResolveRunRouterUsesLoopbackForwardingWhenWSLIPUnreachable(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runRouter.RouteTargetHost != "127.0.0.1" || runRouter.ChildHost != "0.0.0.0" || runRouter.RouterLabel != "Windows" {
+	if runRouter.RouteTargetHost != "127.0.0.1" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouterLabel != "Windows" {
 		t.Fatalf("runRouter = %#v", runRouter)
 	}
 	wantProbes := []string{"127.0.0.1"}
+	if !sameStrings(probes, wantProbes) {
+		t.Fatalf("probes = %#v, want %#v", probes, wantProbes)
+	}
+}
+
+func TestResolveRunRouterBindsAllInterfacesOnlyWhenWSLIPIsRequired(t *testing.T) {
+	var probes []string
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		wslIP:         "172.20.10.2",
+		windowsBinary: true,
+		probeReachable: map[string]bool{
+			"127.0.0.1":   false,
+			"localhost":   false,
+			"172.20.10.2": true,
+		},
+		probeHosts: &probes,
+		admin:      &recordingAdminClient{},
+	})
+	defer restore()
+
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runRouter.RouteTargetHost != "172.20.10.2" || runRouter.ChildHost != "0.0.0.0" || runRouter.RouterLabel != "Windows" {
+		t.Fatalf("runRouter = %#v", runRouter)
+	}
+	wantProbes := []string{"127.0.0.1", "localhost", "172.20.10.2"}
 	if !sameStrings(probes, wantProbes) {
 		t.Fatalf("probes = %#v, want %#v", probes, wantProbes)
 	}
@@ -3091,7 +3159,7 @@ func TestRouteManagerFallsBackWhenOnlyWSLLocalRouterLooksHealthy(t *testing.T) {
 	}
 }
 
-func TestRouteManagerFallsBackWhenWindowsRouterInstalledButCannotStart(t *testing.T) {
+func TestRouteManagerReportsWindowsStartFailureWhenInstalled(t *testing.T) {
 	startCalls := 0
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:             true,
@@ -3100,19 +3168,19 @@ func TestRouteManagerFallsBackWhenWindowsRouterInstalledButCannotStart(t *testin
 		windowsBinary:     true,
 		startWindowsErr:   errors.New("start failed"),
 		startWindowsCalls: &startCalls,
-		localAdmin:        fakeAdminClient{},
 	})
 	defer restore()
 
-	manager, err := resolveRouteManager(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	_, err := resolveRouteManager(context.Background())
+	if err == nil {
+		t.Fatal("expected Windows start failure")
 	}
 	if startCalls != 1 {
 		t.Fatalf("start calls = %d, want 1", startCalls)
 	}
-	if manager.Client == nil || !manager.RouterReady {
-		t.Fatalf("manager = %#v, want local ready router manager", manager)
+	if !strings.Contains(err.Error(), "Windows gohere is installed, but WSL could not start its service") ||
+		!strings.Contains(err.Error(), "start failed") {
+		t.Fatalf("error = %q", err.Error())
 	}
 }
 
@@ -3298,6 +3366,47 @@ func TestStopTargetHostWithoutLocalhostStopsOneRoute(t *testing.T) {
 	}
 	if out.String() != "Stopped web.ctrltube.localhost.\n" {
 		t.Fatalf("stop output = %q", out.String())
+	}
+}
+
+func TestStopTargetDeleteFailureIncludesRouteCleanupDetails(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+	}()
+
+	admin := &multiRecordingAdminClient{
+		routes: []router.Route{{
+			Host: "web.ctrltube.localhost", Name: "web", ProjectName: "ctrltube",
+		}},
+		deleteErr: errors.New("delete failed"),
+	}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+
+	var out strings.Builder
+	cmd := cli.Command{Kind: cli.CommandStop, StopTarget: "web"}
+	err := StopWithCommand(t.Context(), cmd, t.TempDir(), &out)
+	if err == nil {
+		t.Fatal("expected delete failure")
+	}
+	for _, want := range []string{
+		"could not stop web.ctrltube.localhost",
+		"could not delete route web.ctrltube.localhost",
+		"route may still appear in gohere list",
+		"delete failed",
+		"gohere doctor",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want to contain %q", err.Error(), want)
+		}
+	}
+	if !sameStrings(admin.deletedHosts(), []string{"web.ctrltube.localhost"}) {
+		t.Fatalf("deleted hosts = %#v, want failed delete attempt", admin.deletedHosts())
+	}
+	if out.String() != "" {
+		t.Fatalf("stdout = %q, want empty", out.String())
 	}
 }
 
@@ -3891,9 +4000,10 @@ func (c routeStatusesUnsupportedClient) DeleteRoute(context.Context, string) err
 }
 
 type multiRecordingAdminClient struct {
-	mu      sync.Mutex
-	routes  []router.Route
-	deleted []string
+	mu        sync.Mutex
+	routes    []router.Route
+	deleted   []string
+	deleteErr error
 }
 
 func (c *multiRecordingAdminClient) Health(context.Context) error {
@@ -3917,7 +4027,7 @@ func (c *multiRecordingAdminClient) DeleteRoute(ctx context.Context, host string
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.deleted = append(c.deleted, host)
-	return nil
+	return c.deleteErr
 }
 
 func (c *multiRecordingAdminClient) upsertedHosts() []string {
@@ -4183,6 +4293,10 @@ func envValue(env []string, key string) (string, bool) {
 	return "", false
 }
 
+func appHelperCommand(command string) []string {
+	return []string{os.Args[0], "-test.run=TestAppCommandHelper", "--", command}
+}
+
 type serviceDiscoveryTestEntry struct {
 	Key     string `json:"key"`
 	URL     string `json:"url"`
@@ -4246,6 +4360,13 @@ func TestAppCommandHelper(t *testing.T) {
 	}
 
 	switch args[1] {
+	case "print-port-fail":
+		printAppHelperLocalURL()
+		time.Sleep(500 * time.Millisecond)
+		os.Exit(1)
+	case "print-port-sleep":
+		printAppHelperLocalURL()
+		time.Sleep(10 * time.Second)
 	case "wslpath":
 		fmt.Fprintln(os.Stdout, `C:\Users\Jessa\.gohere\bin\gohere.exe`)
 	case "powershell.exe":
@@ -4254,6 +4375,14 @@ func TestAppCommandHelper(t *testing.T) {
 		os.Exit(2)
 	}
 	os.Exit(0)
+}
+
+func printAppHelperLocalURL() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "47654"
+	}
+	fmt.Fprintf(os.Stdout, "Local: http://127.0.0.1:%s\n", port)
 }
 
 func itoa(n int) string {

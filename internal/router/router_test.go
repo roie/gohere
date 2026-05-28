@@ -528,6 +528,32 @@ func TestProxyWebSocketUpstreamErrorDoesNotReturnHTMLPage(t *testing.T) {
 	}
 }
 
+func TestProxyHTTPUpstreamErrorDoesNotReturnMissingRoutePage(t *testing.T) {
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{
+		Host:   "web.localhost",
+		Target: "http://127.0.0.1:1",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://web.localhost/", nil)
+	req.Host = "web.localhost"
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("upstream error status = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "No gohere route is running") {
+		t.Fatalf("upstream error returned missing route page: %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "gohere upstream unavailable") {
+		t.Fatalf("upstream error body = %q", rec.Body.String())
+	}
+}
+
 func TestMissingRoutePageStripsIPv6Port(t *testing.T) {
 	rec := httptest.NewRecorder()
 
@@ -551,6 +577,23 @@ func TestAdminAPIProbeTargetRejectsPublicHosts(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST /probe-target = %d body %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminAPIRejectsRouteWithPublicTarget(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+
+	body := strings.NewReader(`{"host":"app.localhost","target":"https://example.com"}`)
+	req := httptest.NewRequest(http.MethodPost, "/routes", body)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /routes = %d body %q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "target must be local") {
+		t.Fatalf("POST /routes body = %q, want local target error", rec.Body.String())
 	}
 }
 
@@ -968,6 +1011,36 @@ func TestStartWritesRouterPID(t *testing.T) {
 	}
 	if strings.TrimSpace(string(data)) == "" {
 		t.Fatalf("router.pid is empty")
+	}
+}
+
+func TestStartConfiguresHTTPServerTimeouts(t *testing.T) {
+	running, err := Start(t.Context(), StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+
+	if running.httpServer.ReadHeaderTimeout == 0 {
+		t.Fatalf("http server timeouts = readHeader:%s read:%s write:%s idle:%s",
+			running.httpServer.ReadHeaderTimeout,
+			running.httpServer.ReadTimeout,
+			running.httpServer.WriteTimeout,
+			running.httpServer.IdleTimeout)
+	}
+	if running.adminServer.ReadHeaderTimeout == 0 ||
+		running.adminServer.ReadTimeout == 0 ||
+		running.adminServer.WriteTimeout == 0 ||
+		running.adminServer.IdleTimeout == 0 {
+		t.Fatalf("admin server timeouts = readHeader:%s read:%s write:%s idle:%s",
+			running.adminServer.ReadHeaderTimeout,
+			running.adminServer.ReadTimeout,
+			running.adminServer.WriteTimeout,
+			running.adminServer.IdleTimeout)
 	}
 }
 

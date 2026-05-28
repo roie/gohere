@@ -340,13 +340,17 @@ func (s *Server) HTTPHandler() http.Handler {
 			http.Error(w, "invalid gohere route target", http.StatusBadGateway)
 			return
 		}
+		if err := validateRouteTarget(target); err != nil {
+			http.Error(w, "invalid gohere route target", http.StatusBadGateway)
+			return
+		}
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 			if isUpgradeRequest(r) {
 				http.Error(w, "gohere websocket upstream unavailable", http.StatusBadGateway)
 				return
 			}
-			missingRoutePage(w, r.Host)
+			http.Error(w, "gohere upstream unavailable", http.StatusBadGateway)
 		}
 		proxy.ServeHTTP(w, r)
 	})
@@ -380,6 +384,15 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		if route.Host == "" || route.Target == "" {
 			http.Error(w, "host and target are required", http.StatusBadRequest)
+			return
+		}
+		target, err := url.Parse(route.Target)
+		if err != nil {
+			http.Error(w, "target must be an absolute URL", http.StatusBadRequest)
+			return
+		}
+		if err := validateRouteTarget(target); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		s.storeMu.Lock()
@@ -520,6 +533,19 @@ func allowedProbeTarget(target *url.URL) bool {
 		return false
 	}
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
+func validateRouteTarget(target *url.URL) error {
+	if target.Scheme == "" || target.Host == "" {
+		return errors.New("target must be an absolute URL")
+	}
+	if target.Scheme != "http" && target.Scheme != "https" {
+		return errors.New("target must use http or https")
+	}
+	if !allowedProbeTarget(target) {
+		return errors.New("target must be local")
+	}
+	return nil
 }
 
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {

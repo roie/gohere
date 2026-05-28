@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -412,6 +413,9 @@ func DiscoverWorkspacePackageDirs(root string) ([]WorkspacePackage, bool, error)
 }
 
 func workspacePackageMatches(root, pattern string) ([]WorkspacePackage, error) {
+	if strings.Contains(pattern, "**") {
+		return workspacePackageGlobstarMatches(root, pattern)
+	}
 	matches, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(pattern)))
 	if err != nil {
 		return nil, err
@@ -436,6 +440,78 @@ func workspacePackageMatches(root, pattern string) ([]WorkspacePackage, error) {
 		})
 	}
 	return packages, nil
+}
+
+func workspacePackageGlobstarMatches(root, pattern string) ([]WorkspacePackage, error) {
+	pattern = filepath.ToSlash(filepath.Clean(filepath.FromSlash(pattern)))
+	var packages []WorkspacePackage
+	err := filepath.WalkDir(root, func(filePath string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || entry.Name() != "package.json" {
+			return nil
+		}
+		packagePath := filepath.Clean(filePath)
+		dir := filepath.Dir(packagePath)
+		relDir, err := filepath.Rel(root, dir)
+		if err != nil {
+			return err
+		}
+		relPackage, err := filepath.Rel(root, packagePath)
+		if err != nil {
+			return err
+		}
+		relDir = filepath.ToSlash(relDir)
+		relPackage = filepath.ToSlash(relPackage)
+		if !matchGlobstarPattern(pattern, relDir) && !matchGlobstarPattern(pattern, relPackage) {
+			return nil
+		}
+		packages = append(packages, WorkspacePackage{
+			Dir:         filepath.Clean(dir),
+			PackagePath: packagePath,
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return packages, nil
+}
+
+func matchGlobstarPattern(pattern, value string) bool {
+	pattern = strings.Trim(pattern, "/")
+	value = strings.Trim(value, "/")
+	patternParts := splitPathPattern(pattern)
+	valueParts := splitPathPattern(value)
+	return matchGlobstarParts(patternParts, valueParts)
+}
+
+func splitPathPattern(value string) []string {
+	if value == "" || value == "." {
+		return nil
+	}
+	return strings.Split(value, "/")
+}
+
+func matchGlobstarParts(pattern, value []string) bool {
+	if len(pattern) == 0 {
+		return len(value) == 0
+	}
+	if pattern[0] == "**" {
+		if matchGlobstarParts(pattern[1:], value) {
+			return true
+		}
+		return len(value) > 0 && matchGlobstarParts(pattern, value[1:])
+	}
+	if len(value) == 0 {
+		return false
+	}
+	ok, err := path.Match(pattern[0], value[0])
+	if err != nil || !ok {
+		return false
+	}
+	return matchGlobstarParts(pattern[1:], value[1:])
 }
 
 func workspacePatterns(root string) ([]string, bool, error) {

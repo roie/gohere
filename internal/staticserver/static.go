@@ -152,17 +152,46 @@ func serveLiveHTML(w http.ResponseWriter, r *http.Request, fullPath string, info
 }
 
 func injectLiveClient(data []byte) []byte {
-	body := string(data)
-	lower := strings.ToLower(body)
-	index := strings.LastIndex(lower, "</body>")
+	index := lastIndexASCIIFold(data, []byte("</body>"))
 	if index < 0 {
 		return append(append([]byte(nil), data...), []byte(liveClientScript)...)
 	}
 	out := make([]byte, 0, len(data)+len(liveClientScript))
-	out = append(out, body[:index]...)
+	out = append(out, data[:index]...)
 	out = append(out, liveClientScript...)
-	out = append(out, body[index:]...)
+	out = append(out, data[index:]...)
 	return out
+}
+
+func lastIndexASCIIFold(data, needle []byte) int {
+	if len(needle) == 0 {
+		return len(data)
+	}
+	for i := len(data) - len(needle); i >= 0; i-- {
+		if equalASCIIFold(data[i:i+len(needle)], needle) {
+			return i
+		}
+	}
+	return -1
+}
+
+func equalASCIIFold(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if lowerASCII(a[i]) != lowerASCII(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func lowerASCII(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
 }
 
 type liveBroker struct {

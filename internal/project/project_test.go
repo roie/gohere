@@ -287,6 +287,28 @@ func TestDiscoverWorkspacePackagesFromPNPMWorkspaceInlineListAndComments(t *test
 	}
 }
 
+func TestDiscoverWorkspacePackagesSupportsGlobstarPatterns(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json":                        `{"name":"repo"}`,
+		"pnpm-workspace.yaml":                 "packages:\n  - 'packages/**'\n",
+		"packages/tools/api/package.json":     `{"name":"api","scripts":{"dev":"node index.js"}}`,
+		"packages/tools/worker/package.json":  `{"name":"worker","scripts":{"dev":"node index.js"}}`,
+		"packages/tools/readme.md":            "not a package",
+		"packages/tools/ignored/package.json": `{"name":"ignored","scripts":{"build":"tsc"}}`,
+	})
+
+	packages, found, err := DiscoverWorkspacePackages(root, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected workspace root")
+	}
+	if len(packages) != 2 || packages[0].ShortName != "api" || packages[1].ShortName != "worker" {
+		t.Fatalf("packages = %#v, want nested api and worker packages", packages)
+	}
+}
+
 func TestDiscoverWorkspacePackagesExcludesRootPackage(t *testing.T) {
 	root := tempProject(t, map[string]string{
 		"package.json":          `{"name":"repo","workspaces":[".","apps/*"],"scripts":{"dev":"pnpm --parallel --filter web dev"}}`,

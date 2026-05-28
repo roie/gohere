@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestDetectStaticProjectRequiresIndexHTML(t *testing.T) {
@@ -93,6 +94,19 @@ func TestLiveHandlerInjectsReloadClientIntoHTML(t *testing.T) {
 	}
 	if !strings.Contains(body, "</script></body>") {
 		t.Fatalf("live client should be injected before body close: %q", body)
+	}
+}
+
+func TestInjectLiveClientPreservesUTF8BeforeBodyClose(t *testing.T) {
+	input := []byte("<html><body>İ</body></html>")
+	want := "<html><body>İ" + liveClientScript + "</body></html>"
+
+	got := injectLiveClient(input)
+	if !utf8.Valid(got) {
+		t.Fatalf("injected HTML is not valid UTF-8: %q", string(got))
+	}
+	if string(got) != want {
+		t.Fatalf("injected HTML = %q, want %q", string(got), want)
 	}
 }
 
