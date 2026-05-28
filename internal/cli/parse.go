@@ -28,6 +28,7 @@ type Command struct {
 	Kind           CommandKind
 	Script         string
 	Scripts        []string
+	TargetPath     string
 	ExplicitScript bool
 	Raw            []string
 	Verbose        bool
@@ -52,8 +53,15 @@ func Parse(args []string) (Command, error) {
 		arg := rest[0]
 		rest = rest[1:]
 
+		if cmd.TargetPath != "" && arg != "--" && !strings.HasPrefix(arg, "-") {
+			return Command{}, pathTargetCombinationError()
+		}
+
 		switch arg {
 		case "--":
+			if cmd.TargetPath != "" {
+				return Command{}, pathTargetCombinationError()
+			}
 			if len(rest) == 0 {
 				return Command{}, parseError("raw command after -- is required")
 			}
@@ -169,6 +177,15 @@ func Parse(args []string) (Command, error) {
 			if strings.HasPrefix(arg, "-") {
 				return Command{}, unknownOptionError(arg)
 			}
+			if isExplicitPathArg(arg) {
+				if sawScript || len(cmd.Scripts) > 0 || cmd.TargetPath != "" {
+					return Command{}, pathTargetCombinationError()
+				}
+				cmd.Kind = CommandRun
+				cmd.Script = ""
+				cmd.TargetPath = arg
+				continue
+			}
 			cmd.Kind = CommandRun
 			cmd.ExplicitScript = true
 			if cmd.Script == "dev" && len(cmd.Scripts) == 0 {
@@ -186,6 +203,9 @@ func Parse(args []string) (Command, error) {
 }
 
 func validateMultiRun(cmd Command) error {
+	if cmd.TargetPath != "" && len(cmd.Scripts) > 0 {
+		return pathTargetCombinationError()
+	}
 	if cmd.Kind != CommandRun || len(cmd.Scripts) <= 1 {
 		return nil
 	}
@@ -196,6 +216,33 @@ func validateMultiRun(cmd Command) error {
 		return parseError("--target can only be used with one project")
 	}
 	return nil
+}
+
+func isExplicitPathArg(arg string) bool {
+	if arg == "." || arg == ".." {
+		return true
+	}
+	return strings.HasPrefix(arg, "./") ||
+		strings.HasPrefix(arg, "../") ||
+		strings.HasPrefix(arg, `/`) ||
+		strings.HasPrefix(arg, `.\\`) ||
+		strings.HasPrefix(arg, `..\\`) ||
+		isWindowsDrivePath(arg)
+}
+
+func isWindowsDrivePath(arg string) bool {
+	if len(arg) < 3 {
+		return false
+	}
+	drive := arg[0]
+	if !((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) {
+		return false
+	}
+	return arg[1] == ':' && (arg[2] == '\\' || arg[2] == '/')
+}
+
+func pathTargetCombinationError() error {
+	return parseError("Path targets cannot be combined with scripts yet.")
 }
 
 func parseStop(args []string) (Command, error) {

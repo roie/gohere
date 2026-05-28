@@ -142,6 +142,9 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 		})
 	}
 
+	if cmd.TargetPath != "" {
+		return preparePathTarget(cmd, cwd, port)
+	}
 	if isFileTarget(cmd) {
 		return prepareStaticFileTarget(cmd, cwd, port)
 	}
@@ -215,6 +218,25 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if cmd.Kind == cli.CommandRun && cmd.TargetPath != "" {
+		targetPath, info, err := resolvePathTarget(cwd, cmd.TargetPath)
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			workspaceCmd := cmd
+			workspaceCmd.TargetPath = ""
+			workspaceCmd.Script = "dev"
+			workspaceCmd.Scripts = nil
+			workspaceCmd.ExplicitScript = false
+			if shouldRunWorkspace(workspaceCmd) {
+				ran, err := runWorkspaceIfAvailable(ctx, workspaceCmd, targetPath, stdout, stderr)
+				if err != nil || ran {
+					return err
+				}
+			}
+		}
+	}
 	if shouldRunWorkspace(cmd) {
 		ran, err := runWorkspaceIfAvailable(ctx, cmd, cwd, stdout, stderr)
 		if err != nil || ran {
@@ -276,6 +298,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 
 	result, err := startRunnerFunc(ctx, runner.Config{
 		Command:             plan.Command,
+		Dir:                 runnerDirForRun(cmd, plan),
 		Env:                 plan.Env,
 		ChosenPort:          plan.Port,
 		RequireDetectedPort: plan.RequireDetectedPort,
@@ -306,6 +329,13 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	}
 	defer cleanup()
 	return result.Wait()
+}
+
+func runnerDirForRun(cmd cli.Command, plan RunPlan) string {
+	if cmd.Kind == cli.CommandRun && cmd.TargetPath != "" {
+		return plan.CWD
+	}
+	return ""
 }
 
 func shouldRunWorkspace(cmd cli.Command) bool {
@@ -956,8 +986,13 @@ func toRegisteredRoutes(routes []router.Route) []registeredRoute {
 
 func runSuccessOutput(cmd cli.Command, host, urlPath string) string {
 	label := "gohere"
-	if cmd.Kind == cli.CommandRun && cmd.Script != "" && (cmd.Script != "dev" || urlPath != "") {
-		label += " " + cmd.Script
+	if cmd.Kind == cli.CommandRun {
+		switch {
+		case cmd.TargetPath != "":
+			label += " " + cmd.TargetPath
+		case cmd.Script != "" && (cmd.Script != "dev" || urlPath != ""):
+			label += " " + cmd.Script
+		}
 	}
 	return fmt.Sprintf("%s \u2192 http://%s%s\n", label, host, escapedURLPath(urlPath))
 }
@@ -968,6 +1003,43 @@ func publicRouteURL(host, urlPath string) string {
 
 func isFileTarget(cmd cli.Command) bool {
 	return cmd.Kind == cli.CommandRun && cmd.Script != "" && filepath.Ext(cmd.Script) != ""
+}
+
+func preparePathTarget(cmd cli.Command, cwd string, port int) (RunPlan, error) {
+	targetPath, info, err := resolvePathTarget(cwd, cmd.TargetPath)
+	if err != nil {
+		return RunPlan{}, err
+	}
+	if !info.IsDir() {
+		return prepareStaticFilePathTarget(cmd, targetPath, port)
+	}
+
+	targetCmd := cmd
+	targetCmd.TargetPath = ""
+	targetCmd.Script = "dev"
+	targetCmd.Scripts = nil
+	targetCmd.ExplicitScript = false
+	targetCmd.TargetPort = port
+	return PrepareRun(targetCmd, targetPath)
+}
+
+func resolvePathTarget(cwd, input string) (string, os.FileInfo, error) {
+	cleanPath := filepath.Clean(input)
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = filepath.Join(cwd, cleanPath)
+	}
+	targetPath, err := filepath.Abs(cleanPath)
+	if err != nil {
+		return "", nil, err
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil, fmt.Errorf("path not found: %s", input)
+		}
+		return "", nil, err
+	}
+	return targetPath, info, nil
 }
 
 func prepareStaticFileTarget(cmd cli.Command, cwd string, port int) (RunPlan, error) {
@@ -982,16 +1054,25 @@ func prepareStaticFileTarget(cmd cli.Command, cwd string, port int) (RunPlan, er
 		return RunPlan{}, fmt.Errorf("File not found: %s", cmd.Script)
 	}
 
-	host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
+	return prepareStaticFilePlan(cmd, cwd, "/"+filepath.ToSlash(cleanPath), port)
+}
+
+func prepareStaticFilePathTarget(cmd cli.Command, targetPath string, port int) (RunPlan, error) {
+	staticRoot := filepath.Dir(targetPath)
+	return prepareStaticFilePlan(cmd, staticRoot, "/"+filepath.ToSlash(filepath.Base(targetPath)), port)
+}
+
+func prepareStaticFilePlan(cmd cli.Command, root, urlPath string, port int) (RunPlan, error) {
+	host := project.NormalizeHostnameName(filepath.Base(root)) + ".localhost"
 	return applyAsAlias(cmd, RunPlan{
 		Port:        port,
 		Host:        host,
 		Name:        strings.TrimSuffix(host, ".localhost"),
-		CWD:         cwd,
-		ProjectRoot: cwd,
-		ProjectName: project.NormalizeHostnameName(filepath.Base(cwd)),
+		CWD:         root,
+		ProjectRoot: root,
+		ProjectName: project.NormalizeHostnameName(filepath.Base(root)),
 		Static:      true,
-		URLPath:     "/" + filepath.ToSlash(cleanPath),
+		URLPath:     urlPath,
 	})
 }
 
@@ -1036,6 +1117,9 @@ func runFinishedOutput(cmd cli.Command) string {
 }
 
 func runName(cmd cli.Command) string {
+	if cmd.Kind == cli.CommandRun && cmd.TargetPath != "" {
+		return cmd.TargetPath
+	}
 	if cmd.Kind == cli.CommandRun && cmd.Script != "" {
 		return cmd.Script
 	}

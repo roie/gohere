@@ -115,6 +115,47 @@ func TestParseFileTargetRun(t *testing.T) {
 	}
 }
 
+func TestParseExplicitPathTarget(t *testing.T) {
+	tests := []string{".", "..", "./dist", "../site", "/tmp/site", `.\\dist`, `..\\site`, `C:\\site`}
+	for _, arg := range tests {
+		t.Run(arg, func(t *testing.T) {
+			cmd, err := Parse([]string{"gohere", arg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cmd.Kind != CommandRun || cmd.TargetPath != arg || cmd.Script != "" {
+				t.Fatalf("Parse path target = %#v, want TargetPath %q", cmd, arg)
+			}
+		})
+	}
+}
+
+func TestParseNonExplicitPathsRemainScripts(t *testing.T) {
+	tests := []string{"dist", "dist/", "apps/web", "dev:web"}
+	for _, arg := range tests {
+		t.Run(arg, func(t *testing.T) {
+			cmd, err := Parse([]string{"gohere", arg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cmd.Kind != CommandRun || cmd.Script != arg || cmd.TargetPath != "" {
+				t.Fatalf("Parse script = %#v, want script %q", cmd, arg)
+			}
+		})
+	}
+}
+
+func TestParsePathTargetRejectsExtraScripts(t *testing.T) {
+	_, err := Parse([]string{"gohere", "./apps/web", "dev:api"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: Path targets cannot be combined with scripts yet."
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestParseRawCommand(t *testing.T) {
 	cmd, err := Parse([]string{"gohere", "--", "npm", "run", "dev"})
 	if err != nil {

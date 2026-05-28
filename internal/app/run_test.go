@@ -396,6 +396,98 @@ func TestPrepareStaticFileTargetErrors(t *testing.T) {
 	}
 }
 
+func TestPrepareExplicitStaticDirectoryTarget(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"package.json":      `{"scripts":{"dist":"vite"}}`,
+		"dist/index.html":   "<h1>Build</h1>",
+		"dist/about.html":   "<h1>About</h1>",
+		"dist/assets.css":   "body{}",
+		"public/index.html": "<h1>Public</h1>",
+	})
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, TargetPath: "./dist", TargetPort: 5173}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCWD := filepath.Join(dir, "dist")
+	if !plan.Static || plan.CWD != wantCWD || plan.ProjectRoot != wantCWD {
+		t.Fatalf("plan = %#v, want static cwd/project root %q", plan, wantCWD)
+	}
+	if plan.Host != "dist.localhost" || plan.Name != "dist" || plan.URLPath != "" {
+		t.Fatalf("host/name/path = %q/%q/%q, want dist.localhost/dist/empty", plan.Host, plan.Name, plan.URLPath)
+	}
+}
+
+func TestPrepareExplicitPathTargetMissingDoesNotFallBackToScript(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dist":"vite"}}`,
+	})
+
+	_, err := PrepareRun(cli.Command{Kind: cli.CommandRun, TargetPath: "./dist", TargetPort: 5173}, dir)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "path not found: ./dist"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestPrepareNonExplicitSlashArgumentRunsScript(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"apps/web":"vite"}}`,
+	})
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "apps/web", ExplicitScript: true, TargetPort: 5173}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Static {
+		t.Fatalf("plan = %#v, want package script", plan)
+	}
+	if command := strings.Join(plan.Command, " "); !strings.Contains(command, "npm run apps/web") {
+		t.Fatalf("command = %q, want slash script", command)
+	}
+}
+
+func TestPrepareExplicitPackageDirectoryTarget(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json":          `{"name":"ctrltube","workspaces":["apps/*"]}`,
+		"apps/web/package.json": `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+	})
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, TargetPath: "./apps/web", TargetPort: 5173}, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCWD := filepath.Join(root, "apps", "web")
+	if plan.Static || plan.CWD != wantCWD || plan.ProjectRoot != wantCWD {
+		t.Fatalf("plan = %#v, want package cwd/project root %q", plan, wantCWD)
+	}
+	if plan.Host != "web.ctrltube.localhost" || plan.Name != "web.ctrltube" || plan.ProjectName != "web" {
+		t.Fatalf("host/name/project = %q/%q/%q, want web.ctrltube.localhost/web.ctrltube/web", plan.Host, plan.Name, plan.ProjectName)
+	}
+	if command := strings.Join(plan.Command, " "); !strings.Contains(command, "npm run dev") {
+		t.Fatalf("command = %q, want package dev command", command)
+	}
+}
+
+func TestPrepareExistingNestedStaticFileTargetStillWorks(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"index.html":            "<h1>Home</h1>",
+		"apps/web/about.html":   "<h1>About</h1>",
+		"apps/web/package.json": `{"scripts":{"dev":"vite"}}`,
+	})
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "apps/web/about.html", TargetPort: 5173}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Static || plan.CWD != dir || plan.URLPath != "/apps/web/about.html" {
+		t.Fatalf("plan = %#v, want static file from original cwd", plan)
+	}
+}
+
 func TestResolveRouteHostAvoidsActiveConflict(t *testing.T) {
 	plan := RunPlan{
 		Host: "myproject.localhost",
@@ -431,6 +523,14 @@ func TestRunSuccessOutputLabelsExplicitScript(t *testing.T) {
 func TestRunSuccessOutputLabelsStaticFileTarget(t *testing.T) {
 	got := runSuccessOutput(cli.Command{Kind: cli.CommandRun, Script: "pages/about.html"}, "eventca.localhost", "/pages/about.html")
 	want := "gohere pages/about.html \u2192 http://eventca.localhost/pages/about.html\n"
+	if got != want {
+		t.Fatalf("runSuccessOutput() = %q, want %q", got, want)
+	}
+}
+
+func TestRunSuccessOutputLabelsExplicitPathTarget(t *testing.T) {
+	got := runSuccessOutput(cli.Command{Kind: cli.CommandRun, TargetPath: "./dist"}, "dist.localhost", "")
+	want := "gohere ./dist \u2192 http://dist.localhost\n"
 	if got != want {
 		t.Fatalf("runSuccessOutput() = %q, want %q", got, want)
 	}
@@ -1055,6 +1155,103 @@ func TestRunImplicitDevAtWorkspaceRootLaunchesWorkspacePackages(t *testing.T) {
 	}
 	wantOut := "gohere web \u2192 http://web.ctrltube.localhost\n" +
 		"gohere worker \u2192 http://worker.ctrltube.localhost\n"
+	if stdout.String() != wantOut || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
+	}
+}
+
+func TestRunExplicitPathToWorkspaceRootBehavesLikeRunningThere(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	var commands []string
+	var dirs []string
+	ports := []int{5101, 5102}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		commands = append(commands, strings.Join(cfg.Command, " "))
+		dirs = append(dirs, cfg.Dir)
+		port := ports[0]
+		ports = ports[1:]
+		return &runner.Result{Port: port}, nil
+	}
+
+	parent := tempProject(t, map[string]string{
+		"repo/package.json":             `{"name":"ctrltube","workspaces":["apps/*"],"scripts":{"dev":"pnpm --parallel --filter @ctrltube/web dev"}}`,
+		"repo/pnpm-lock.yaml":           "",
+		"repo/apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+		"repo/apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"wrangler dev"}}`,
+	})
+	repo := filepath.Join(parent, "repo")
+
+	var stdout, stderr strings.Builder
+	cmd := cli.Command{Kind: cli.CommandRun, TargetPath: "./repo"}
+	if err := Run(context.Background(), cmd, parent, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	wantHosts := []string{"web.ctrltube.localhost", "worker.ctrltube.localhost"}
+	if !sameStrings(admin.upsertedHosts(), wantHosts) {
+		t.Fatalf("upserted hosts = %#v, want %#v", admin.upsertedHosts(), wantHosts)
+	}
+	wantDirs := []string{filepath.Join(repo, "apps", "web"), filepath.Join(repo, "apps", "worker")}
+	if !sameStrings(dirs, wantDirs) {
+		t.Fatalf("runner dirs = %#v, want %#v", dirs, wantDirs)
+	}
+	if len(commands) != 2 || !strings.Contains(commands[0], "pnpm run dev") || !strings.Contains(commands[1], "pnpm run dev") {
+		t.Fatalf("commands = %#v, want workspace package dev commands", commands)
+	}
+	wantOut := "gohere web \u2192 http://web.ctrltube.localhost\n" +
+		"gohere worker \u2192 http://worker.ctrltube.localhost\n"
+	if stdout.String() != wantOut || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
+	}
+}
+
+func TestRunExplicitPackageDirectoryUsesTargetCWDAndLabelsPath(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	var dir string
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		dir = cfg.Dir
+		return &runner.Result{Port: 5173}, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":          `{"name":"ctrltube","workspaces":["apps/*"]}`,
+		"apps/web/package.json": `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+	})
+	webDir := filepath.Join(root, "apps", "web")
+
+	var stdout, stderr strings.Builder
+	cmd := cli.Command{Kind: cli.CommandRun, TargetPath: "./apps/web"}
+	if err := Run(context.Background(), cmd, root, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	if dir != webDir {
+		t.Fatalf("runner dir = %q, want %q", dir, webDir)
+	}
+	if !sameStrings(admin.upsertedHosts(), []string{"web.ctrltube.localhost"}) {
+		t.Fatalf("upserted hosts = %#v, want web.ctrltube.localhost", admin.upsertedHosts())
+	}
+	wantOut := "gohere ./apps/web \u2192 http://web.ctrltube.localhost\n"
 	if stdout.String() != wantOut || stderr.String() != "" {
 		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
 	}

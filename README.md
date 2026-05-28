@@ -61,6 +61,13 @@ gohere build
 gohere preview
 ```
 
+Run an explicit filesystem target:
+
+```bash
+gohere ./dist
+gohere ./apps/web
+```
+
 Run a raw command:
 
 ```bash
@@ -94,7 +101,8 @@ CSS, images, and scripts are served normally.
 ```text
 myproject      -> http://myproject.localhost
 @scope/web     -> http://web.localhost
-repo/apps/web  -> http://web.repo.localhost
+./apps/web     -> http://web.repo.localhost
+./dist         -> http://dist.localhost
 about.html     -> http://myproject.localhost/about.html
 ```
 
