@@ -26,6 +26,7 @@ import (
 	"github.com/roie/gohere/internal/cli"
 	"github.com/roie/gohere/internal/lifecycle"
 	"github.com/roie/gohere/internal/opener"
+	"github.com/roie/gohere/internal/probe"
 	"github.com/roie/gohere/internal/project"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/runner"
@@ -1127,7 +1128,7 @@ func startWindowsService(ctx context.Context, tokenPath string) error {
 		return commandOutputError("wslpath", output, err)
 	}
 	windowsBinary := strings.TrimSpace(string(output))
-	command := "Start-Process -FilePath " + powerShellQuote(windowsBinary) + " -ArgumentList @('service','run')"
+	command := "Start-Process -WindowStyle Hidden -FilePath " + powerShellQuote(windowsBinary) + " -ArgumentList @('service','run')"
 	output, err = execCommandContext(ctx, "powershell.exe", "-NoProfile", "-Command", command).CombinedOutput()
 	if err != nil {
 		return commandOutputError("powershell.exe", output, err)
@@ -1971,17 +1972,43 @@ func fallbackLocalRouteStatuses(ctx context.Context, client adminClient) ([]life
 	}
 	statuses := make([]lifecycle.RouteStatus, 0, len(routes))
 	for _, route := range routes {
+		if routeOwnedByCurrentEnv(route) {
+			statuses = append(statuses, lifecycle.RouteStatus{Route: route, Status: fallbackOwnedRouteStatus(route)})
+			continue
+		}
 		statuses = append(statuses, lifecycle.RouteStatus{Route: route, Status: lifecycle.RouteStatusUnknown})
 	}
 	return statuses, nil
 }
 
+func routeOwnedByCurrentEnv(route router.Route) bool {
+	owner := route.OwnerEnv
+	if owner == "" && route.Source == "wsl" {
+		owner = "wsl"
+	}
+	if owner != "" {
+		return owner == runOwnerEnv()
+	}
+	return false
+}
+
+func fallbackOwnedRouteStatus(route router.Route) lifecycle.RouteStatusKind {
+	if route.PID > 0 && !lifecycle.PIDAlive(route.PID) {
+		return lifecycle.RouteStatusDead
+	}
+	return lifecycle.RouteStatusKind(probe.TargetStatus(route.Target))
+}
+
 func convertAdminStatuses(statuses []router.RouteStatus) []lifecycle.RouteStatus {
 	converted := make([]lifecycle.RouteStatus, 0, len(statuses))
 	for _, status := range statuses {
+		routeStatus := lifecycle.RouteStatusKind(status.Status)
+		if routeStatus == lifecycle.RouteStatusUnknown && routeOwnedByCurrentEnv(status.Route) {
+			routeStatus = fallbackOwnedRouteStatus(status.Route)
+		}
 		converted = append(converted, lifecycle.RouteStatus{
 			Route:  status.Route,
-			Status: lifecycle.RouteStatusKind(status.Status),
+			Status: routeStatus,
 		})
 	}
 	return converted
@@ -2008,6 +2035,8 @@ func adminProbeRouteStatuses(ctx context.Context, client adminClient, probeClien
 			}
 		} else if reachable {
 			status = lifecycle.RouteStatusReady
+		} else if routeOwnedByCurrentEnv(route) {
+			status = fallbackOwnedRouteStatus(route)
 		}
 		statuses = append(statuses, lifecycle.RouteStatus{Route: route, Status: status})
 	}

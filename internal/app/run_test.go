@@ -2433,6 +2433,47 @@ func TestStartWindowsServiceUsesTimeout(t *testing.T) {
 	}
 }
 
+func TestStartWindowsServiceStartsHiddenPowerShellWindow(t *testing.T) {
+	oldExecCommandContext := execCommandContext
+	defer func() {
+		execCommandContext = oldExecCommandContext
+	}()
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	stableBinary := filepath.Join(dir, "bin", "gohere.exe")
+	if err := os.MkdirAll(filepath.Dir(stableBinary), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokenPath, []byte("token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stableBinary, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	execCommandContext = func(ctx context.Context, command string, args ...string) *exec.Cmd {
+		commands = append(commands, command+" "+strings.Join(args, " "))
+		helperArgs := []string{"-test.run=TestAppCommandHelper", "--", command}
+		helperArgs = append(helperArgs, args...)
+		cmd := exec.CommandContext(ctx, os.Args[0], helperArgs...)
+		cmd.Env = append(os.Environ(), "GOHERE_APP_HELPER_PROCESS=1", "GOHERE_APP_HELPER_POWERSHELL_SUCCESS=1")
+		return cmd
+	}
+
+	if err := startWindowsService(context.Background(), tokenPath); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("commands = %#v, want wslpath and powershell.exe", commands)
+	}
+	powerShellCommand := commands[1]
+	if !strings.Contains(powerShellCommand, "Start-Process -WindowStyle Hidden") {
+		t.Fatalf("powershell command = %q, want hidden Start-Process window", powerShellCommand)
+	}
+}
+
 func TestStartWindowsServiceIncludesWSLPathOutputOnFailure(t *testing.T) {
 	oldExecCommandContext := execCommandContext
 	defer func() {
@@ -3154,6 +3195,34 @@ func TestListUsesServiceComputedRouteStatusFromWSL(t *testing.T) {
 	}
 }
 
+func TestListRefinesUnknownServiceStatusForWSLOwnedRouteFromWSL(t *testing.T) {
+	oldDetectWSL := detectWSLFunc
+	defer func() {
+		detectWSLFunc = oldDetectWSL
+	}()
+	detectWSLFunc = func() bool { return true }
+	route := router.Route{
+		Host:     "old-wsl.localhost",
+		Target:   "http://127.0.0.1:1",
+		PID:      999999,
+		CWD:      "/home/roie/dev/old-wsl",
+		Source:   "wsl",
+		OwnerEnv: "wsl",
+	}
+	admin := &recordingAdminClient{
+		routes:   []router.Route{route},
+		statuses: []router.RouteStatus{{Route: route, Status: "unknown"}},
+	}
+
+	statuses, err := adminRouteStatuses(context.Background(), admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Route.Host != "old-wsl.localhost" || statuses[0].Status != lifecycle.RouteStatusDead {
+		t.Fatalf("statuses = %#v, want refined dead WSL-owned route", statuses)
+	}
+}
+
 func TestListFallsBackToServiceProbeWhenRouteStatusesEndpointIsMissing(t *testing.T) {
 	route := router.Route{
 		Host:   "squawk.localhost",
@@ -3224,6 +3293,55 @@ func TestListFallbackWithoutProbeKeepsStatusUnknown(t *testing.T) {
 	}
 	if len(statuses) != 1 || statuses[0].Route.Host != "old-local.localhost" || statuses[0].Status != lifecycle.RouteStatusUnknown {
 		t.Fatalf("statuses = %#v", statuses)
+	}
+}
+
+func TestListFallbackWithoutProbeClassifiesWSLOwnedRoutesFromWSL(t *testing.T) {
+	oldDetectWSL := detectWSLFunc
+	defer func() {
+		detectWSLFunc = oldDetectWSL
+	}()
+	detectWSLFunc = func() bool { return true }
+	route := router.Route{
+		Host:     "old-wsl.localhost",
+		Target:   "http://127.0.0.1:1",
+		PID:      999999,
+		CWD:      "/home/roie/dev/old-wsl",
+		Source:   "wsl",
+		OwnerEnv: "wsl",
+	}
+	client := routeStatusesUnsupportedClient{routes: []router.Route{route}}
+
+	statuses, err := adminRouteStatuses(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Route.Host != "old-wsl.localhost" || statuses[0].Status != lifecycle.RouteStatusDead {
+		t.Fatalf("statuses = %#v, want dead WSL-owned route", statuses)
+	}
+}
+
+func TestListFallbackWithoutProbeKeepsForeignRoutesUnknownFromWSL(t *testing.T) {
+	oldDetectWSL := detectWSLFunc
+	defer func() {
+		detectWSLFunc = oldDetectWSL
+	}()
+	detectWSLFunc = func() bool { return true }
+	route := router.Route{
+		Host:     "old-windows.localhost",
+		Target:   "http://127.0.0.1:1",
+		PID:      999999,
+		CWD:      `D:\dev\old-windows`,
+		OwnerEnv: "windows",
+	}
+	client := routeStatusesUnsupportedClient{routes: []router.Route{route}}
+
+	statuses, err := adminRouteStatuses(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Route.Host != "old-windows.localhost" || statuses[0].Status != lifecycle.RouteStatusUnknown {
+		t.Fatalf("statuses = %#v, want unknown foreign route", statuses)
 	}
 }
 
@@ -3317,6 +3435,35 @@ func TestPruneFallbackProbeKeepsUnreachableRouteUnknown(t *testing.T) {
 	}
 	if out.String() != "No dead routes.\n" {
 		t.Fatalf("prune output = %q", out.String())
+	}
+}
+
+func TestPruneFallbackProbeRemovesDeadWSLOwnedRouteFromWSL(t *testing.T) {
+	oldDetectWSL := detectWSLFunc
+	defer func() {
+		detectWSLFunc = oldDetectWSL
+	}()
+	detectWSLFunc = func() bool { return true }
+	route := router.Route{
+		Host:     "old-wsl.localhost",
+		Target:   "http://127.0.0.1:1",
+		PID:      999999,
+		CWD:      "/home/roie/dev/old-wsl",
+		Source:   "wsl",
+		OwnerEnv: "wsl",
+	}
+	admin := &recordingAdminClient{
+		routes:         []router.Route{route},
+		statusErr:      admin.ErrRouteStatusesUnsupported,
+		probeReachable: map[string]bool{route.Target: false},
+	}
+
+	removed, err := pruneAdminRoutes(context.Background(), admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 || admin.deleted != "old-wsl.localhost" {
+		t.Fatalf("removed=%d deleted=%q, want old WSL route removed", removed, admin.deleted)
 	}
 }
 
@@ -4739,6 +4886,9 @@ func TestAppCommandHelper(t *testing.T) {
 		if os.Getenv("GOHERE_APP_HELPER_FAIL_POWERSHELL") == "1" {
 			fmt.Fprintln(os.Stderr, "powershell exploded")
 			os.Exit(1)
+		}
+		if os.Getenv("GOHERE_APP_HELPER_POWERSHELL_SUCCESS") == "1" {
+			return
 		}
 		time.Sleep(10 * time.Second)
 	default:
