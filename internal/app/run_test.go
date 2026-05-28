@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1227,6 +1228,210 @@ func TestRunImplicitDevAtWorkspaceRootLaunchesWorkspacePackages(t *testing.T) {
 		"gohere worker \u2192 http://worker.ctrltube.localhost\n"
 	if stdout.String() != wantOut || stderr.String() != "" {
 		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
+	}
+}
+
+func TestRunWorkspaceInjectsServiceDiscoveryEnv(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return &multiRecordingAdminClient{}, nil
+	}
+	envs := map[string][]string{}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		envs[filepath.Base(cfg.Dir)] = cfg.Env
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"ctrltube","workspaces":["apps/*"],"scripts":{"dev":"pnpm --parallel --filter @ctrltube/worker --filter @ctrltube/web dev"}}`,
+		"pnpm-lock.yaml":           "",
+		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"wrangler dev"}}`,
+	})
+
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(envs) != 2 {
+		t.Fatalf("captured envs = %#v, want two workspace services", envs)
+	}
+	for name, env := range envs {
+		assertEnv(t, env, "GOHERE_WEB_URL", "http://web.ctrltube.localhost")
+		assertEnv(t, env, "GOHERE_WORKER_URL", "http://worker.ctrltube.localhost")
+		webPort := mustEnv(t, env, "GOHERE_WEB_PORT")
+		workerPort := mustEnv(t, env, "GOHERE_WORKER_PORT")
+		assertEnv(t, env, "GOHERE_WEB_TARGET", "http://127.0.0.1:"+webPort)
+		assertEnv(t, env, "GOHERE_WORKER_TARGET", "http://127.0.0.1:"+workerPort)
+
+		services := parseServiceDiscoveryJSON(t, env)
+		assertServiceEntry(t, services, "web", "WEB", "http://web.ctrltube.localhost", webPort, "http://127.0.0.1:"+webPort, true)
+		assertServiceEntry(t, services, "worker", "WORKER", "http://worker.ctrltube.localhost", workerPort, "http://127.0.0.1:"+workerPort, true)
+
+		if services["worker"].URL == "" {
+			t.Fatalf("%s env missing worker service entry: %#v", name, services)
+		}
+	}
+}
+
+func TestRunMultiInjectsServiceDiscoveryEnv(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return &multiRecordingAdminClient{}, nil
+	}
+	var envs [][]string
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		envs = append(envs, cfg.Env)
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev:web":"vite","dev:api":"wrangler dev"}}`,
+	})
+	cmd := cli.Command{Kind: cli.CommandRun, Script: "dev:web", Scripts: []string{"dev:web", "dev:api"}}
+	if err := Run(context.Background(), cmd, dir, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(envs) != 2 {
+		t.Fatalf("captured %d envs, want two", len(envs))
+	}
+	base := filepath.Base(dir)
+	for _, env := range envs {
+		assertEnv(t, env, "GOHERE_WEB_URL", "http://web."+base+".localhost")
+		assertEnv(t, env, "GOHERE_API_URL", "http://api."+base+".localhost")
+		services := parseServiceDiscoveryJSON(t, env)
+		if services["web"].Key != "WEB" || services["api"].Key != "API" {
+			t.Fatalf("service keys = %#v, want WEB/API", services)
+		}
+	}
+}
+
+func TestRunServiceDiscoveryMarksExplicitPortScriptsUnmanaged(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return &multiRecordingAdminClient{}, nil
+	}
+	var webEnv []string
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		if filepath.Base(cfg.Dir) == "web" {
+			webEnv = cfg.Env
+		}
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"ctrltube","workspaces":["apps/*"]}`,
+		"pnpm-lock.yaml":           "",
+		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"wrangler dev --local --port 8787"}}`,
+	})
+
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEnv(t, webEnv, "GOHERE_WORKER_URL", "http://worker.ctrltube.localhost")
+	assertMissingEnv(t, webEnv, "GOHERE_WORKER_PORT")
+	assertMissingEnv(t, webEnv, "GOHERE_WORKER_TARGET")
+	services := parseServiceDiscoveryJSON(t, webEnv)
+	worker := services["worker"]
+	if worker.Key != "WORKER" || worker.URL != "http://worker.ctrltube.localhost" || worker.Managed {
+		t.Fatalf("worker service entry = %#v, want unmanaged worker URL/key", worker)
+	}
+	if worker.Port != 0 || worker.Target != "" {
+		t.Fatalf("worker service entry should omit port/target when unmanaged: %#v", worker)
+	}
+}
+
+func TestRunServiceDiscoveryPreservesExistingUserEnv(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+	t.Setenv("GOHERE_WORKER_URL", "http://custom.localhost")
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return &multiRecordingAdminClient{}, nil
+	}
+	var webEnv []string
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		if filepath.Base(cfg.Dir) == "web" {
+			webEnv = cfg.Env
+		}
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"ctrltube","workspaces":["apps/*"]}`,
+		"pnpm-lock.yaml":           "",
+		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"wrangler dev"}}`,
+	})
+
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEnv(t, webEnv, "GOHERE_WORKER_URL", "http://custom.localhost")
+	if mustEnv(t, webEnv, "GOHERE_WORKER_PORT") == "" {
+		t.Fatal("expected generated worker port to remain available")
+	}
+}
+
+func TestRunServiceDiscoveryEnvKeyCollisionFailsBeforeStarting(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return &multiRecordingAdminClient{}, nil
+	}
+	starts := 0
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		starts++
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":              `{"name":"ctrltube","workspaces":["apps/*"]}`,
+		"pnpm-lock.yaml":            "",
+		"apps/web-app/package.json": `{"name":"web-app","scripts":{"dev":"vite"}}`,
+		"apps/web_app/package.json": `{"name":"web_app","scripts":{"dev":"vite"}}`,
+	})
+
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected env key collision error")
+	}
+	if !strings.Contains(err.Error(), `service env key "WEB_APP" is ambiguous`) {
+		t.Fatalf("error = %q, want WEB_APP collision", err.Error())
+	}
+	if starts != 0 {
+		t.Fatalf("started %d services before collision error, want zero", starts)
 	}
 }
 
@@ -3943,16 +4148,70 @@ func tempProject(t *testing.T, files map[string]string) string {
 
 func assertEnv(t *testing.T, env []string, key, want string) {
 	t.Helper()
+	got, ok := envValue(env, key)
+	if !ok {
+		t.Fatalf("missing env %s", key)
+	}
+	if got != want {
+		t.Fatalf("%s = %q, want %q", key, got, want)
+	}
+}
+
+func assertMissingEnv(t *testing.T, env []string, key string) {
+	t.Helper()
+	if got, ok := envValue(env, key); ok {
+		t.Fatalf("%s = %q, want missing", key, got)
+	}
+}
+
+func mustEnv(t *testing.T, env []string, key string) string {
+	t.Helper()
+	got, ok := envValue(env, key)
+	if !ok {
+		t.Fatalf("missing env %s", key)
+	}
+	return got
+}
+
+func envValue(env []string, key string) (string, bool) {
 	prefix := key + "="
 	for _, item := range env {
 		if len(item) >= len(prefix) && item[:len(prefix)] == prefix {
-			if got := item[len(prefix):]; got != want {
-				t.Fatalf("%s = %q, want %q", key, got, want)
-			}
-			return
+			return item[len(prefix):], true
 		}
 	}
-	t.Fatalf("missing env %s", key)
+	return "", false
+}
+
+type serviceDiscoveryTestEntry struct {
+	Key     string `json:"key"`
+	URL     string `json:"url"`
+	Port    int    `json:"port"`
+	Target  string `json:"target"`
+	Managed bool   `json:"managed"`
+}
+
+func parseServiceDiscoveryJSON(t *testing.T, env []string) map[string]serviceDiscoveryTestEntry {
+	t.Helper()
+	var services map[string]serviceDiscoveryTestEntry
+	if err := json.Unmarshal([]byte(mustEnv(t, env, "GOHERE_SERVICES_JSON")), &services); err != nil {
+		t.Fatalf("GOHERE_SERVICES_JSON did not parse: %v", err)
+	}
+	return services
+}
+
+func assertServiceEntry(t *testing.T, services map[string]serviceDiscoveryTestEntry, name, key, url, port, target string, managed bool) {
+	t.Helper()
+	entry, ok := services[name]
+	if !ok {
+		t.Fatalf("missing service %q in %#v", name, services)
+	}
+	if entry.Key != key || entry.URL != url || entry.Target != target || entry.Managed != managed {
+		t.Fatalf("service %q = %#v, want key=%q url=%q target=%q managed=%v", name, entry, key, url, target, managed)
+	}
+	if port != "" && itoa(entry.Port) != port {
+		t.Fatalf("service %q port = %d, want %s", name, entry.Port, port)
+	}
 }
 
 func sameStrings(a, b []string) bool {

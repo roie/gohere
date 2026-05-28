@@ -53,6 +53,14 @@ Run multiple server scripts:
 gohere dev:web dev:api
 ```
 
+When one `gohere` run starts multiple services, each service can discover the others through env vars. For example, a web dev server can proxy API requests to a worker without hardcoding a port:
+
+```ts
+target: process.env.GOHERE_WORKER_URL
+```
+
+Use `GOHERE_<NAME>_URL` for app config. `PORT` and `TARGET` are advanced values and are only set when `gohere` controls that service port.
+
 Run any current package script exactly as written by naming it explicitly:
 
 ```bash

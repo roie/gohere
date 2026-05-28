@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -115,6 +117,7 @@ type RunPlan struct {
 	OwnerEnv            string
 	RouterLabel         string
 	StaticBindHost      string
+	ManagedPort         bool
 }
 
 func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
@@ -190,6 +193,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	}
 	injected := runner.InjectPortArgs(scriptCommand, port, cmd.PortFlag)
 	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
+	managedPort := !runner.HasExplicitPortOrHostFlag(scriptCommand)
 	host, err := project.HostnameForProject(cwd)
 	if err != nil {
 		return RunPlan{}, err
@@ -199,7 +203,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	if err != nil {
 		return RunPlan{}, err
 	}
-	return applyRunOptions(cmd, RunPlan{Command: command, Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: projectRoot, ProjectName: projectName})
+	return applyRunOptions(cmd, RunPlan{Command: command, Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: projectRoot, ProjectName: projectName, ManagedPort: managedPort})
 }
 
 func applyRunOptions(cmd cli.Command, plan RunPlan) (RunPlan, error) {
@@ -441,6 +445,9 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 		itemCmd.ExplicitScript = true
 		items = append(items, multiRunItem{cmd: itemCmd, plan: plan})
 	}
+	if err := applyServiceDiscoveryEnv(items); err != nil {
+		return err
+	}
 
 	for i := range items {
 		itemCmd := items[i].cmd
@@ -498,6 +505,7 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 	env := runner.ChildEnv(os.Environ(), port)
 	injected := runner.InjectPortArgs(workspacePackage.Script, port, cmd.PortFlag)
 	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
+	managedPort := !runner.HasExplicitPortOrHostFlag(workspacePackage.Script)
 	host, err := project.HostnameForProject(workspacePackage.Dir)
 	if err != nil {
 		return RunPlan{}, err
@@ -515,6 +523,7 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 		CWD:         workspacePackage.Dir,
 		ProjectRoot: root,
 		ProjectName: projectName,
+		ManagedPort: managedPort,
 	}, nil
 }
 
@@ -581,6 +590,9 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 		}
 		items = append(items, multiRunItem{cmd: itemCmd, plan: plan})
 	}
+	if err := applyServiceDiscoveryEnv(items); err != nil {
+		return err
+	}
 
 	for i := range items {
 		itemCmd := items[i].cmd
@@ -637,6 +649,143 @@ func multiScriptHost(script, baseHost string) string {
 		label = script[index+1:]
 	}
 	return project.NormalizeHostnameName(label) + "." + base + ".localhost"
+}
+
+type serviceDiscoveryEntry struct {
+	Key     string `json:"key"`
+	URL     string `json:"url"`
+	Port    int    `json:"port,omitempty"`
+	Target  string `json:"target,omitempty"`
+	Managed bool   `json:"managed"`
+}
+
+func applyServiceDiscoveryEnv(items []multiRunItem) error {
+	if len(items) <= 1 {
+		return nil
+	}
+	values, err := serviceDiscoveryEnv(items)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		items[i].plan.Env = appendMissingEnv(items[i].plan.Env, values)
+	}
+	return nil
+}
+
+func serviceDiscoveryEnv(items []multiRunItem) (map[string]string, error) {
+	values := map[string]string{}
+	services := map[string]serviceDiscoveryEntry{}
+	seen := map[string]string{}
+
+	for _, item := range items {
+		label := serviceDiscoveryLabel(item)
+		key := serviceDiscoveryEnvKey(label)
+		if key == "" {
+			return nil, fmt.Errorf("gohere error: service env key is empty for %s", serviceDiscoverySource(item))
+		}
+		if existing, ok := seen[key]; ok {
+			return nil, fmt.Errorf("gohere error: service env key %q is ambiguous for %s and %s", key, existing, serviceDiscoverySource(item))
+		}
+		seen[key] = serviceDiscoverySource(item)
+
+		url := publicRouteURL(item.plan.Host, item.plan.URLPath)
+		entry := serviceDiscoveryEntry{
+			Key:     key,
+			URL:     url,
+			Managed: item.plan.ManagedPort,
+		}
+		values["GOHERE_"+key+"_URL"] = url
+		if item.plan.ManagedPort {
+			portValue := fmt.Sprintf("%d", item.plan.Port)
+			target := fmt.Sprintf("http://127.0.0.1:%d", item.plan.Port)
+			entry.Port = item.plan.Port
+			entry.Target = target
+			values["GOHERE_"+key+"_PORT"] = portValue
+			values["GOHERE_"+key+"_TARGET"] = target
+		}
+		services[strings.ToLower(key)] = entry
+	}
+
+	data, err := json.Marshal(services)
+	if err != nil {
+		return nil, err
+	}
+	values["GOHERE_SERVICES_JSON"] = string(data)
+	return values, nil
+}
+
+func serviceDiscoveryLabel(item multiRunItem) string {
+	host := strings.TrimSuffix(item.plan.Host, ".localhost")
+	if label, _, ok := strings.Cut(host, "."); ok {
+		return label
+	}
+	if host != "" {
+		return host
+	}
+	name := runName(item.cmd)
+	if index := strings.LastIndex(name, ":"); index >= 0 && index < len(name)-1 {
+		name = name[index+1:]
+	}
+	return project.NormalizeHostnameName(name)
+}
+
+func serviceDiscoveryEnvKey(label string) string {
+	var out strings.Builder
+	lastUnderscore := false
+	for _, r := range strings.ToUpper(label) {
+		switch {
+		case r >= 'A' && r <= 'Z' || r >= '0' && r <= '9':
+			out.WriteRune(r)
+			lastUnderscore = false
+		default:
+			if !lastUnderscore {
+				out.WriteByte('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	return strings.Trim(out.String(), "_")
+}
+
+func serviceDiscoverySource(item multiRunItem) string {
+	if item.cmd.Script != "" {
+		return item.cmd.Script
+	}
+	if item.plan.CWD != "" {
+		return item.plan.CWD
+	}
+	if item.plan.Host != "" {
+		return item.plan.Host
+	}
+	return "unknown service"
+}
+
+func appendMissingEnv(env []string, values map[string]string) []string {
+	if len(values) == 0 {
+		return env
+	}
+	seen := map[string]bool{}
+	for _, item := range env {
+		key, _, ok := strings.Cut(item, "=")
+		if ok {
+			seen[key] = true
+		}
+	}
+
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	out := append([]string(nil), env...)
+	for _, key := range keys {
+		if !seen[key] {
+			out = append(out, key+"="+values[key])
+		}
+	}
+	return out
 }
 
 func formatMultiRunError(cmd cli.Command, err error) error {
