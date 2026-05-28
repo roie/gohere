@@ -145,7 +145,61 @@ jobs:
           echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
           install_dir="$(mktemp -d)"
           npm install --prefix "$install_dir" "$tarball"
-          test "$("$install_dir/node_modules/.bin/gohere" --version)" = "gohere ${version}"
+          gohere_bin="$install_dir/node_modules/.bin/gohere"
+          test "$("$gohere_bin" --version)" = "gohere ${version}"
+
+          smoke_dir="$(mktemp -d)"
+          mkdir -p "$smoke_dir/live" "$smoke_dir/dist" "$smoke_dir/pages"
+          echo '<html><body><h1>live</h1></body></html>' > "$smoke_dir/live/index.html"
+          echo '<h1>dist package smoke</h1>' > "$smoke_dir/dist/index.html"
+          echo '<h1>about package smoke</h1>' > "$smoke_dir/pages/about.html"
+
+          route_pid=""
+          route_name=""
+          cleanup_route() {
+            if [ -n "$route_pid" ]; then
+              "$gohere_bin" stop "$route_name" >/dev/null 2>&1 || true
+              wait "$route_pid" >/dev/null 2>&1 || true
+              route_pid=""
+              route_name=""
+            fi
+          }
+          wait_for_url() {
+            url="$1"
+            for _ in $(seq 1 80); do
+              if curl --fail --silent --max-time 2 "$url" > "$smoke_dir/response.html"; then
+                return 0
+              fi
+              sleep 0.25
+            done
+            echo "Timed out waiting for $url" >&2
+            return 1
+          }
+          start_route() {
+            name="$1"
+            url="$2"
+            shift 2
+            (
+              cd "$smoke_dir"
+              printf '\n' | "$gohere_bin" "$@" --as "$name"
+            ) > "$smoke_dir/$name.out" 2> "$smoke_dir/$name.err" &
+            route_pid="$!"
+            route_name="$name"
+            wait_for_url "$url"
+          }
+          trap cleanup_route EXIT
+
+          start_route package-live http://package-live.localhost/ ./live --live
+          grep -q '__gohere/live' "$smoke_dir/response.html"
+          cleanup_route
+
+          start_route package-dist http://package-dist.localhost/ ./dist
+          grep -q 'dist package smoke' "$smoke_dir/response.html"
+          cleanup_route
+
+          start_route package-about http://package-about.localhost/pages/about.html pages/about.html
+          grep -q 'about package smoke' "$smoke_dir/response.html"
+          cleanup_route
 
       - name: Publish npm package
         run: npm publish "${{ steps.pack.outputs.tarball }}" --access public

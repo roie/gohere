@@ -37,7 +37,7 @@ func main() {
 			os.Exit(1)
 		}
 	case cli.CommandList:
-		if err := app.List(ctx, os.Stdout, cmd.Verbose); err != nil {
+		if err := app.ListWithOptions(ctx, os.Stdout, app.ListOptions{Verbose: cmd.Verbose, JSON: cmd.JSON}); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -112,7 +112,8 @@ func printUsage(out io.Writer, topic string) {
 	fmt.Fprint(out, `Usage:
   gohere [script|file] [script ...] [--as NAME] [--open] [--live] [--verbose] [--target PORT] [--port-flag FLAG]
   gohere --target PORT -- command [args...]
-  gohere list|stop|prune|doctor|service stop|setup|uninstall
+  gohere list [--verbose|--json]
+  gohere stop|prune|doctor|service stop|setup|uninstall
 
 Examples:
   gohere
@@ -136,9 +137,9 @@ func topicUsage(topic string) (string, bool) {
 	switch topic {
 	case "list":
 		return `Usage:
-  gohere list [--verbose]
+  gohere list [--verbose|--json]
 
-Shows active .localhost routes.
+Shows active .localhost routes. Use --json for machine-readable output.
 
 `, true
 	case "stop":

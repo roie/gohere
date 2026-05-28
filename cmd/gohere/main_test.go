@@ -113,8 +113,10 @@ func TestPrintUsageListTopicIsSpecific(t *testing.T) {
 	printUsage(&out, "list")
 
 	for _, want := range []string{
-		"Usage:\n  gohere list [--verbose]\n",
+		"Usage:\n  gohere list [--verbose|--json]\n",
 		"Shows active .localhost routes",
+		"--json",
+		"machine-readable output",
 	} {
 		if !bytes.Contains(out.Bytes(), []byte(want)) {
 			t.Fatalf("list usage missing %q:\n%s", want, out.String())

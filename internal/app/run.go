@@ -118,6 +118,7 @@ type RunPlan struct {
 	RouterLabel         string
 	StaticBindHost      string
 	ManagedPort         bool
+	Mode                string
 }
 
 func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
@@ -854,6 +855,7 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		PID:             pid,
 		CWD:             plan.CWD,
 		Name:            plan.Name,
+		Mode:            runMode(cmd, plan),
 		ProjectRoot:     plan.ProjectRoot,
 		ProjectName:     plan.ProjectName,
 		Source:          plan.RouteSource,
@@ -891,6 +893,19 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 	return func() {
 		adminClient.DeleteRoute(context.Background(), route.Host)
 	}, nil
+}
+
+func runMode(cmd cli.Command, plan RunPlan) string {
+	if plan.Mode != "" {
+		return plan.Mode
+	}
+	if plan.Static {
+		return "static"
+	}
+	if cmd.Kind == cli.CommandRaw {
+		return "raw"
+	}
+	return "package"
 }
 
 func runOwnerEnv() string {
@@ -1467,7 +1482,33 @@ func setupForGOOS(ctx context.Context, goos string) error {
 	}
 }
 
+type ListOptions struct {
+	Verbose bool
+	JSON    bool
+}
+
+type listRoute struct {
+	Host        string `json:"host"`
+	Target      string `json:"target"`
+	Status      string `json:"status"`
+	PID         int    `json:"pid"`
+	CWD         string `json:"cwd"`
+	Name        string `json:"name,omitempty"`
+	Mode        string `json:"mode"`
+	Source      string `json:"source"`
+	OwnerEnv    string `json:"ownerEnv"`
+	ProjectRoot string `json:"projectRoot,omitempty"`
+	ProjectName string `json:"projectName,omitempty"`
+	StartedAt   string `json:"startedAt,omitempty"`
+	CanStop     bool   `json:"canStop"`
+	StopReason  string `json:"stopReason,omitempty"`
+}
+
 func List(ctx context.Context, stdout io.Writer, verbose bool) error {
+	return ListWithOptions(ctx, stdout, ListOptions{Verbose: verbose})
+}
+
+func ListWithOptions(ctx context.Context, stdout io.Writer, opts ListOptions) error {
 	manager, err := resolveRouteManager(ctx)
 	if err != nil {
 		return err
@@ -1480,36 +1521,80 @@ func List(ctx context.Context, stdout io.Writer, verbose bool) error {
 			}
 			return err
 		}
-		printRouteStatuses(stdout, statuses, verbose)
-		return nil
+		return printRouteStatuses(stdout, statuses, opts)
 	}
-	return ListWithStoreRouterReady(stdout, manager.Store, verbose, manager.RouterReady)
+	return ListWithStoreRouterReadyOptions(stdout, manager.Store, opts, manager.RouterReady)
 }
 
 func ListWithStore(stdout io.Writer, store router.Store, verbose bool) error {
-	return ListWithStoreRouterReady(stdout, store, verbose, true)
+	return ListWithStoreOptions(stdout, store, ListOptions{Verbose: verbose})
+}
+
+func ListWithStoreOptions(stdout io.Writer, store router.Store, opts ListOptions) error {
+	return ListWithStoreRouterReadyOptions(stdout, store, opts, true)
 }
 
 func ListWithStoreRouterReady(stdout io.Writer, store router.Store, verbose bool, routerReady bool) error {
+	return ListWithStoreRouterReadyOptions(stdout, store, ListOptions{Verbose: verbose}, routerReady)
+}
+
+func ListWithStoreRouterReadyOptions(stdout io.Writer, store router.Store, opts ListOptions, routerReady bool) error {
 	routes, err := store.Load()
 	if err != nil {
 		return err
 	}
-	printRoutesWithRouterReady(stdout, routes, verbose, routerReady)
+	return printRoutesWithRouterReady(stdout, routes, opts, routerReady)
+}
+
+func printRoutesWithRouterReady(stdout io.Writer, routes []router.Route, opts ListOptions, routerReady bool) error {
+	statuses := lifecycle.RouteStatusesWithRouterReady(routes, routerReady)
+	return printRouteStatuses(stdout, statuses, opts)
+}
+
+func printRouteStatuses(stdout io.Writer, statuses []lifecycle.RouteStatus, opts ListOptions) error {
+	if opts.JSON {
+		return printRouteStatusesJSON(stdout, statuses)
+	}
+	if opts.Verbose {
+		fmt.Fprint(stdout, lifecycle.FormatRoutesVerbose(statuses))
+		return nil
+	}
+	fmt.Fprint(stdout, lifecycle.FormatRoutes(statuses))
 	return nil
 }
 
-func printRoutesWithRouterReady(stdout io.Writer, routes []router.Route, verbose bool, routerReady bool) {
-	statuses := lifecycle.RouteStatusesWithRouterReady(routes, routerReady)
-	printRouteStatuses(stdout, statuses, verbose)
+func printRouteStatusesJSON(stdout io.Writer, statuses []lifecycle.RouteStatus) error {
+	routes := make([]listRoute, 0, len(statuses))
+	for _, status := range statuses {
+		canStop, stopReason := lifecycle.RouteStopInfo(status)
+		route := status.Route
+		routes = append(routes, listRoute{
+			Host:        route.Host,
+			Target:      route.Target,
+			Status:      string(status.Status),
+			PID:         route.PID,
+			CWD:         route.CWD,
+			Name:        route.Name,
+			Mode:        lifecycle.RouteMode(route),
+			Source:      lifecycle.RouteSource(route),
+			OwnerEnv:    lifecycle.RouteOwner(route),
+			ProjectRoot: route.ProjectRoot,
+			ProjectName: route.ProjectName,
+			StartedAt:   startedAtJSON(route),
+			CanStop:     canStop,
+			StopReason:  stopReason,
+		})
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(routes)
 }
 
-func printRouteStatuses(stdout io.Writer, statuses []lifecycle.RouteStatus, verbose bool) {
-	if verbose {
-		fmt.Fprint(stdout, lifecycle.FormatRoutesVerbose(statuses))
-		return
+func startedAtJSON(route router.Route) string {
+	if route.StartedAt.IsZero() {
+		return ""
 	}
-	fmt.Fprint(stdout, lifecycle.FormatRoutes(statuses))
+	return route.StartedAt.UTC().Format(time.RFC3339)
 }
 
 func Prune(ctx context.Context, stdout io.Writer) error {

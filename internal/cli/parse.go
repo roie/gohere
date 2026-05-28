@@ -32,6 +32,7 @@ type Command struct {
 	ExplicitScript bool
 	Raw            []string
 	Verbose        bool
+	JSON           bool
 	Open           bool
 	Live           bool
 	As             string
@@ -305,6 +306,11 @@ func fixedCommand(kind CommandKind, topic string, args []string) (Command, error
 			return helpCommand(topic), nil
 		case "--verbose":
 			cmd.Verbose = true
+		case "--json":
+			if kind != CommandList {
+				return Command{}, errors.New("gohere error: --json is only supported for list")
+			}
+			cmd.JSON = true
 		case "--open", "-o":
 			return Command{}, openAfterFixedCommandError()
 		default:

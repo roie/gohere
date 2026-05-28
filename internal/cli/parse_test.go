@@ -425,6 +425,27 @@ func TestParseVerboseAfterFixedCommand(t *testing.T) {
 	}
 }
 
+func TestParseListJSON(t *testing.T) {
+	cmd, err := Parse([]string{"gohere", "list", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Kind != CommandList || !cmd.JSON {
+		t.Fatalf("Parse list --json = %#v", cmd)
+	}
+}
+
+func TestParseRejectsJSONAfterNonListFixedCommand(t *testing.T) {
+	_, err := Parse([]string{"gohere", "doctor", "--json"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: --json is only supported for list"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestParseHelpAfterFixedCommandWithOtherFlags(t *testing.T) {
 	cmd, err := Parse([]string{"gohere", "doctor", "--verbose", "--help"})
 	if err != nil {

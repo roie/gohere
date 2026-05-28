@@ -28,11 +28,38 @@ func TestFormatRoutesShowsCompactTable(t *testing.T) {
 
 func TestFormatRoutesVerboseShowsOperationalDetails(t *testing.T) {
 	out := FormatRoutesVerbose([]RouteStatus{{
-		Route:  router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173", CWD: "/tmp/app", PID: 123},
+		Route: router.Route{
+			Host:      "app.localhost",
+			Target:    "http://127.0.0.1:5173",
+			CWD:       "/tmp/app",
+			PID:       123,
+			Mode:      "package",
+			Source:    "wsl",
+			OwnerEnv:  "windows",
+			StartedAt: time.Date(2026, 5, 28, 1, 2, 3, 0, time.UTC),
+		},
 		Status: RouteStatusReady,
 	}})
-	if !strings.Contains(out, "host") || !strings.Contains(out, "target") || !strings.Contains(out, "status") || !strings.Contains(out, "pid") || !strings.Contains(out, "cwd") {
-		t.Fatalf("output = %q", out)
+	for _, want := range []string{
+		"host",
+		"target",
+		"status",
+		"mode",
+		"source",
+		"owner",
+		"pid",
+		"started",
+		"stop",
+		"cwd",
+		"package",
+		"wsl",
+		"windows",
+		"2026-05-28T01:02:03Z",
+		"route belongs to another environment",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q: %q", want, out)
+		}
 	}
 	if !strings.Contains(out, "app.localhost") || !strings.Contains(out, "ready") || !strings.Contains(out, "123") || !strings.Contains(out, "/tmp/app") {
 		t.Fatalf("output = %q", out)

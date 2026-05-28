@@ -2773,10 +2773,15 @@ func TestListOutput(t *testing.T) {
 func TestListVerboseOutput(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{{
-		Host:   "vibe-oke.localhost",
-		Target: "http://127.0.0.1:46387",
-		CWD:    "/tmp/vibe-oke",
-		PID:    123,
+		Host:        "vibe-oke.localhost",
+		Target:      "http://127.0.0.1:46387",
+		CWD:         "/tmp/vibe-oke",
+		PID:         123,
+		Mode:        "package",
+		Source:      "wsl",
+		OwnerEnv:    "windows",
+		ProjectName: "vibe",
+		StartedAt:   time.Date(2026, 5, 28, 1, 2, 3, 0, time.UTC),
 	}})
 	var out strings.Builder
 
@@ -2790,8 +2795,61 @@ func TestListVerboseOutput(t *testing.T) {
 	if !strings.Contains(text, "vibe-oke.localhost") || !strings.Contains(text, "dead") || !strings.Contains(text, "123") || !strings.Contains(text, "/tmp/vibe-oke") {
 		t.Fatalf("verbose list output = %q", text)
 	}
+	for _, want := range []string{"mode", "source", "owner", "started", "stop", "package", "wsl", "2026-05-28T01:02:03Z"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("verbose list output missing %q: %q", want, text)
+		}
+	}
 	if strings.Contains(text, "backend") || strings.Contains(text, "cwd /tmp/vibe-oke") || strings.Contains(text, "pid 123") {
 		t.Fatalf("verbose list output = %q", text)
+	}
+}
+
+func TestListJSONOutput(t *testing.T) {
+	store := router.NewMemoryStore()
+	store.Save([]router.Route{{
+		Host:        "vibe-oke.localhost",
+		Target:      "http://127.0.0.1:46387",
+		CWD:         "/tmp/vibe-oke",
+		PID:         123,
+		Mode:        "static",
+		Source:      "wsl",
+		OwnerEnv:    "windows",
+		ProjectName: "vibe",
+		Name:        "vibe-oke",
+		StartedAt:   time.Date(2026, 5, 28, 1, 2, 3, 0, time.UTC),
+	}})
+	var out strings.Builder
+
+	if err := ListWithStoreOptions(&out, store, ListOptions{JSON: true}); err != nil {
+		t.Fatal(err)
+	}
+	var routes []listRoute
+	if err := json.Unmarshal([]byte(out.String()), &routes); err != nil {
+		t.Fatalf("list json did not parse: %v\n%s", err, out.String())
+	}
+	if len(routes) != 1 {
+		t.Fatalf("routes = %#v, want one route", routes)
+	}
+	route := routes[0]
+	if route.Host != "vibe-oke.localhost" ||
+		route.Target != "http://127.0.0.1:46387" ||
+		route.Status != string(lifecycle.RouteStatusDead) ||
+		route.PID != 123 ||
+		route.CWD != "/tmp/vibe-oke" ||
+		route.Mode != "static" ||
+		route.Source != "wsl" ||
+		route.OwnerEnv != "windows" ||
+		route.ProjectName != "vibe" ||
+		route.Name != "vibe-oke" ||
+		route.StartedAt != "2026-05-28T01:02:03Z" {
+		t.Fatalf("route = %#v", route)
+	}
+	if route.CanStop {
+		t.Fatalf("route canStop = true, want false for foreign route: %#v", route)
+	}
+	if !strings.Contains(route.StopReason, "another environment") {
+		t.Fatalf("stopReason = %q", route.StopReason)
 	}
 }
 

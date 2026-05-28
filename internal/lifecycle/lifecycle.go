@@ -71,11 +71,68 @@ func FormatRoutesVerbose(statuses []RouteStatus) string {
 	}
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "%-28s %-25s %-7s %-6s %s\n", "host", "target", "status", "pid", "cwd")
+	fmt.Fprintf(&out, "%-28s %-25s %-7s %-8s %-8s %-8s %-6s %-20s %-36s %s\n", "host", "target", "status", "mode", "source", "owner", "pid", "started", "stop", "cwd")
 	for _, status := range statuses {
-		fmt.Fprintf(&out, "%-28s %-25s %-7s %-6d %s\n", status.Route.Host, status.Route.Target, status.Status, status.Route.PID, status.Route.CWD)
+		_, stopReason := RouteStopInfo(status)
+		if stopReason == "" {
+			stopReason = "ok"
+		}
+		fmt.Fprintf(&out, "%-28s %-25s %-7s %-8s %-8s %-8s %-6d %-20s %-36s %s\n",
+			status.Route.Host,
+			status.Route.Target,
+			status.Status,
+			RouteMode(status.Route),
+			RouteSource(status.Route),
+			RouteOwner(status.Route),
+			status.Route.PID,
+			RouteStartedAt(status.Route),
+			stopReason,
+			status.Route.CWD)
 	}
 	return out.String()
+}
+
+func RouteMode(route router.Route) string {
+	if route.Mode != "" {
+		return route.Mode
+	}
+	return "unknown"
+}
+
+func RouteSource(route router.Route) string {
+	if route.Source != "" {
+		return route.Source
+	}
+	return "local"
+}
+
+func RouteOwner(route router.Route) string {
+	if owner := routeOwnerEnv(route); owner != "" {
+		return owner
+	}
+	return "local"
+}
+
+func RouteStartedAt(route router.Route) string {
+	if route.StartedAt.IsZero() {
+		return "-"
+	}
+	return route.StartedAt.UTC().Format(time.RFC3339)
+}
+
+func RouteStopInfo(status RouteStatus) (bool, string) {
+	route := status.Route
+	ownerEnv := routeOwnerEnv(route)
+	if ownerEnv != "" && ownerEnv != currentOwnerEnv() {
+		return false, "route belongs to another environment"
+	}
+	if status.Status == RouteStatusDead || !PIDAlive(route.PID) {
+		return true, ""
+	}
+	if RouteProcessVerified(route) {
+		return true, ""
+	}
+	return false, UnverifiedProcessWarning(route.PID)
 }
 
 func RouteStatuses(routes []router.Route) []RouteStatus {
