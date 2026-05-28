@@ -183,6 +183,46 @@ func TestPrepareStaticProject(t *testing.T) {
 	}
 }
 
+func TestPrepareStaticProjectWithLive(t *testing.T) {
+	dir := tempProject(t, map[string]string{"index.html": "<h1>Hello</h1>"})
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "dev", Live: true}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Static || !plan.Live {
+		t.Fatalf("plan = %#v, want static live plan", plan)
+	}
+}
+
+func TestPrepareRunRejectsLiveForPackageProject(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite"}}`,
+	})
+
+	_, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "dev", Live: true}, dir)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: --live is only supported for static files and folders."
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestPrepareRawCommandRejectsLive(t *testing.T) {
+	dir := tempProject(t, nil)
+
+	_, err := PrepareRun(cli.Command{Kind: cli.CommandRaw, Raw: []string{"npm", "run", "dev"}, Live: true}, dir)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: --live is only supported for static files and folders."
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestPrepareRunUsesAsAlias(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -415,6 +455,36 @@ func TestPrepareExplicitStaticDirectoryTarget(t *testing.T) {
 	}
 	if plan.Host != "dist.localhost" || plan.Name != "dist" || plan.URLPath != "" {
 		t.Fatalf("host/name/path = %q/%q/%q, want dist.localhost/dist/empty", plan.Host, plan.Name, plan.URLPath)
+	}
+}
+
+func TestPrepareExplicitStaticDirectoryTargetWithLive(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"package.json":    `{"scripts":{"dist":"vite"}}`,
+		"dist/index.html": "<h1>Build</h1>",
+	})
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, TargetPath: "./dist", Live: true, TargetPort: 5173}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Static || !plan.Live {
+		t.Fatalf("plan = %#v, want static live path plan", plan)
+	}
+}
+
+func TestPrepareStaticFileTargetWithLive(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"index.html": "<h1>Hello</h1>",
+		"about.html": "<h1>About</h1>",
+	})
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "about.html", Live: true, TargetPort: 5173}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Static || !plan.Live || plan.URLPath != "/about.html" {
+		t.Fatalf("plan = %#v, want static live file plan", plan)
 	}
 }
 
@@ -1157,6 +1227,50 @@ func TestRunImplicitDevAtWorkspaceRootLaunchesWorkspacePackages(t *testing.T) {
 		"gohere worker \u2192 http://worker.ctrltube.localhost\n"
 	if stdout.String() != wantOut || stderr.String() != "" {
 		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
+	}
+}
+
+func TestRunLiveAtWorkspaceRootDoesNotStartWorkspacePackages(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	var commands []string
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		commands = append(commands, strings.Join(cfg.Command, " "))
+		return &runner.Result{Port: 5173}, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":          `{"name":"ctrltube","workspaces":["apps/*"],"scripts":{"dev":"pnpm --parallel --filter @ctrltube/web dev"}}`,
+		"pnpm-lock.yaml":        "",
+		"apps/web/package.json": `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+	})
+
+	var stdout, stderr strings.Builder
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev", Live: true}, root, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: --live is only supported for static files and folders."
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("workspace packages started with --live: %#v", commands)
+	}
+	if len(admin.upsertedHosts()) != 0 {
+		t.Fatalf("upserted hosts = %#v, want none", admin.upsertedHosts())
+	}
+	if stdout.String() != "" || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want both empty", stdout.String(), stderr.String())
 	}
 }
 

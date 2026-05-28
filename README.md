@@ -68,6 +68,12 @@ gohere ./dist
 gohere ./apps/web
 ```
 
+Auto-refresh static pages while editing:
+
+```bash
+gohere --live
+```
+
 Run a raw command:
 
 ```bash

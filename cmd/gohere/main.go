@@ -110,7 +110,7 @@ func printUsage(out io.Writer, topic string) {
 		fmt.Fprintf(out, "Usage:\n  gohere %s\n\n", topic)
 	}
 	fmt.Fprint(out, `Usage:
-  gohere [script|file] [script ...] [--as NAME] [--open] [--verbose] [--target PORT] [--port-flag FLAG]
+  gohere [script|file] [script ...] [--as NAME] [--open] [--live] [--verbose] [--target PORT] [--port-flag FLAG]
   gohere --target PORT -- command [args...]
   gohere list|stop|prune|doctor|service stop|setup|uninstall
 
@@ -124,6 +124,7 @@ Examples:
 
 Flags:
   --open, -o        open the URL in your browser
+  --live            auto-refresh static pages when files change
   --as NAME         use NAME.localhost for this run
   --verbose         show target, command, and service details
   --target PORT     use an existing local port

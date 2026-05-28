@@ -107,6 +107,7 @@ type RunPlan struct {
 	ProjectRoot         string
 	ProjectName         string
 	Static              bool
+	Live                bool
 	URLPath             string
 	RequireDetectedPort bool
 	RouteTargetHost     string
@@ -129,7 +130,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	env := runner.ChildEnv(os.Environ(), port)
 	if cmd.Kind == cli.CommandRaw {
 		host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
-		return applyAsAlias(cmd, RunPlan{
+		return applyRunOptions(cmd, RunPlan{
 			Command:             append([]string(nil), cmd.Raw...),
 			Env:                 env,
 			Port:                port,
@@ -156,7 +157,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	}
 	if cmd.Script == "dev" && staticserver.IsStaticProject(cwd) && !hasCurrentPackage {
 		host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
-		return applyAsAlias(cmd, RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: cwd, ProjectName: project.NormalizeHostnameName(filepath.Base(cwd)), Static: true})
+		return applyRunOptions(cmd, RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: cwd, ProjectName: project.NormalizeHostnameName(filepath.Base(cwd)), Static: true})
 	}
 
 	packagePath, found, err := project.FindNearestPackageJSON(cwd)
@@ -169,7 +170,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 		}
 		if staticserver.IsStaticProject(cwd) {
 			host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
-			return applyAsAlias(cmd, RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: cwd, ProjectName: project.NormalizeHostnameName(filepath.Base(cwd)), Static: true})
+			return applyRunOptions(cmd, RunPlan{Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: cwd, ProjectName: project.NormalizeHostnameName(filepath.Base(cwd)), Static: true})
 		}
 		return RunPlan{}, errors.New("No package.json or index.html found; use gohere -- <command>.")
 	}
@@ -198,7 +199,21 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	if err != nil {
 		return RunPlan{}, err
 	}
-	return applyAsAlias(cmd, RunPlan{Command: command, Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: projectRoot, ProjectName: projectName})
+	return applyRunOptions(cmd, RunPlan{Command: command, Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: projectRoot, ProjectName: projectName})
+}
+
+func applyRunOptions(cmd cli.Command, plan RunPlan) (RunPlan, error) {
+	plan, err := applyAsAlias(cmd, plan)
+	if err != nil {
+		return RunPlan{}, err
+	}
+	if cmd.Live {
+		if !plan.Static {
+			return RunPlan{}, liveStaticOnlyError()
+		}
+		plan.Live = true
+	}
+	return plan, nil
 }
 
 func applyAsAlias(cmd cli.Command, plan RunPlan) (RunPlan, error) {
@@ -273,7 +288,12 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 			return err
 		}
 
-		staticServer, err := staticserver.StartWithHost(ctx, plan.CWD, plan.Port, plan.StaticBindHost)
+		staticServer, err := staticserver.StartWithConfig(ctx, staticserver.Config{
+			Dir:  plan.CWD,
+			Port: plan.Port,
+			Host: plan.StaticBindHost,
+			Live: plan.Live,
+		})
 		if err != nil {
 			return err
 		}
@@ -343,6 +363,7 @@ func shouldRunWorkspace(cmd cli.Command) bool {
 		cmd.Script == "dev" &&
 		len(cmd.Scripts) == 0 &&
 		!cmd.ExplicitScript &&
+		!cmd.Live &&
 		cmd.As == "" &&
 		cmd.TargetPort == 0
 }
@@ -1064,7 +1085,7 @@ func prepareStaticFilePathTarget(cmd cli.Command, targetPath string, port int) (
 
 func prepareStaticFilePlan(cmd cli.Command, root, urlPath string, port int) (RunPlan, error) {
 	host := project.NormalizeHostnameName(filepath.Base(root)) + ".localhost"
-	return applyAsAlias(cmd, RunPlan{
+	return applyRunOptions(cmd, RunPlan{
 		Port:        port,
 		Host:        host,
 		Name:        strings.TrimSuffix(host, ".localhost"),
@@ -1093,6 +1114,10 @@ func missingScriptError(script string, available []string) error {
 		return errors.New(out.String())
 	}
 	return fmt.Errorf("gohere error: script %q not found; available scripts: %s", script, strings.Join(available, ", "))
+}
+
+func liveStaticOnlyError() error {
+	return errors.New("gohere error: --live is only supported for static files and folders.")
 }
 
 func formatRunError(cmd cli.Command, err error) error {

@@ -74,6 +74,8 @@ func TestPrintUsageDescribesFlags(t *testing.T) {
 	for _, want := range []string{
 		"--open",
 		"open the URL in your browser",
+		"--live",
+		"auto-refresh static pages when files change",
 		"--as NAME",
 		"use NAME.localhost for this run",
 		"--verbose",

@@ -207,6 +207,27 @@ func TestParseOpenFlag(t *testing.T) {
 	}
 }
 
+func TestParseLiveFlag(t *testing.T) {
+	tests := [][]string{
+		{"gohere", "--live"},
+		{"gohere", "./dist", "--live"},
+		{"gohere", "about.html", "--live"},
+		{"gohere", "--live", "--", "npm", "run", "dev"},
+	}
+
+	for _, args := range tests {
+		t.Run(args[len(args)-1], func(t *testing.T) {
+			cmd, err := Parse(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !cmd.Live {
+				t.Fatalf("Live = false for args %#v", args)
+			}
+		})
+	}
+}
+
 func TestParseAsFlag(t *testing.T) {
 	tests := []struct {
 		name string
