@@ -51,6 +51,9 @@ func TestPrepareScriptRun(t *testing.T) {
 	if !sameStrings(plan.Command, want) {
 		t.Fatalf("command = %#v, want %#v", plan.Command, want)
 	}
+	if !plan.ManagedPort {
+		t.Fatalf("ManagedPort = false, want true for injected script")
+	}
 	assertEnv(t, plan.Env, "PORT", itoa(plan.Port))
 	assertEnv(t, plan.Env, "HOST", "127.0.0.1")
 }
@@ -84,6 +87,9 @@ func TestPrepareRunUsesTargetPortOverride(t *testing.T) {
 	if !sameStrings(plan.Command, want) {
 		t.Fatalf("command = %#v, want %#v", plan.Command, want)
 	}
+	if !plan.ManagedPort {
+		t.Fatalf("ManagedPort = false, want true for injected script")
+	}
 }
 
 func TestPrepareRunUsesPortFlagEscapeHatch(t *testing.T) {
@@ -98,6 +104,27 @@ func TestPrepareRunUsesPortFlagEscapeHatch(t *testing.T) {
 	want := []string{"npm", "run", "dev", "--", "--listen", "5173"}
 	if !sameStrings(plan.Command, want) {
 		t.Fatalf("command = %#v, want %#v", plan.Command, want)
+	}
+	if !plan.ManagedPort {
+		t.Fatalf("ManagedPort = false, want true for --port-flag script")
+	}
+}
+
+func TestPrepareRunDoesNotMarkUnknownScriptManaged(t *testing.T) {
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"custom-dev"}}`,
+	})
+
+	plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"npm", "run", "dev"}
+	if !sameStrings(plan.Command, want) {
+		t.Fatalf("command = %#v, want %#v", plan.Command, want)
+	}
+	if plan.ManagedPort {
+		t.Fatalf("ManagedPort = true, want false when no port args were injected")
 	}
 }
 
@@ -1345,6 +1372,49 @@ func TestRunServiceDiscoveryMarksExplicitPortScriptsUnmanaged(t *testing.T) {
 		"pnpm-lock.yaml":           "",
 		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
 		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"wrangler dev --local --port 8787"}}`,
+	})
+
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	assertEnv(t, webEnv, "GOHERE_WORKER_URL", "http://worker.ctrltube.localhost")
+	assertMissingEnv(t, webEnv, "GOHERE_WORKER_PORT")
+	assertMissingEnv(t, webEnv, "GOHERE_WORKER_TARGET")
+	services := parseServiceDiscoveryJSON(t, webEnv)
+	worker := services["worker"]
+	if worker.Key != "WORKER" || worker.URL != "http://worker.ctrltube.localhost" || worker.Managed {
+		t.Fatalf("worker service entry = %#v, want unmanaged worker URL/key", worker)
+	}
+	if worker.Port != 0 || worker.Target != "" {
+		t.Fatalf("worker service entry should omit port/target when unmanaged: %#v", worker)
+	}
+}
+
+func TestRunServiceDiscoveryMarksUnknownScriptsUnmanaged(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return &multiRecordingAdminClient{}, nil
+	}
+	var webEnv []string
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		if filepath.Base(cfg.Dir) == "web" {
+			webEnv = cfg.Env
+		}
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"ctrltube","workspaces":["apps/*"]}`,
+		"pnpm-lock.yaml":           "",
+		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"custom-worker"}}`,
 	})
 
 	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, io.Discard, io.Discard); err != nil {

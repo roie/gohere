@@ -201,7 +201,7 @@ func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	}
 	injected := runner.InjectPortArgs(scriptCommand, port, cmd.PortFlag)
 	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
-	managedPort := !runner.HasExplicitPortOrHostFlag(scriptCommand)
+	managedPort := len(injected) > 0
 	host, err := project.HostnameForProject(cwd)
 	if err != nil {
 		return RunPlan{}, err
@@ -513,7 +513,7 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 	env := runner.ChildEnv(os.Environ(), port)
 	injected := runner.InjectPortArgs(workspacePackage.Script, port, cmd.PortFlag)
 	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
-	managedPort := !runner.HasExplicitPortOrHostFlag(workspacePackage.Script)
+	managedPort := len(injected) > 0
 	host, err := project.HostnameForProject(workspacePackage.Dir)
 	if err != nil {
 		return RunPlan{}, err
