@@ -36,8 +36,7 @@ func TestMain(m *testing.M) {
 }
 
 func isFakeWindowsNPMInvocation() bool {
-	return (strings.EqualFold(filepath.Base(os.Args[0]), "npm.exe") ||
-		(len(os.Args) > 1 && os.Args[1] == "run" && os.Getenv("PORT") != ""))
+	return os.Getenv("GOHERE_APP_FAKE_WINDOWS_NPM") == "1" && len(os.Args) > 1 && os.Args[1] == "run"
 }
 
 func TestPrepareScriptRun(t *testing.T) {
@@ -158,6 +157,7 @@ func TestRunPackageScriptWithWindowsLongPathSmoke(t *testing.T) {
 		t.Fatalf("PATH length = %d, want > 8191", len(longPath))
 	}
 	t.Setenv("PATH", longPath)
+	t.Setenv("GOHERE_APP_FAKE_WINDOWS_NPM", "1")
 
 	dir := tempProject(t, map[string]string{
 		"package.json": `{"scripts":{"dev":"custom-dev"}}`,
@@ -4709,7 +4709,7 @@ func runFakeWindowsNPM() {
 		port = "47654"
 	}
 	fmt.Fprintf(os.Stdout, "Local: http://127.0.0.1:%s\n", port)
-	time.Sleep(10 * time.Second)
+	time.Sleep(time.Second)
 }
 
 func installFakeWindowsNPM(t *testing.T, output string) {
