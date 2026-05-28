@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -57,12 +58,18 @@ var (
 	probeBridgeFunc            = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
 		return bridge.ProbeBridge(ctx, client, wslIP)
 	}
-	openBrowserFunc = func(ctx context.Context, url string) error {
+	localhostHTTPStatusFunc = localhostHTTPStatus
+	openBrowserFunc         = func(ctx context.Context, url string) error {
 		return opener.Open(ctx, runtime.GOOS, detectWSLFunc(), url)
 	}
 )
 
 const routerStartTimeout = 10 * time.Second
+
+const (
+	doctorLocalhostProbeURL     = "http://gohere-doctor.localhost/"
+	doctorLocalhostProbeTimeout = 1500 * time.Millisecond
+)
 
 type adminClient interface {
 	Health(context.Context) error
@@ -2184,7 +2191,10 @@ func Doctor(ctx context.Context, stdout io.Writer) error {
 }
 
 func DoctorWithStore(ctx context.Context, stdout io.Writer, stateDir string, store router.Store, client adminClient) error {
-	return DoctorWithChecks(ctx, stdout, stateDir, store, client, DoctorChecks{Port80Status: port80Status})
+	return DoctorWithChecks(ctx, stdout, stateDir, store, client, DoctorChecks{
+		Port80Status:        port80Status,
+		LocalhostHTTPStatus: localhostHTTPStatusFunc,
+	})
 }
 
 type Port80Status struct {
@@ -2193,9 +2203,16 @@ type Port80Status struct {
 	Hint   string
 }
 
+type LocalhostHTTPStatus struct {
+	OK     bool
+	Detail string
+	Hint   string
+}
+
 type DoctorChecks struct {
 	Port80Available      func() bool
 	Port80Status         func() Port80Status
+	LocalhostHTTPStatus  func(context.Context) LocalhostHTTPStatus
 	SetcapEnabled        func(string) bool
 	SystemdUserServiceOK func() (bool, bool)
 	GOOS                 string
@@ -2260,6 +2277,10 @@ func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, st
 			detail = "used by gohere service"
 		}
 		checks = append(checks, lifecycle.DoctorCheck{Name: "port 80", OK: ok, Detail: detail, Hint: "Try: stop the process using port 80, then run gohere again."})
+	}
+	if extra.LocalhostHTTPStatus != nil {
+		status := extra.LocalhostHTTPStatus(ctx)
+		checks = append(checks, lifecycle.DoctorCheck{Name: ".localhost routing", OK: status.OK, Detail: status.Detail, Hint: status.Hint})
 	}
 	if goos == "linux" && exists(binaryPath) {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "setcap", OK: extra.SetcapEnabled(binaryPath), Detail: "cap_net_bind_service", Hint: "Try: sudo setcap cap_net_bind_service=+ep ~/.gohere/bin/gohere"})
@@ -2386,6 +2407,66 @@ func port80Status() Port80Status {
 		return Port80Status{OK: false, Detail: "already in use", Hint: "Try: stop the process using port 80, then run gohere again."}
 	}
 	return Port80Status{OK: false, Detail: "bind failed", Hint: fmt.Sprintf("Bind error: %v", err)}
+}
+
+func localhostHTTPStatus(ctx context.Context) LocalhostHTTPStatus {
+	return localhostHTTPStatusForURL(ctx, doctorLocalhostProbeURL)
+}
+
+func localhostHTTPStatusForURL(ctx context.Context, probeURL string) LocalhostHTTPStatus {
+	ctx, cancel := context.WithTimeout(ctx, doctorLocalhostProbeTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+	if err != nil {
+		return LocalhostHTTPStatus{
+			OK:     false,
+			Detail: "invalid probe URL",
+			Hint:   err.Error(),
+		}
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	client := &http.Client{
+		Timeout:   doctorLocalhostProbeTimeout,
+		Transport: transport,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return LocalhostHTTPStatus{
+			OK:     false,
+			Detail: "unreachable: " + compactDoctorDetail(err.Error()),
+			Hint:   "Try: gohere setup. In Windows/WSL setups, run gohere doctor from the OS where the browser runs too.",
+		}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return LocalhostHTTPStatus{
+			OK:     false,
+			Detail: "read failed",
+			Hint:   err.Error(),
+		}
+	}
+	text := string(body)
+	if strings.Contains(text, "gohere route missing") || strings.Contains(text, "No gohere route is running") {
+		return LocalhostHTTPStatus{OK: true, Detail: "reached gohere router"}
+	}
+	return LocalhostHTTPStatus{
+		OK:     false,
+		Detail: "unexpected response: " + resp.Status,
+		Hint:   "Another process may own port 80, or .localhost may resolve outside gohere. In Windows/WSL setups, run gohere doctor from the OS where the browser runs too.",
+	}
+}
+
+func compactDoctorDetail(detail string) string {
+	const max = 140
+	if len(detail) <= max {
+		return detail
+	}
+	return detail[:max-3] + "..."
 }
 
 func isPermissionBindError(err error) bool {

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -3617,6 +3619,9 @@ func TestStopAllStopsDeadRoutesAndSkipsUnverifiedLiveRoutes(t *testing.T) {
 }
 
 func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
+	restoreLocalhostHTTP := stubLocalhostHTTPStatus(t, LocalhostHTTPStatus{OK: true, Detail: "reached gohere router"})
+	defer restoreLocalhostHTTP()
+
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "router.pid"), []byte("12345\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -3633,6 +3638,69 @@ func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "ok service pid 12345") {
 		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorWithStoreReportsLocalhostHTTPProbe(t *testing.T) {
+	restoreLocalhostHTTP := stubLocalhostHTTPStatus(t, LocalhostHTTPStatus{OK: true, Detail: "reached gohere router"})
+	defer restoreLocalhostHTTP()
+
+	var out strings.Builder
+	if err := DoctorWithStore(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok .localhost routing reached gohere router") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorWithChecksShowsLocalhostHTTPProbeHint(t *testing.T) {
+	var out strings.Builder
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), nil, DoctorChecks{
+		Port80Available: func() bool { return true },
+		LocalhostHTTPStatus: func(context.Context) LocalhostHTTPStatus {
+			return LocalhostHTTPStatus{
+				OK:     false,
+				Detail: "unreachable: dial tcp",
+				Hint:   "Run gohere doctor from Windows too.",
+			}
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail .localhost routing unreachable: dial tcp\n  Run gohere doctor from Windows too.\n") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestLocalhostHTTPStatusRecognizesGohereMissingRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, "<!doctype html><title>gohere route missing</title><h1>No gohere route is running</h1>")
+	}))
+	defer server.Close()
+
+	status := localhostHTTPStatusForURL(t.Context(), server.URL)
+	if !status.OK || status.Detail != "reached gohere router" {
+		t.Fatalf("status = %#v, want gohere router reached", status)
+	}
+}
+
+func TestLocalhostHTTPStatusRejectsUnexpectedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "not gohere")
+	}))
+	defer server.Close()
+
+	status := localhostHTTPStatusForURL(t.Context(), server.URL)
+	if status.OK {
+		t.Fatalf("status = %#v, want failure", status)
+	}
+	if status.Detail != "unexpected response: 200 OK" ||
+		!strings.Contains(status.Hint, "Another process may own port 80") ||
+		!strings.Contains(status.Hint, "Windows/WSL") {
+		t.Fatalf("status = %#v", status)
 	}
 }
 
@@ -3783,8 +3851,10 @@ func TestDoctorReportsMissingWindowsInstallEvenWhenStaleTokenExists(t *testing.T
 
 func TestDoctorDoesNotPanicWhenAdminClientCannotBeCreated(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
+	restoreLocalhostHTTP := stubLocalhostHTTPStatus(t, LocalhostHTTPStatus{OK: false, Detail: "unreachable"})
 	defer func() {
 		defaultAdminClientFunc = oldDefaultAdminClient
+		restoreLocalhostHTTP()
 	}()
 
 	defaultAdminClientFunc = func() (adminClient, error) {
@@ -4354,6 +4424,17 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 		probeBridgeFunc = oldProbeBridge
 		defaultAdminClientFunc = oldDefaultAdminClient
 		startWindowsServiceFunc = oldStartWindowsService
+	}
+}
+
+func stubLocalhostHTTPStatus(t *testing.T, status LocalhostHTTPStatus) func() {
+	t.Helper()
+	oldLocalhostHTTPStatus := localhostHTTPStatusFunc
+	localhostHTTPStatusFunc = func(context.Context) LocalhostHTTPStatus {
+		return status
+	}
+	return func() {
+		localhostHTTPStatusFunc = oldLocalhostHTTPStatus
 	}
 }
 
