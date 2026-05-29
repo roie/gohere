@@ -4209,6 +4209,53 @@ func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsInvalidTokenFormat(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "token"), []byte("not-a-token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+
+	if err := DoctorWithChecks(t.Context(), &out, stateDir, router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		Port80Available: func() bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail token format invalid") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorReportsRouteStoreCorruption(t *testing.T) {
+	var out strings.Builder
+
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), brokenRouteStore{err: errors.New("invalid character")}, fakeAdminClient{}, DoctorChecks{
+		Port80Available: func() bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail route store invalid character") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorReportsDeadServicePID(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "router.pid"), []byte("999999\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+
+	if err := DoctorWithChecks(t.Context(), &out, stateDir, router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		Port80Available: func() bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail service process dead") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
 func TestDoctorWithStoreReportsLocalhostHTTPProbe(t *testing.T) {
 	restoreLocalhostHTTP := stubLocalhostHTTPStatus(t, LocalhostHTTPStatus{OK: true, Detail: "reached gohere router"})
 	defer restoreLocalhostHTTP()
@@ -4218,6 +4265,19 @@ func TestDoctorWithStoreReportsLocalhostHTTPProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "ok .localhost routing reached gohere router") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorReportsUnavailableAdminAPIWhenClientMissing(t *testing.T) {
+	var out strings.Builder
+
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), nil, DoctorChecks{
+		Port80Available: func() bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail admin API health unavailable") {
 		t.Fatalf("doctor output = %q", out.String())
 	}
 }
@@ -5194,6 +5254,18 @@ func (s *interleavingAppRouteStore) Update(fn func([]router.Route) ([]router.Rou
 
 func cloneAppTestRoutes(routes []router.Route) []router.Route {
 	return append([]router.Route(nil), routes...)
+}
+
+type brokenRouteStore struct {
+	err error
+}
+
+func (s brokenRouteStore) Load() ([]router.Route, error) {
+	return nil, s.err
+}
+
+func (s brokenRouteStore) Save([]router.Route) error {
+	return nil
 }
 
 type failingPromptReader struct{}

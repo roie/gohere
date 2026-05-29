@@ -2391,6 +2391,13 @@ func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, st
 		{Name: "stable binary", OK: exists(binaryPath), Detail: binaryPath, Hint: "Try: run gohere once to reinstall the local service binary."},
 		{Name: "token", OK: exists(tokenPath), Detail: tokenPath, Hint: "Try: run gohere uninstall, then run gohere again."},
 	}
+	if exists(tokenPath) {
+		if _, err := router.ReadToken(stateDir); err != nil {
+			checks = append(checks, lifecycle.DoctorCheck{Name: "token format", OK: false, Detail: "invalid", Hint: "Try: gohere uninstall, then run gohere again."})
+		} else {
+			checks = append(checks, lifecycle.DoctorCheck{Name: "token format", OK: true, Detail: "valid"})
+		}
+	}
 	if info, err := os.Stat(tokenPath); goos != "windows" && err == nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "token permissions", OK: info.Mode().Perm() == 0600, Detail: info.Mode().Perm().String(), Hint: "Try: chmod 600 ~/.gohere/token"})
 	}
@@ -2398,14 +2405,29 @@ func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, st
 	if client != nil {
 		adminHealthy = client.Health(ctx) == nil
 		checks = append(checks, lifecycle.DoctorCheck{Name: "admin API health", OK: adminHealthy, Hint: "Try: gohere uninstall, then run gohere again."})
+	} else {
+		checks = append(checks, lifecycle.DoctorCheck{Name: "admin API health", OK: false, Detail: "unavailable", Hint: "Try: run gohere once to start the service."})
 	}
-	if pid, err := os.ReadFile(pidPath); err == nil {
-		checks = append(checks, lifecycle.DoctorCheck{Name: "service pid", OK: true, Detail: strings.TrimSpace(string(pid))})
+	if pidData, err := os.ReadFile(pidPath); err == nil {
+		pidText := strings.TrimSpace(string(pidData))
+		checks = append(checks, lifecycle.DoctorCheck{Name: "service pid", OK: true, Detail: pidText})
+		pid, err := strconv.Atoi(pidText)
+		switch {
+		case err != nil || pid <= 0:
+			checks = append(checks, lifecycle.DoctorCheck{Name: "service process", OK: false, Detail: "invalid pid", Hint: "Try: gohere service stop, then run gohere again."})
+		case lifecycle.PIDAlive(pid):
+			checks = append(checks, lifecycle.DoctorCheck{Name: "service process", OK: true, Detail: "running"})
+		default:
+			checks = append(checks, lifecycle.DoctorCheck{Name: "service process", OK: false, Detail: "dead", Hint: "Try: run gohere once to restart the service."})
+		}
 	} else {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "service pid", OK: false, Detail: pidPath, Hint: "Try: run gohere once to start the service."})
 	}
 	if routes, err := store.Load(); err == nil {
+		checks = append(checks, lifecycle.DoctorCheck{Name: "route store", OK: true, Detail: "valid"})
 		checks = append(checks, lifecycle.DoctorCheck{Name: "active routes", OK: true, Detail: fmt.Sprintf("%d", len(routes))})
+	} else {
+		checks = append(checks, lifecycle.DoctorCheck{Name: "route store", OK: false, Detail: err.Error(), Hint: "Try: gohere prune or remove ~/.gohere/routes.json if it is corrupt."})
 	}
 	if extra.Port80Status != nil {
 		status := extra.Port80Status()
