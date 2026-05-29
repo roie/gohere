@@ -1,6 +1,8 @@
 package project
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -18,6 +20,8 @@ const (
 	PackageManagerPNPM PackageManager = "pnpm"
 	PackageManagerYarn PackageManager = "yarn"
 	PackageManagerBun  PackageManager = "bun"
+
+	maxHostnameConflictAttempts = 100
 )
 
 type PackageJSON struct {
@@ -684,12 +688,13 @@ func ResolveHostnameConflict(desiredHost, cwd string, active map[string]string) 
 		return candidate
 	}
 
-	for suffix := 2; ; suffix++ {
+	for suffix := 2; suffix <= maxHostnameConflictAttempts; suffix++ {
 		candidate = conflictHost(parent, base, suffix)
 		if existingCWD, ok := activeHostCWD(active, candidate); !ok || samePath(existingCWD, cwd) {
 			return candidate
 		}
 	}
+	return fallbackConflictHost(parent, base, cwd)
 }
 
 func conflictHost(parent, base string, suffix int) string {
@@ -708,6 +713,23 @@ func conflictHost(parent, base string, suffix int) string {
 	return NormalizeHostnameName(label) + ".localhost"
 }
 
+func fallbackConflictHost(parent, base, cwd string) string {
+	suffixPart := "-" + shortHash(parent+"|"+base+"|"+cwd)
+	label := NormalizeHostnameName(parent + "-" + base)
+	if len(label)+len(suffixPart) > 63 {
+		label = strings.TrimRight(label[:63-len(suffixPart)], "-")
+	}
+	if label == "" {
+		label = "app"
+	}
+	return label + suffixPart + ".localhost"
+}
+
+func shortHash(value string) string {
+	sum := sha1.Sum([]byte(value))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
 func activeHostCWD(active map[string]string, host string) (string, bool) {
 	for activeHost, cwd := range active {
 		if strings.EqualFold(activeHost, host) {
@@ -718,7 +740,19 @@ func activeHostCWD(active map[string]string, host string) (string, bool) {
 }
 
 func samePath(a, b string) bool {
-	absA, errA := filepath.Abs(a)
-	absB, errB := filepath.Abs(b)
+	absA, errA := canonicalPath(a)
+	absB, errB := canonicalPath(b)
 	return errA == nil && errB == nil && absA == absB
+}
+
+func canonicalPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return resolved, nil
+	}
+	return abs, nil
 }

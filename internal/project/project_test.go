@@ -1,6 +1,7 @@
 package project
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -435,6 +436,49 @@ func TestResolveHostnameConflictKeepsLabelsWithinDNSLimit(t *testing.T) {
 	label = strings.TrimSuffix(got, ".localhost")
 	if len(label) != 63 || !strings.HasSuffix(label, "-2") {
 		t.Fatalf("suffixed conflict label = %q length %d, want 63 and -2 suffix", label, len(label))
+	}
+}
+
+func TestResolveHostnameConflictTreatsSymlinkedPathsAsSameProject(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real", "app")
+	if err := os.MkdirAll(realDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(root, "linked-app")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+
+	got := ResolveHostnameConflict("app.localhost", linkDir, map[string]string{
+		"app.localhost": realDir,
+	})
+	if got != "app.localhost" {
+		t.Fatalf("symlinked path should reuse host, got %q", got)
+	}
+}
+
+func TestResolveHostnameConflictFallsBackAfterBoundedAttempts(t *testing.T) {
+	const maxAttempts = 100
+
+	cwd := filepath.Join("/work", "parent", "app")
+	active := map[string]string{
+		"app.localhost":        "/other/app",
+		"parent-app.localhost": "/other/parent-app",
+	}
+	for suffix := 2; suffix <= maxAttempts; suffix++ {
+		active[conflictHost("parent", "app", suffix)] = fmt.Sprintf("/other/app-%d", suffix)
+	}
+
+	got := ResolveHostnameConflict("app.localhost", cwd, active)
+	if strings.HasSuffix(got, "-101.localhost") {
+		t.Fatalf("conflict resolver kept incrementing past bounded attempts: %q", got)
+	}
+	if !strings.HasPrefix(got, "parent-app-") || !strings.HasSuffix(got, ".localhost") {
+		t.Fatalf("fallback host = %q, want parent-app-<hash>.localhost", got)
+	}
+	if len(strings.TrimSuffix(got, ".localhost")) > 63 {
+		t.Fatalf("fallback label too long: %q", got)
 	}
 }
 
