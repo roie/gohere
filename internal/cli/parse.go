@@ -78,7 +78,7 @@ func Parse(args []string) (Command, error) {
 		case "--live":
 			cmd.Live = true
 		case "--as":
-			if len(rest) == 0 {
+			if len(rest) == 0 || strings.HasPrefix(rest[0], "-") {
 				return Command{}, parseError("--as requires a name")
 			}
 			cmd.As = rest[0]
@@ -94,7 +94,7 @@ func Parse(args []string) (Command, error) {
 			cmd.TargetPort = port
 			rest = rest[1:]
 		case "--port-flag":
-			if len(rest) == 0 {
+			if len(rest) == 0 || isReservedValueFlag(rest[0]) {
 				return Command{}, parseError("--port-flag requires a flag")
 			}
 			cmd.PortFlag = rest[0]
@@ -340,6 +340,15 @@ func verboseRequested(args []string) bool {
 
 func openRequested(args []string) bool {
 	return len(args) == 1 && (args[0] == "--open" || args[0] == "-o")
+}
+
+func isReservedValueFlag(arg string) bool {
+	switch arg {
+	case "--verbose", "--open", "-o", "--live", "--as", "--target", "--port-flag", "--help", "-h", "--version", "-v":
+		return true
+	default:
+		return false
+	}
 }
 
 func openAfterFixedCommandError() error {

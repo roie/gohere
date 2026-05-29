@@ -149,6 +149,14 @@ func TestInjectPortArgsForHost(t *testing.T) {
 	}
 }
 
+func TestInjectPortArgsDetectsEnvPrefixedTool(t *testing.T) {
+	got := InjectPortArgsForHost("NODE_ENV=production vite --clearScreen false", 49231, "", "127.0.0.1")
+	want := []string{"--", "--host", "127.0.0.1", "--port", "49231", "--strictPort"}
+	if !sameStrings(got, want) {
+		t.Fatalf("InjectPortArgsForHost() = %#v, want %#v", got, want)
+	}
+}
+
 func TestBuildScriptCommand(t *testing.T) {
 	tests := []struct {
 		pm   project.PackageManager

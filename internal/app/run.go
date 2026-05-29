@@ -543,7 +543,13 @@ func injectedArgsControlPort(args []string, portFlag string) bool {
 		case "--port", "-p":
 			return true
 		}
+		if strings.HasPrefix(arg, "--port=") || (strings.HasPrefix(arg, "-p") && len(arg) > len("-p")) {
+			return true
+		}
 		if portFlag != "" && arg == portFlag {
+			return true
+		}
+		if portFlag != "" && strings.HasPrefix(arg, portFlag+"=") {
 			return true
 		}
 	}
@@ -1200,7 +1206,11 @@ func routeTarget(host string, port int) string {
 }
 
 func windowsTokenError(err error) error {
-	return errors.New("Windows gohere service is available, but WSL could not use it.\n\nWhen Windows and WSL are both installed, WSL projects should use the Windows service.\n\nRun:\n  gohere doctor")
+	msg := "Windows gohere service is available, but WSL could not use it.\n\nWhen Windows and WSL are both installed, WSL projects should use the Windows service.\n\nRun:\n  gohere doctor"
+	if err != nil {
+		return fmt.Errorf("%s\n\nDetails: %w", msg, err)
+	}
+	return errors.New(msg)
 }
 
 func startWindowsService(ctx context.Context, tokenPath string) error {

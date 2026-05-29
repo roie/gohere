@@ -81,6 +81,29 @@ func TestParseMultiRejectsUnsupportedOptions(t *testing.T) {
 	}
 }
 
+func TestParseValueFlagsRejectOptionAsValue(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "as", args: []string{"gohere", "--as", "--target", "3000"}, want: "gohere error: --as requires a name"},
+		{name: "port flag", args: []string{"gohere", "--port-flag", "--target", "3000"}, want: "gohere error: --port-flag requires a flag"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse(tt.args)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("error = %q, want %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestParseVersionScriptRun(t *testing.T) {
 	cmd, err := Parse([]string{"gohere", "version"})
 	if err != nil {

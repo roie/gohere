@@ -365,14 +365,39 @@ func DetectPortFromOutput(line string) (int, bool) {
 
 func firstCommandWord(command string) string {
 	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return ""
+	for len(fields) > 0 {
+		word := fields[0]
+		fields = fields[1:]
+		if word == "env" {
+			continue
+		}
+		if isEnvAssignment(word) {
+			continue
+		}
+		if slash := strings.LastIndex(word, "/"); slash >= 0 {
+			word = word[slash+1:]
+		}
+		return strings.ToLower(word)
 	}
-	word := fields[0]
-	if slash := strings.LastIndex(word, "/"); slash >= 0 {
-		word = word[slash+1:]
+	return ""
+}
+
+func isEnvAssignment(word string) bool {
+	key, _, ok := strings.Cut(word, "=")
+	if !ok || key == "" {
+		return false
 	}
-	return strings.ToLower(word)
+	for i, r := range key {
+		switch {
+		case r == '_':
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 var localURLPort = regexp.MustCompile(`https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0):([0-9]{1,5})(?:[/?#\s]|$)`)

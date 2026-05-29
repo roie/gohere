@@ -136,6 +136,28 @@ func TestPrepareRunDoesNotMarkUnknownScriptManaged(t *testing.T) {
 	}
 }
 
+func TestInjectedArgsControlPortRecognizesJoinedPortFlags(t *testing.T) {
+	tests := [][]string{
+		{"--", "--port=5173"},
+		{"--", "-p5173"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			if !injectedArgsControlPort(args, "") {
+				t.Fatalf("injectedArgsControlPort(%#v) = false, want true", args)
+			}
+		})
+	}
+}
+
+func TestWindowsTokenErrorWrapsCause(t *testing.T) {
+	cause := errors.New("token discovery failed")
+	err := windowsTokenError(cause)
+	if !errors.Is(err, cause) {
+		t.Fatalf("windowsTokenError does not wrap cause: %v", err)
+	}
+}
+
 func TestRunPackageScriptWithWindowsLongPathSmoke(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows PATH smoke")
