@@ -185,6 +185,15 @@ func TestEnsureTokenConcurrentCreateReturnsSingleToken(t *testing.T) {
 	}
 }
 
+func TestTokenLockHeldErrorTreatsWindowsPermissionAsHeldLock(t *testing.T) {
+	if !tokenLockHeldErrorForGOOS("windows", os.ErrPermission) {
+		t.Fatal("windows permission error should be treated as an existing token lock")
+	}
+	if tokenLockHeldErrorForGOOS("linux", os.ErrPermission) {
+		t.Fatal("linux permission error should remain a real lock error")
+	}
+}
+
 func TestReplaceFileForWindowsReplacesExistingTarget(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "token")

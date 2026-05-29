@@ -27,6 +27,7 @@ func TestFormatRoutesShowsCompactTable(t *testing.T) {
 }
 
 func TestFormatRoutesVerboseShowsOperationalDetails(t *testing.T) {
+	ownerEnv := foreignOwnerEnv()
 	out := FormatRoutesVerbose([]RouteStatus{{
 		Route: router.Route{
 			Host:      "app.localhost",
@@ -35,7 +36,7 @@ func TestFormatRoutesVerboseShowsOperationalDetails(t *testing.T) {
 			PID:       123,
 			Mode:      "package",
 			Source:    "wsl",
-			OwnerEnv:  "windows",
+			OwnerEnv:  ownerEnv,
 			StartedAt: time.Date(2026, 5, 28, 1, 2, 3, 0, time.UTC),
 		},
 		Status: RouteStatusReady,
@@ -53,7 +54,7 @@ func TestFormatRoutesVerboseShowsOperationalDetails(t *testing.T) {
 		"cwd",
 		"package",
 		"wsl",
-		"windows",
+		ownerEnv,
 		"2026-05-28T01:02:03Z",
 		"route belongs to another environment",
 	} {
@@ -67,6 +68,13 @@ func TestFormatRoutesVerboseShowsOperationalDetails(t *testing.T) {
 	if strings.Contains(out, "backend") || strings.Contains(out, "cwd /tmp/app") || strings.Contains(out, "pid 123") {
 		t.Fatalf("output = %q", out)
 	}
+}
+
+func foreignOwnerEnv() string {
+	if currentOwnerEnv() == "windows" {
+		return "wsl"
+	}
+	return "windows"
 }
 
 func TestFormatRoutesUsesSharedStatusSemantics(t *testing.T) {

@@ -3301,6 +3301,7 @@ func TestListVerboseOutput(t *testing.T) {
 }
 
 func TestListJSONOutput(t *testing.T) {
+	ownerEnv := foreignTestOwnerEnv()
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{{
 		Host:        "vibe-oke.localhost",
@@ -3309,7 +3310,7 @@ func TestListJSONOutput(t *testing.T) {
 		PID:         123,
 		Mode:        "static",
 		Source:      "wsl",
-		OwnerEnv:    "windows",
+		OwnerEnv:    ownerEnv,
 		ProjectName: "vibe",
 		Name:        "vibe-oke",
 		StartedAt:   time.Date(2026, 5, 28, 1, 2, 3, 0, time.UTC),
@@ -3334,7 +3335,7 @@ func TestListJSONOutput(t *testing.T) {
 		route.CWD != "/tmp/vibe-oke" ||
 		route.Mode != "static" ||
 		route.Source != "wsl" ||
-		route.OwnerEnv != "windows" ||
+		route.OwnerEnv != ownerEnv ||
 		route.ProjectName != "vibe" ||
 		route.Name != "vibe-oke" ||
 		route.StartedAt != "2026-05-28T01:02:03Z" {
@@ -3346,6 +3347,13 @@ func TestListJSONOutput(t *testing.T) {
 	if !strings.Contains(route.StopReason, "another environment") {
 		t.Fatalf("stopReason = %q", route.StopReason)
 	}
+}
+
+func foreignTestOwnerEnv() string {
+	if runOwnerEnv() == "windows" {
+		return "wsl"
+	}
+	return "windows"
 }
 
 func TestListShowsUnknownWhenRouterIsNotReady(t *testing.T) {
@@ -4592,7 +4600,7 @@ func TestDoctorWithStoreTreatsHealthyRouterAsPort80OK(t *testing.T) {
 }
 
 func TestDoctorWithStoreReportsSetcapStatus(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS != "linux" {
 		t.Skip("setcap is Linux-specific")
 	}
 	stateDir := t.TempDir()
@@ -4649,7 +4657,7 @@ func TestDoctorWithStoreUsesWindowsStableBinary(t *testing.T) {
 }
 
 func TestDoctorWithStoreReportsSystemdStatus(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS != "linux" {
 		t.Skip("systemd is Linux-specific")
 	}
 	var out strings.Builder

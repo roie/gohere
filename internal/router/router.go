@@ -222,7 +222,7 @@ func lockTokenFile(path string) (func(), error) {
 			_ = file.Close()
 			return func() { _ = os.Remove(lockPath) }, nil
 		}
-		if !errors.Is(err, os.ErrExist) {
+		if !tokenLockHeldError(err) {
 			return nil, err
 		}
 		if time.Now().After(deadline) {
@@ -230,6 +230,17 @@ func lockTokenFile(path string) (func(), error) {
 		}
 		time.Sleep(tokenLockPoll)
 	}
+}
+
+func tokenLockHeldError(err error) bool {
+	return tokenLockHeldErrorForGOOS(runtime.GOOS, err)
+}
+
+func tokenLockHeldErrorForGOOS(goos string, err error) bool {
+	if errors.Is(err, os.ErrExist) {
+		return true
+	}
+	return goos == "windows" && errors.Is(err, os.ErrPermission)
 }
 
 func replaceFile(tmpPath, path string) error {

@@ -373,7 +373,16 @@ func TestStartRunsCommandInConfiguredDir(t *testing.T) {
 	}
 	defer result.Stop()
 
-	if got := firstNonEmptyLine(cfg.Stdout.(*bytes.Buffer).String()); got != dir {
+	got := firstNonEmptyLine(cfg.Stdout.(*bytes.Buffer).String())
+	canonicalGot, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalWant, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonicalGot != canonicalWant {
 		t.Fatalf("child cwd = %q, want %q", got, dir)
 	}
 }
