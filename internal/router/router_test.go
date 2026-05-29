@@ -803,6 +803,42 @@ func TestProxyRoutesByHostHeader(t *testing.T) {
 	}
 }
 
+func TestProxySetsForwardedHeaders(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Backend-Forwarded-For", r.Header.Get("X-Forwarded-For"))
+		w.Header().Set("X-Backend-Forwarded-Host", r.Header.Get("X-Forwarded-Host"))
+		w.Header().Set("X-Backend-Forwarded-Proto", r.Header.Get("X-Forwarded-Proto"))
+		io.WriteString(w, "proxied response")
+	}))
+	defer backend.Close()
+
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "eventca.localhost", Target: backend.URL}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://eventca.localhost/", nil)
+	req.Host = "eventca.localhost"
+	req.RemoteAddr = "127.0.0.1:45678"
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	req.Header.Set("X-Forwarded-Host", "spoofed.localhost")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d body %q", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Backend-Forwarded-For") != "127.0.0.1" {
+		t.Fatalf("X-Forwarded-For = %q, want 127.0.0.1", rec.Header().Get("X-Backend-Forwarded-For"))
+	}
+	if rec.Header().Get("X-Backend-Forwarded-Host") != "eventca.localhost" {
+		t.Fatalf("X-Forwarded-Host = %q, want eventca.localhost", rec.Header().Get("X-Backend-Forwarded-Host"))
+	}
+	if rec.Header().Get("X-Backend-Forwarded-Proto") != "http" {
+		t.Fatalf("X-Forwarded-Proto = %q, want http", rec.Header().Get("X-Backend-Forwarded-Proto"))
+	}
+}
+
 func TestProxyAddsRouteHopHeader(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Backend-Route-Hop", r.Header.Get(gohereRouteHeader))
@@ -1195,6 +1231,64 @@ func TestStartRunsAdminHealthAndCreatesState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "token")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStartProxiesForwardedHeadersOverHTTP(t *testing.T) {
+	stateDir := t.TempDir()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Smoke-Host", r.Host)
+		w.Header().Set("X-Smoke-Forwarded-For", r.Header.Get("X-Forwarded-For"))
+		w.Header().Set("X-Smoke-Forwarded-Host", r.Header.Get("X-Forwarded-Host"))
+		w.Header().Set("X-Smoke-Forwarded-Proto", r.Header.Get("X-Forwarded-Proto"))
+		io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+
+	store := NewRouteStore(filepath.Join(stateDir, RoutesFilename))
+	if err := store.Save([]Route{{Host: "smoke.localhost", Target: backend.URL}}); err != nil {
+		t.Fatal(err)
+	}
+	running, err := Start(t.Context(), StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  stateDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+running.HTTPAddr+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "smoke.localhost"
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	req.Header.Set("X-Forwarded-Host", "spoofed.localhost")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body %q", resp.StatusCode, string(body))
+	}
+	if resp.Header.Get("X-Smoke-Host") != "smoke.localhost" {
+		t.Fatalf("Host = %q, want smoke.localhost", resp.Header.Get("X-Smoke-Host"))
+	}
+	if resp.Header.Get("X-Smoke-Forwarded-For") != "127.0.0.1" {
+		t.Fatalf("X-Forwarded-For = %q, want 127.0.0.1", resp.Header.Get("X-Smoke-Forwarded-For"))
+	}
+	if resp.Header.Get("X-Smoke-Forwarded-Host") != "smoke.localhost" {
+		t.Fatalf("X-Forwarded-Host = %q, want smoke.localhost", resp.Header.Get("X-Smoke-Forwarded-Host"))
+	}
+	if resp.Header.Get("X-Smoke-Forwarded-Proto") != "http" {
+		t.Fatalf("X-Forwarded-Proto = %q, want http", resp.Header.Get("X-Smoke-Forwarded-Proto"))
 	}
 }
 

@@ -377,10 +377,32 @@ func (s *Server) HTTPHandler() http.Handler {
 		director := proxy.Director
 		proxy.Director = func(req *http.Request) {
 			director(req)
+			setForwardedHeaders(req, r)
 			appendRouteHop(req, route.Host)
 		}
 		proxy.ServeHTTP(w, r)
 	})
+}
+
+func setForwardedHeaders(out, in *http.Request) {
+	out.Header.Del("Forwarded")
+	out.Header.Del("X-Forwarded-For")
+	out.Header.Set("X-Forwarded-Host", forwardedHost(in))
+	out.Header.Set("X-Forwarded-Proto", forwardedProto(in))
+}
+
+func forwardedHost(r *http.Request) string {
+	if r.Host != "" {
+		return r.Host
+	}
+	return r.URL.Host
+}
+
+func forwardedProto(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 func routeLoopDetected(r *http.Request, host string) bool {
