@@ -208,6 +208,7 @@ jobs:
           cleanup_route
 
       - name: Publish npm package
+        # Auth uses npm Trusted Publishing/OIDC for this workflow, so NODE_AUTH_TOKEN is intentionally not set.
         run: npm publish "${{ steps.pack.outputs.tarball }}" --access public
 
       - name: Create GitHub release
