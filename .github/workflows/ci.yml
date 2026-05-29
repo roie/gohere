@@ -25,6 +25,9 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Vet
+        run: go vet ./...
+
   race:
     name: Race
     runs-on: ubuntu-latest
@@ -39,4 +42,4 @@ jobs:
           cache: false
 
       - name: Race
-        run: go test -race ./internal/router ./internal/app ./internal/lifecycle
+        run: go test -race ./...
