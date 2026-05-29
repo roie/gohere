@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/roie/gohere/internal/userpath"
@@ -183,6 +185,12 @@ func listenError(addr string, err error) error {
 }
 
 func isAddressInUseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "address already in use") ||
 		strings.Contains(msg, "only one usage of each socket address")

@@ -2,6 +2,7 @@ package router
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,8 +31,12 @@ const tokenLength = 64
 const maxAdminBodyBytes = 1024 * 1024
 const RoutesFilename = "routes.json"
 const gohereRouteHeader = "X-Gohere-Route"
+const proxyResponseHeaderTimeout = 30 * time.Second
+const routeStoreLockTimeout = 10 * time.Second
+const routeStoreLockPoll = 10 * time.Millisecond
 
 var rotateOpenFile = os.OpenFile
+var errInvalidRouteHost = errors.New("invalid route host")
 
 type Route struct {
 	Host            string    `json:"host"`
@@ -65,14 +71,25 @@ type Config struct {
 }
 
 type Server struct {
-	token    string
-	store    Store
-	shutdown func()
-	storeMu  sync.RWMutex
+	token          string
+	store          Store
+	shutdown       func()
+	shutdownOnce   sync.Once
+	storeMu        sync.RWMutex
+	proxyTransport *http.Transport
 }
 
 func NewServer(cfg Config) *Server {
-	return &Server{token: cfg.Token, store: cfg.Store, shutdown: cfg.Shutdown}
+	return &Server{token: cfg.Token, store: cfg.Store, shutdown: cfg.Shutdown, proxyTransport: newProxyTransport()}
+}
+
+func newProxyTransport() *http.Transport {
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+		clone := transport.Clone()
+		clone.ResponseHeaderTimeout = proxyResponseHeaderTimeout
+		return clone
+	}
+	return &http.Transport{ResponseHeaderTimeout: proxyResponseHeaderTimeout}
 }
 
 func EnsureToken(stateDir string) (string, error) {
@@ -326,6 +343,10 @@ func (s *Server) HTTPHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		route, ok, err := s.routeForHost(r.Host)
 		if err != nil {
+			if errors.Is(err, errInvalidRouteHost) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -362,6 +383,7 @@ func (s *Server) HTTPHandler() http.Handler {
 			return
 		}
 		proxy := httputil.NewSingleHostReverseProxy(target)
+		proxy.Transport = s.proxyTransport
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 			if isUpgradeRequest(r) {
 				http.Error(w, "gohere websocket upstream unavailable", http.StatusBadGateway)
@@ -491,6 +513,12 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "host and target are required", http.StatusBadRequest)
 			return
 		}
+		routeHost, err := normalizeRouteHost(route.Host)
+		if err != nil {
+			http.Error(w, "invalid route host", http.StatusBadRequest)
+			return
+		}
+		route.Host = routeHost
 		target, err := url.Parse(route.Target)
 		if err != nil {
 			http.Error(w, "target must be an absolute URL", http.StatusBadRequest)
@@ -664,21 +692,29 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 	if s.shutdown != nil {
-		go func() {
-			defer func() {
-				_ = recover()
+		s.shutdownOnce.Do(func() {
+			go func() {
+				defer func() {
+					_ = recover()
+				}()
+				s.shutdown()
 			}()
-			s.shutdown()
-		}()
+		})
 	}
 }
 
 func (s *Server) authorized(r *http.Request) bool {
-	return s.token != "" && r.Header.Get("X-Gohere-Token") == s.token
+	token := r.Header.Get("X-Gohere-Token")
+	return s.token != "" &&
+		len(token) == len(s.token) &&
+		subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) == 1
 }
 
 func (s *Server) routeForHost(host string) (Route, bool, error) {
-	host = hostWithoutPort(host)
+	host, err := normalizeRouteHost(host)
+	if err != nil {
+		return Route{}, false, err
+	}
 	host = strings.ToLower(host)
 	routes, err := s.loadRoutes()
 	if err != nil {
@@ -790,17 +826,45 @@ func requestAcceptMatches(r *http.Request, match func(string) bool) bool {
 }
 
 func hostWithoutPort(host string) string {
-	if parsed, _, err := net.SplitHostPort(host); err == nil {
-		return strings.Trim(parsed, "[]")
-	}
-	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
-		return strings.Trim(host, "[]")
-	}
-	if strings.Count(host, ":") == 1 {
-		before, _, _ := strings.Cut(host, ":")
-		return before
+	host, err := normalizeRouteHost(host)
+	if err != nil {
+		return host
 	}
 	return host
+}
+
+func normalizeRouteHost(host string) (string, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "", errInvalidRouteHost
+	}
+	if parsed, port, err := net.SplitHostPort(host); err == nil {
+		if port == "" {
+			return "", errInvalidRouteHost
+		}
+		if _, err := strconv.Atoi(port); err != nil {
+			return "", errInvalidRouteHost
+		}
+		host = strings.Trim(parsed, "[]")
+	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.Trim(host, "[]")
+	} else if strings.Count(host, ":") == 1 {
+		before, after, _ := strings.Cut(host, ":")
+		if before == "" || after == "" {
+			return "", errInvalidRouteHost
+		}
+		if _, err := strconv.Atoi(after); err != nil {
+			return "", errInvalidRouteHost
+		}
+		host = before
+	} else if strings.Contains(host, ":") {
+		return "", errInvalidRouteHost
+	}
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if host == "" {
+		return "", errInvalidRouteHost
+	}
+	return strings.ToLower(host), nil
 }
 
 func upsertRoute(routes []Route, route Route) []Route {

@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -378,6 +380,36 @@ func TestAdminAPIShutdownCallsHandler(t *testing.T) {
 	}
 }
 
+func TestAdminAPIShutdownCallsHandlerOnce(t *testing.T) {
+	var calls atomic.Int32
+	done := make(chan struct{})
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore(), Shutdown: func() {
+		if calls.Add(1) == 1 {
+			close(done)
+		}
+	}})
+
+	handler := srv.AdminHandler()
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+		req.Header.Set("X-Gohere-Token", "secret")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("POST /shutdown #%d = %d", i+1, rec.Code)
+		}
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown handler was not called")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("shutdown calls = %d, want 1", got)
+	}
+}
+
 func TestAdminAPIProbeTargetReachable(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "ok")
@@ -704,6 +736,53 @@ func TestAdminAPIUpsertHostCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestAdminAPIUpsertNormalizesRouteHostWithPort(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "proxied response")
+	}))
+	defer backend.Close()
+
+	store := NewMemoryStore()
+	srv := NewServer(Config{Token: "secret", Store: store})
+	body := strings.NewReader(fmt.Sprintf(`{"host":"EventCA.localhost:8080","target":%q}`, backend.URL))
+	req := httptest.NewRequest(http.MethodPost, "/routes", body)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST /routes = %d body %q", rec.Code, rec.Body.String())
+	}
+	routes, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Host != "eventca.localhost" {
+		t.Fatalf("stored routes = %#v, want normalized host", routes)
+	}
+
+	proxyReq := httptest.NewRequest(http.MethodGet, "http://eventca.localhost/", nil)
+	proxyReq.Host = "eventca.localhost"
+	proxyRec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(proxyRec, proxyReq)
+	if proxyRec.Code != http.StatusOK || proxyRec.Body.String() != "proxied response" {
+		t.Fatalf("proxy response = %d %q", proxyRec.Code, proxyRec.Body.String())
+	}
+}
+
+func TestAdminAPIRejectsRouteHostWithMalformedPort(t *testing.T) {
+	store := NewMemoryStore()
+	srv := NewServer(Config{Token: "secret", Store: store})
+	body := strings.NewReader(`{"host":"eventca.localhost:bad","target":"http://127.0.0.1:49231"}`)
+	req := httptest.NewRequest(http.MethodPost, "/routes", body)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /routes = %d body %q, want 400", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAdminAPIConcurrentUpsertsDoNotLoseRoutes(t *testing.T) {
 	store := NewMemoryStore()
 	srv := NewServer(Config{Token: "secret", Store: store})
@@ -800,6 +879,32 @@ func TestProxyRoutesByHostHeader(t *testing.T) {
 	}
 	if rec.Header().Get("X-Backend-Host") != "eventca.localhost" {
 		t.Fatalf("backend Host = %q, want eventca.localhost", rec.Header().Get("X-Backend-Host"))
+	}
+}
+
+func TestProxyRejectsRequestHostWithMalformedPort(t *testing.T) {
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "eventca.localhost", Target: "http://127.0.0.1:49231"}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://eventca.localhost/", nil)
+	req.Host = "eventca.localhost:bad"
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("proxy status = %d body %q, want 400", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServerConfiguresProxyResponseHeaderTimeout(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+
+	if srv.proxyTransport == nil {
+		t.Fatal("proxy transport is nil")
+	}
+	if srv.proxyTransport.ResponseHeaderTimeout <= 0 {
+		t.Fatalf("ResponseHeaderTimeout = %v, want positive timeout", srv.proxyTransport.ResponseHeaderTimeout)
 	}
 }
 
@@ -1572,6 +1677,21 @@ func TestListenErrorIncludesPortOwnerWhenDetected(t *testing.T) {
 	if !strings.Contains(msg, "port is already in use") || !strings.Contains(msg, "owning process: nginx 1234") {
 		t.Fatalf("listen error = %q", msg)
 	}
+}
+
+func TestAddressInUseDetectionUsesSentinelErrors(t *testing.T) {
+	err := localizedAddressInUseError{}
+	if !isAddressInUseError(err) {
+		t.Fatalf("isAddressInUseError(%T) = false, want true", err)
+	}
+}
+
+type localizedAddressInUseError struct{}
+
+func (localizedAddressInUseError) Error() string { return "bind failed" }
+
+func (localizedAddressInUseError) Is(target error) bool {
+	return target == syscall.EADDRINUSE
 }
 
 func TestStartRotatesDefaultRouterLog(t *testing.T) {
