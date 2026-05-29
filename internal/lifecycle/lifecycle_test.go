@@ -182,6 +182,32 @@ func TestPruneRemovesDeadRoutes(t *testing.T) {
 	}
 }
 
+func TestPrunePreservesRoutesAddedBetweenLoadAndSave(t *testing.T) {
+	added := router.Route{Host: "added.localhost", Target: "://bad-url"}
+	store := &interleavingRouteStore{
+		routes: []router.Route{{Host: "dead.localhost", Target: "http://127.0.0.1:5173", PID: 999999}},
+		added:  added,
+	}
+
+	removed, err := PruneWithRouterReady(store, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if !store.usedUpdate {
+		t.Fatal("prune did not use transactional store update")
+	}
+	routes, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Host != "added.localhost" {
+		t.Fatalf("routes = %#v, want concurrently added route preserved", routes)
+	}
+}
+
 func TestPruneKeepsRoutesWhenRouterIsNotReady(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{{Host: "dead.localhost", Target: "http://127.0.0.1:1", PID: 999999}})
@@ -237,6 +263,41 @@ func TestRouteStatusesDoNotUseWSLPIDOutsideWSL(t *testing.T) {
 	if len(statuses) != 1 || statuses[0].Status != RouteStatusReady {
 		t.Fatalf("statuses = %#v, want ready", statuses)
 	}
+}
+
+type interleavingRouteStore struct {
+	routes     []router.Route
+	added      router.Route
+	injected   bool
+	usedUpdate bool
+}
+
+func (s *interleavingRouteStore) Load() ([]router.Route, error) {
+	routes := cloneTestRoutes(s.routes)
+	if !s.injected {
+		s.injected = true
+		s.routes = append(s.routes, s.added)
+	}
+	return routes, nil
+}
+
+func (s *interleavingRouteStore) Save(routes []router.Route) error {
+	s.routes = cloneTestRoutes(routes)
+	return nil
+}
+
+func (s *interleavingRouteStore) Update(fn func([]router.Route) ([]router.Route, error)) error {
+	s.usedUpdate = true
+	next, err := fn(cloneTestRoutes(s.routes))
+	if err != nil {
+		return err
+	}
+	s.routes = cloneTestRoutes(next)
+	return nil
+}
+
+func cloneTestRoutes(routes []router.Route) []router.Route {
+	return append([]router.Route(nil), routes...)
 }
 
 func TestRouteStatusesDoNotUseWindowsPIDInsideWSL(t *testing.T) {

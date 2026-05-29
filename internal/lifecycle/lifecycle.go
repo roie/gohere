@@ -161,20 +161,32 @@ func PruneWithRouterReady(store router.Store, routerReady bool) (int, error) {
 		return 0, err
 	}
 
-	kept := routes[:0]
-	removed := 0
+	dead := make(map[string]bool)
 	for _, route := range routes {
 		status := RouteStatusUnknown
 		if routerReady {
 			status = classifyRoute(route)
 		}
 		if status == RouteStatusDead {
-			removed++
-		} else {
-			kept = append(kept, route)
+			dead[routeUpdateKey(route)] = true
 		}
 	}
-	if err := store.Save(kept); err != nil {
+	if len(dead) == 0 {
+		return 0, nil
+	}
+
+	removed := 0
+	if err := router.UpdateStore(store, func(routes []router.Route) ([]router.Route, error) {
+		kept := routes[:0]
+		for _, route := range routes {
+			if dead[routeUpdateKey(route)] {
+				removed++
+				continue
+			}
+			kept = append(kept, route)
+		}
+		return kept, nil
+	}); err != nil {
 		return 0, err
 	}
 	return removed, nil
@@ -196,32 +208,51 @@ func StopCWDs(store router.Store, cwds []string) (StopResult, error) {
 	}
 
 	var result StopResult
-	kept := routes[:0]
+	remove := make(map[string]bool)
 	for _, route := range routes {
 		if RouteMatchesAnyCWD(route, absCWDs) {
 			result.MatchedHost = route.Host
 			if !PIDAlive(route.PID) || targetStatus(route.Target) == RouteStatusDead {
 				result.Hosts = append(result.Hosts, route.Host)
+				remove[routeUpdateKey(route)] = true
 				continue
 			}
 			if RouteProcessVerified(route) {
 				stopPID(route.PID)
 				result.Hosts = append(result.Hosts, route.Host)
 				result.Stopped = true
+				remove[routeUpdateKey(route)] = true
 				continue
 			}
 			if result.Warning == "" {
 				result.Warning = UnverifiedProcessWarning(route.PID)
 			}
-			kept = append(kept, route)
 			continue
 		}
-		kept = append(kept, route)
 	}
-	if err := store.Save(kept); err != nil {
-		return result, err
+	if len(remove) > 0 {
+		if err := router.UpdateStore(store, func(routes []router.Route) ([]router.Route, error) {
+			kept := routes[:0]
+			for _, route := range routes {
+				if remove[routeUpdateKey(route)] {
+					continue
+				}
+				kept = append(kept, route)
+			}
+			return kept, nil
+		}); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
+}
+
+func routeUpdateKey(route router.Route) string {
+	return route.Host + "\x00" +
+		route.Target + "\x00" +
+		strconv.Itoa(route.PID) + "\x00" +
+		route.ProcessIdentity + "\x00" +
+		route.StartedAt.UTC().Format(time.RFC3339Nano)
 }
 
 func routeMatchesCWD(route router.Route, absCWD string) bool {

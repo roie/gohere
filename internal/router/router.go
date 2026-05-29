@@ -64,6 +64,25 @@ type Store interface {
 	Save([]Route) error
 }
 
+type StoreUpdater interface {
+	Update(func([]Route) ([]Route, error)) error
+}
+
+func UpdateStore(store Store, update func([]Route) ([]Route, error)) error {
+	if updater, ok := store.(StoreUpdater); ok {
+		return updater.Update(update)
+	}
+	routes, err := store.Load()
+	if err != nil {
+		return err
+	}
+	next, err := update(routes)
+	if err != nil {
+		return err
+	}
+	return store.Save(next)
+}
+
 type Config struct {
 	Token    string
 	Store    Store
@@ -240,6 +259,57 @@ func NewRouteStore(path string) *RouteStore {
 }
 
 func (s *RouteStore) Load() ([]Route, error) {
+	return s.load()
+}
+
+func (s *RouteStore) Save(routes []Route) error {
+	return s.Update(func([]Route) ([]Route, error) {
+		return append([]Route(nil), routes...), nil
+	})
+}
+
+func (s *RouteStore) Update(update func([]Route) ([]Route, error)) error {
+	unlock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	routes, err := s.load()
+	if err != nil {
+		return err
+	}
+	next, err := update(routes)
+	if err != nil {
+		return err
+	}
+	return s.save(next)
+}
+
+func (s *RouteStore) lock() (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
+		return nil, err
+	}
+	lockPath := s.path + ".lock"
+	deadline := time.Now().Add(routeStoreLockTimeout)
+	for {
+		file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err == nil {
+			fmt.Fprintf(file, "%d\n", os.Getpid())
+			_ = file.Close()
+			return func() { _ = os.Remove(lockPath) }, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timed out waiting for route store lock: %s", lockPath)
+		}
+		time.Sleep(routeStoreLockPoll)
+	}
+}
+
+func (s *RouteStore) load() ([]Route, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -255,7 +325,7 @@ func (s *RouteStore) Load() ([]Route, error) {
 	return routes, nil
 }
 
-func (s *RouteStore) Save(routes []Route) error {
+func (s *RouteStore) save(routes []Route) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
 		return err
 	}
@@ -321,6 +391,21 @@ func (s *MemoryStore) Save(routes []Route) error {
 	defer s.mu.Unlock()
 
 	s.routes = append([]Route(nil), routes...)
+	sortRoutes(s.routes)
+	return nil
+}
+
+func (s *MemoryStore) Update(update func([]Route) ([]Route, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	routes := append([]Route(nil), s.routes...)
+	sortRoutes(routes)
+	next, err := update(routes)
+	if err != nil {
+		return err
+	}
+	s.routes = append([]Route(nil), next...)
 	sortRoutes(s.routes)
 	return nil
 }
@@ -530,13 +615,9 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		s.storeMu.Lock()
 		defer s.storeMu.Unlock()
-		routes, err := s.store.Load()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		routes = upsertRoute(routes, route)
-		if err := s.store.Save(routes); err != nil {
+		if err := UpdateStore(s.store, func(routes []Route) ([]Route, error) {
+			return upsertRoute(routes, route), nil
+		}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -595,18 +676,15 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	s.storeMu.Lock()
 	defer s.storeMu.Unlock()
-	routes, err := s.store.Load()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	filtered := routes[:0]
-	for _, route := range routes {
-		if strings.ToLower(route.Host) != host {
-			filtered = append(filtered, route)
+	if err := UpdateStore(s.store, func(routes []Route) ([]Route, error) {
+		filtered := routes[:0]
+		for _, route := range routes {
+			if strings.ToLower(route.Host) != host {
+				filtered = append(filtered, route)
+			}
 		}
-	}
-	if err := s.store.Save(filtered); err != nil {
+		return filtered, nil
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -2184,17 +2185,15 @@ func stopStoreRoutes(store router.Store, selected []router.Route) (lifecycle.Sto
 		selectedHosts[route.Host] = true
 	}
 	var result lifecycle.StopResult
-	kept := routes[:0]
+	remove := make(map[string]bool)
 	for _, route := range routes {
 		if !selectedHosts[route.Host] {
-			kept = append(kept, route)
 			continue
 		}
 		result.MatchedHost = route.Host
 		action, reason := stopAction(route)
 		if reason != "" {
 			result.Skipped = append(result.Skipped, lifecycle.StopSkip{Host: route.Host, Reason: reason})
-			kept = append(kept, route)
 			continue
 		}
 		if action == stopActionTerminate {
@@ -2202,11 +2201,31 @@ func stopStoreRoutes(store router.Store, selected []router.Route) (lifecycle.Sto
 			result.Stopped = true
 		}
 		result.Hosts = append(result.Hosts, route.Host)
+		remove[appRouteUpdateKey(route)] = true
 	}
-	if err := store.Save(kept); err != nil {
-		return result, err
+	if len(remove) > 0 {
+		if err := router.UpdateStore(store, func(routes []router.Route) ([]router.Route, error) {
+			kept := routes[:0]
+			for _, route := range routes {
+				if remove[appRouteUpdateKey(route)] {
+					continue
+				}
+				kept = append(kept, route)
+			}
+			return kept, nil
+		}); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
+}
+
+func appRouteUpdateKey(route router.Route) string {
+	return route.Host + "\x00" +
+		route.Target + "\x00" +
+		strconv.Itoa(route.PID) + "\x00" +
+		route.ProcessIdentity + "\x00" +
+		route.StartedAt.UTC().Format(time.RFC3339Nano)
 }
 
 type routeStopAction string

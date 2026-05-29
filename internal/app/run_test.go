@@ -4159,6 +4159,33 @@ func TestStopAllStopsDeadRoutesAndSkipsUnverifiedLiveRoutes(t *testing.T) {
 	}
 }
 
+func TestStopStoreRoutesPreservesRoutesAddedBetweenLoadAndSave(t *testing.T) {
+	dead := router.Route{Host: "dead.localhost", Target: "http://127.0.0.1:5173", PID: 999999}
+	added := router.Route{Host: "added.localhost", Target: "://bad-url"}
+	store := &interleavingAppRouteStore{
+		routes: []router.Route{dead},
+		added:  added,
+	}
+
+	result, err := stopStoreRoutes(store, []router.Route{dead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameStrings(result.Hosts, []string{"dead.localhost"}) {
+		t.Fatalf("stopped hosts = %#v, want dead route", result.Hosts)
+	}
+	if !store.usedUpdate {
+		t.Fatal("stopStoreRoutes did not use transactional store update")
+	}
+	routes, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Host != "added.localhost" {
+		t.Fatalf("routes = %#v, want concurrently added route preserved", routes)
+	}
+}
+
 func TestDoctorWithStoreReportsActiveRouteCount(t *testing.T) {
 	restoreLocalhostHTTP := stubLocalhostHTTPStatus(t, LocalhostHTTPStatus{OK: true, Detail: "reached gohere router"})
 	defer restoreLocalhostHTTP()
@@ -5132,6 +5159,41 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+type interleavingAppRouteStore struct {
+	routes     []router.Route
+	added      router.Route
+	injected   bool
+	usedUpdate bool
+}
+
+func (s *interleavingAppRouteStore) Load() ([]router.Route, error) {
+	routes := cloneAppTestRoutes(s.routes)
+	if !s.injected {
+		s.injected = true
+		s.routes = append(s.routes, s.added)
+	}
+	return routes, nil
+}
+
+func (s *interleavingAppRouteStore) Save(routes []router.Route) error {
+	s.routes = cloneAppTestRoutes(routes)
+	return nil
+}
+
+func (s *interleavingAppRouteStore) Update(fn func([]router.Route) ([]router.Route, error)) error {
+	s.usedUpdate = true
+	next, err := fn(cloneAppTestRoutes(s.routes))
+	if err != nil {
+		return err
+	}
+	s.routes = cloneAppTestRoutes(next)
+	return nil
+}
+
+func cloneAppTestRoutes(routes []router.Route) []router.Route {
+	return append([]router.Route(nil), routes...)
 }
 
 type failingPromptReader struct{}
