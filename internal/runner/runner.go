@@ -124,13 +124,29 @@ func ChildEnvForHost(base []string, port int, host string) []string {
 }
 
 func HasExplicitPortOrHostFlag(command string) bool {
+	return HasExplicitPortFlag(command) || HasExplicitHostFlag(command)
+}
+
+func HasExplicitPortFlag(command string) bool {
 	for _, field := range strings.Fields(command) {
 		switch field {
-		case "--port", "-p", "--host", "--hostname":
+		case "--port", "-p":
 			return true
 		}
-		if strings.HasPrefix(field, "--port=") ||
-			strings.HasPrefix(field, "--host=") ||
+		if strings.HasPrefix(field, "--port=") {
+			return true
+		}
+	}
+	return false
+}
+
+func HasExplicitHostFlag(command string) bool {
+	for _, field := range strings.Fields(command) {
+		switch field {
+		case "--host", "--hostname":
+			return true
+		}
+		if strings.HasPrefix(field, "--host=") ||
 			strings.HasPrefix(field, "--hostname=") {
 			return true
 		}
@@ -146,7 +162,15 @@ func InjectPortArgsForHost(command string, port int, portFlag string, host strin
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	if HasExplicitPortOrHostFlag(command) {
+	if HasExplicitHostFlag(command) {
+		return nil
+	}
+
+	tool := firstCommandWord(command)
+	if HasExplicitPortFlag(command) {
+		if supportsExplicitHostArg(tool, command) && !isLoopbackHost(host) {
+			return []string{"--", "--host", host}
+		}
 		return nil
 	}
 
@@ -155,9 +179,8 @@ func InjectPortArgsForHost(command string, port int, portFlag string, host strin
 		return []string{"--", portFlag, portValue}
 	}
 
-	tool := firstCommandWord(command)
 	switch {
-	case tool == "vite" || strings.Contains(command, "svelte-kit") || tool == "astro" || strings.HasPrefix(tool, "vp"):
+	case isViteLikeTool(tool, command):
 		// Vite-like tools get --strictPort because gohere already selected a free port.
 		return []string{"--", "--host", host, "--port", portValue, "--strictPort"}
 	case tool == "next":
@@ -169,6 +192,18 @@ func InjectPortArgsForHost(command string, port int, portFlag string, host strin
 	default:
 		return nil
 	}
+}
+
+func supportsExplicitHostArg(tool, command string) bool {
+	return isViteLikeTool(tool, command) || tool == "nuxt"
+}
+
+func isViteLikeTool(tool, command string) bool {
+	return tool == "vite" || strings.Contains(command, "svelte-kit") || tool == "astro" || strings.HasPrefix(tool, "vp")
+}
+
+func isLoopbackHost(host string) bool {
+	return host == "127.0.0.1" || strings.EqualFold(host, "localhost")
 }
 
 func BuildScriptCommand(pm project.PackageManager, script string, extraArgs []string) []string {

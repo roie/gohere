@@ -208,7 +208,7 @@ func prepareRunWithHost(cmd cli.Command, cwd, childHost string) (RunPlan, error)
 	}
 	injected := runner.InjectPortArgsForHost(scriptCommand, port, cmd.PortFlag, childHost)
 	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
-	managedPort := len(injected) > 0
+	managedPort := injectedArgsControlPort(injected, cmd.PortFlag)
 	host, err := project.HostnameForProject(cwd)
 	if err != nil {
 		return RunPlan{}, err
@@ -475,6 +475,16 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 		itemCmd.ExplicitScript = true
 		items = append(items, multiRunItem{cmd: itemCmd, plan: plan})
 	}
+	if !routerResolved {
+		rr, err := ensureRunRouter()
+		if err != nil {
+			return err
+		}
+		resolvedRouter = rr
+	}
+	if err := resolveMultiRunHosts(ctx, adminClient, items); err != nil {
+		return err
+	}
 	if err := applyServiceDiscoveryEnv(items); err != nil {
 		return err
 	}
@@ -527,6 +537,19 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 	return waitForMulti(ctx, items)
 }
 
+func injectedArgsControlPort(args []string, portFlag string) bool {
+	for _, arg := range args {
+		switch arg {
+		case "--port", "-p":
+			return true
+		}
+		if portFlag != "" && arg == portFlag {
+			return true
+		}
+	}
+	return false
+}
+
 func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.PackageManager, workspacePackage project.WorkspacePackage, childHost string) (RunPlan, error) {
 	port, err := chooseFreePortForHostFunc(childHost)
 	if err != nil {
@@ -535,7 +558,7 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 	env := runner.ChildEnvForHost(os.Environ(), port, childHost)
 	injected := runner.InjectPortArgsForHost(workspacePackage.Script, port, cmd.PortFlag, childHost)
 	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
-	managedPort := len(injected) > 0
+	managedPort := injectedArgsControlPort(injected, cmd.PortFlag)
 	host, err := project.HostnameForProject(workspacePackage.Dir)
 	if err != nil {
 		return RunPlan{}, err
@@ -623,6 +646,16 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 			applyRunRouter(&plan, resolvedRouter)
 		}
 		items = append(items, multiRunItem{cmd: itemCmd, plan: plan})
+	}
+	if !routerResolved {
+		rr, err := ensureRunRouter()
+		if err != nil {
+			return err
+		}
+		resolvedRouter = rr
+	}
+	if err := resolveMultiRunHosts(ctx, adminClient, items); err != nil {
+		return err
 	}
 	if err := applyServiceDiscoveryEnv(items); err != nil {
 		return err
@@ -749,19 +782,40 @@ func serviceDiscoveryEnv(items []multiRunItem) (map[string]string, error) {
 	return values, nil
 }
 
+func resolveMultiRunHosts(ctx context.Context, client adminClient, items []multiRunItem) error {
+	routes, err := client.Routes(ctx)
+	if err != nil {
+		if errors.Is(err, admin.ErrUnauthorized) {
+			return staleRouterTokenError()
+		}
+		return err
+	}
+	active := toRegisteredRoutes(routes)
+	for i := range items {
+		host := resolveRouteHost(items[i].plan, active)
+		items[i].plan.Host = host
+		items[i].plan.Name = strings.TrimSuffix(host, ".localhost")
+		active = append(active, registeredRoute{
+			Host: host,
+			CWD:  items[i].plan.CWD,
+		})
+	}
+	return nil
+}
+
 func serviceDiscoveryLabel(item multiRunItem) string {
-	host := strings.TrimSuffix(item.plan.Host, ".localhost")
-	if label, _, ok := strings.Cut(host, "."); ok {
-		return label
-	}
-	if host != "" {
-		return host
-	}
 	name := runName(item.cmd)
 	if index := strings.LastIndex(name, ":"); index >= 0 && index < len(name)-1 {
 		name = name[index+1:]
 	}
-	return project.NormalizeHostnameName(name)
+	if name != "" {
+		return project.NormalizeHostnameName(name)
+	}
+	host := strings.TrimSuffix(item.plan.Host, ".localhost")
+	if label, _, ok := strings.Cut(host, "."); ok {
+		return label
+	}
+	return host
 }
 
 func serviceDiscoveryEnvKey(label string) string {
@@ -877,6 +931,7 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		return nil, err
 	}
 	plan.Host = resolveRouteHost(plan, toRegisteredRoutes(routes))
+	plan.Name = strings.TrimSuffix(plan.Host, ".localhost")
 	processIdentity, _ := lifecycle.ProcessIdentity(pid)
 	ownerEnv := plan.OwnerEnv
 	if ownerEnv == "" {

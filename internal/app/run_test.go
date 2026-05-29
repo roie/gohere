@@ -1376,6 +1376,60 @@ func TestRunWorkspaceInjectsServiceDiscoveryEnv(t *testing.T) {
 	}
 }
 
+func TestRunWorkspaceServiceDiscoveryEnvUsesResolvedConflictHosts(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	oldChooseFreePortForHost := chooseFreePortForHostFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+		chooseFreePortForHostFunc = oldChooseFreePortForHost
+	}()
+
+	admin := &multiRecordingAdminClient{routes: []router.Route{{
+		Host: "web.ctrltube.localhost",
+		CWD:  "/other/web",
+	}}}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	envs := map[string][]string{}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		envs[filepath.Base(cfg.Dir)] = cfg.Env
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+	nextPort := 5100
+	chooseFreePortForHostFunc = func(host string) (int, error) {
+		nextPort++
+		return nextPort, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"ctrltube","workspaces":["apps/*"],"scripts":{"dev":"pnpm --parallel --filter @ctrltube/worker --filter @ctrltube/web dev"}}`,
+		"pnpm-lock.yaml":           "",
+		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"wrangler dev"}}`,
+	})
+
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	const resolvedWebURL = "http://apps-web-ctrltube.localhost"
+	if !containsString(admin.upsertedHosts(), "apps-web-ctrltube.localhost") {
+		t.Fatalf("upserted hosts = %#v, want resolved conflict host", admin.upsertedHosts())
+	}
+	for name, env := range envs {
+		assertEnv(t, env, "GOHERE_WEB_URL", resolvedWebURL)
+		assertEnv(t, env, "GOHERE_WORKER_URL", "http://worker.ctrltube.localhost")
+
+		services := parseServiceDiscoveryJSON(t, env)
+		if services["web"].URL != resolvedWebURL {
+			t.Fatalf("%s web service URL = %q, want %q", name, services["web"].URL, resolvedWebURL)
+		}
+	}
+}
+
 func TestRunMultiInjectsServiceDiscoveryEnv(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
@@ -2942,6 +2996,51 @@ func TestRunWSLBridgeChoosesPackagePortForChildBindHost(t *testing.T) {
 	if !sameStrings(got.Command, wantCommand) {
 		t.Fatalf("command = %#v, want %#v", got.Command, wantCommand)
 	}
+}
+
+func TestRunWSLBridgeAddsHostWhenScriptAlreadyHasPort(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		wslIP:         "172.20.10.2",
+		windowsBinary: true,
+		probeReachable: map[string]bool{
+			"127.0.0.1":   false,
+			"localhost":   false,
+			"172.20.10.2": true,
+		},
+		admin: &recordingAdminClient{},
+	})
+	defer restore()
+
+	oldStartRunner := startRunnerFunc
+	oldChooseFreePortForHost := chooseFreePortForHostFunc
+	defer func() {
+		startRunnerFunc = oldStartRunner
+		chooseFreePortForHostFunc = oldChooseFreePortForHost
+	}()
+
+	var got runner.Config
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		got = cfg
+		return &runner.Result{Port: 3000}, nil
+	}
+	chooseFreePortForHostFunc = func(host string) (int, error) {
+		return 5173, nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite --port 3000"}}`,
+	})
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	wantCommand := []string{"npm", "run", "dev", "--", "--host", "0.0.0.0"}
+	if !sameStrings(got.Command, wantCommand) {
+		t.Fatalf("command = %#v, want %#v", got.Command, wantCommand)
+	}
+	assertEnv(t, got.Env, "HOST", "0.0.0.0")
 }
 
 func TestRunWorkspaceWSLBridgeChoosesPortsForChildBindHost(t *testing.T) {
@@ -4981,6 +5080,15 @@ func sameStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 type failingPromptReader struct{}

@@ -310,6 +310,38 @@ func TestDiscoverWorkspacePackagesSupportsGlobstarPatterns(t *testing.T) {
 	}
 }
 
+func TestDiscoverWorkspacePackagesGlobstarSkipsPackageInternals(t *testing.T) {
+	root := tempProject(t, map[string]string{
+		"package.json":                                          `{"name":"repo"}`,
+		"pnpm-workspace.yaml":                                   "packages:\n  - 'packages/**'\n",
+		"packages/app/package.json":                             `{"name":"app","scripts":{"dev":"vite"}}`,
+		"packages/app/node_modules/dep/package.json":            `{"name":"dep","scripts":{"dev":"vite"}}`,
+		"packages/app/dist/generated/package.json":              `{"name":"generated","scripts":{"dev":"vite"}}`,
+		"packages/group/package.json":                           `{"name":"group","scripts":{"build":"tsc"}}`,
+		"packages/group/api/package.json":                       `{"name":"api","scripts":{"dev":"vite"}}`,
+		"packages/group/api/.turbo/cache/dep/package.json":      `{"name":"cache-dep","scripts":{"dev":"vite"}}`,
+		"packages/group/api/build/generated/package.json":       `{"name":"build-generated","scripts":{"dev":"vite"}}`,
+		"packages/group/api/coverage/generated/package.json":    `{"name":"coverage-generated","scripts":{"dev":"vite"}}`,
+		"packages/group/api/.next/cache/generated/package.json": `{"name":"next-generated","scripts":{"dev":"vite"}}`,
+	})
+
+	packages, found, err := DiscoverWorkspacePackages(root, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected workspace root")
+	}
+
+	var names []string
+	for _, workspacePackage := range packages {
+		names = append(names, workspacePackage.Name)
+	}
+	if !sameStrings(names, []string{"app", "api"}) {
+		t.Fatalf("workspace package names = %#v, want app/api only", names)
+	}
+}
+
 func TestDiscoverWorkspacePackagesExcludesRootPackage(t *testing.T) {
 	root := tempProject(t, map[string]string{
 		"package.json":          `{"name":"repo","workspaces":[".","apps/*"],"scripts":{"dev":"pnpm --parallel --filter web dev"}}`,
@@ -482,6 +514,28 @@ func TestResolveHostnameConflictFallsBackAfterBoundedAttempts(t *testing.T) {
 	}
 }
 
+func TestResolveHostnameConflictAvoidsFallbackHashCollision(t *testing.T) {
+	cwd := filepath.Join("/work", "parent", "app")
+	active := map[string]string{
+		"app.localhost":        "/other/app",
+		"parent-app.localhost": "/other/parent-app",
+	}
+	for suffix := 2; suffix <= 100; suffix++ {
+		active[conflictHost("parent", "app", suffix)] = fmt.Sprintf("/other/app-%d", suffix)
+	}
+	firstFallback := fallbackConflictHost("parent", "app", cwd, 0)
+	active[firstFallback] = "/other/fallback"
+
+	got := ResolveHostnameConflict("app.localhost", cwd, active)
+	if got == firstFallback {
+		t.Fatalf("fallback collision was reused: %q", got)
+	}
+	if strings.HasPrefix(got, "parent-app-") && strings.HasSuffix(got, ".localhost") {
+		return
+	}
+	t.Fatalf("fallback host = %q, want parent-app-<hash>.localhost", got)
+}
+
 func tempProject(t *testing.T, files map[string]string) string {
 	t.Helper()
 
@@ -496,4 +550,16 @@ func tempProject(t *testing.T, files map[string]string) string {
 		}
 	}
 	return dir
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

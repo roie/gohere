@@ -118,6 +118,19 @@ func TestInjectPortArgs(t *testing.T) {
 	}
 }
 
+func TestInjectPortArgsForHostAddsHostWhenOnlyPortIsExplicit(t *testing.T) {
+	got := InjectPortArgsForHost("vite --port 3000", 49231, "", "0.0.0.0")
+	want := []string{"--", "--host", "0.0.0.0"}
+	if !sameStrings(got, want) {
+		t.Fatalf("InjectPortArgsForHost() = %#v, want %#v", got, want)
+	}
+
+	got = InjectPortArgsForHost("vite --port 3000 --host 127.0.0.1", 49231, "", "0.0.0.0")
+	if got != nil {
+		t.Fatalf("explicit host should still win, got %#v", got)
+	}
+}
+
 func TestInjectPortArgsForHost(t *testing.T) {
 	got := InjectPortArgsForHost("vite --clearScreen false", 49231, "", "0.0.0.0")
 	want := []string{"--", "--host", "0.0.0.0", "--port", "49231", "--strictPort"}

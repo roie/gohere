@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -453,22 +454,18 @@ func workspacePackageGlobstarMatches(root, pattern string) ([]WorkspacePackage, 
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() || entry.Name() != "package.json" {
+		if entry.IsDir() {
+			if filePath != root && (skipWorkspaceWalkDir(entry.Name()) || skipGeneratedWorkspaceDir(root, filePath, entry.Name())) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Name() != "package.json" {
 			return nil
 		}
 		packagePath := filepath.Clean(filePath)
 		dir := filepath.Dir(packagePath)
-		relDir, err := filepath.Rel(root, dir)
-		if err != nil {
-			return err
-		}
-		relPackage, err := filepath.Rel(root, packagePath)
-		if err != nil {
-			return err
-		}
-		relDir = filepath.ToSlash(relDir)
-		relPackage = filepath.ToSlash(relPackage)
-		if !matchGlobstarPattern(pattern, relDir) && !matchGlobstarPattern(pattern, relPackage) {
+		if !workspacePackageMatchesPattern(root, pattern, dir, packagePath) {
 			return nil
 		}
 		packages = append(packages, WorkspacePackage{
@@ -481,6 +478,56 @@ func workspacePackageGlobstarMatches(root, pattern string) ([]WorkspacePackage, 
 		return nil, err
 	}
 	return packages, nil
+}
+
+func skipWorkspaceWalkDir(name string) bool {
+	switch name {
+	case "node_modules", ".git", ".hg", ".svn", ".cache", ".next", ".turbo":
+		return true
+	default:
+		return false
+	}
+}
+
+func skipGeneratedWorkspaceDir(root, dir, name string) bool {
+	switch name {
+	case "dist", "build", "coverage", "out":
+		return hasPackageJSONAncestor(root, filepath.Dir(dir))
+	default:
+		return false
+	}
+}
+
+func hasPackageJSONAncestor(root, dir string) bool {
+	root = filepath.Clean(root)
+	dir = filepath.Clean(dir)
+	for {
+		if samePath(dir, root) {
+			return false
+		}
+		if _, err := os.Stat(filepath.Join(dir, "package.json")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+func workspacePackageMatchesPattern(root, pattern, dir, packagePath string) bool {
+	relDir, err := filepath.Rel(root, dir)
+	if err != nil {
+		return false
+	}
+	relPackage, err := filepath.Rel(root, packagePath)
+	if err != nil {
+		return false
+	}
+	relDir = filepath.ToSlash(relDir)
+	relPackage = filepath.ToSlash(relPackage)
+	return matchGlobstarPattern(pattern, relDir) || matchGlobstarPattern(pattern, relPackage)
 }
 
 func matchGlobstarPattern(pattern, value string) bool {
@@ -694,7 +741,13 @@ func ResolveHostnameConflict(desiredHost, cwd string, active map[string]string) 
 			return candidate
 		}
 	}
-	return fallbackConflictHost(parent, base, cwd)
+	for attempt := 0; attempt <= maxHostnameConflictAttempts; attempt++ {
+		candidate = fallbackConflictHost(parent, base, cwd, attempt)
+		if existingCWD, ok := activeHostCWD(active, candidate); !ok || samePath(existingCWD, cwd) {
+			return candidate
+		}
+	}
+	return fallbackConflictHost(parent, base, cwd, maxHostnameConflictAttempts+1)
 }
 
 func conflictHost(parent, base string, suffix int) string {
@@ -713,8 +766,8 @@ func conflictHost(parent, base string, suffix int) string {
 	return NormalizeHostnameName(label) + ".localhost"
 }
 
-func fallbackConflictHost(parent, base, cwd string) string {
-	suffixPart := "-" + shortHash(parent+"|"+base+"|"+cwd)
+func fallbackConflictHost(parent, base, cwd string, attempt int) string {
+	suffixPart := "-" + shortHash(fmt.Sprintf("%s|%s|%s|%d", parent, base, cwd, attempt))
 	label := NormalizeHostnameName(parent + "-" + base)
 	if len(label)+len(suffixPart) > 63 {
 		label = strings.TrimRight(label[:63-len(suffixPart)], "-")
