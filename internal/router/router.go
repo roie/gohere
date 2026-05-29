@@ -588,7 +588,11 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid route host", http.StatusBadRequest)
 		return
 	}
-	host = strings.ToLower(host)
+	host, err = normalizeRouteHost(host)
+	if err != nil {
+		http.Error(w, "invalid route host", http.StatusBadRequest)
+		return
+	}
 	s.storeMu.Lock()
 	defer s.storeMu.Unlock()
 	routes, err := s.store.Load()
