@@ -34,6 +34,8 @@ const gohereRouteHeader = "X-Gohere-Route"
 const proxyResponseHeaderTimeout = 30 * time.Second
 const routeStoreLockTimeout = 10 * time.Second
 const routeStoreLockPoll = 10 * time.Millisecond
+const tokenLockTimeout = 10 * time.Second
+const tokenLockPoll = 10 * time.Millisecond
 
 var rotateOpenFile = os.OpenFile
 var errInvalidRouteHost = errors.New("invalid route host")
@@ -116,6 +118,12 @@ func EnsureToken(stateDir string) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(stateDir, "token")
+	unlock, err := lockTokenFile(path)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
 	data, err := os.ReadFile(path)
 	if err == nil {
 		token := strings.TrimSpace(string(data))
@@ -136,6 +144,10 @@ func EnsureToken(stateDir string) (string, error) {
 
 func ReadToken(stateDir string) (string, error) {
 	path := filepath.Join(stateDir, "token")
+	return readTokenFile(path)
+}
+
+func readTokenFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -150,12 +162,19 @@ func ReadToken(stateDir string) (string, error) {
 	return token, nil
 }
 
-func writeToken(path string) (string, error) {
+func generateToken() (string, error) {
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return "", err
 	}
-	token := hex.EncodeToString(tokenBytes)
+	return hex.EncodeToString(tokenBytes), nil
+}
+
+func writeToken(path string) (string, error) {
+	token, err := generateToken()
+	if err != nil {
+		return "", err
+	}
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
@@ -191,6 +210,26 @@ func writeToken(path string) (string, error) {
 	}
 	cleanup = false
 	return token, nil
+}
+
+func lockTokenFile(path string) (func(), error) {
+	lockPath := path + ".lock"
+	deadline := time.Now().Add(tokenLockTimeout)
+	for {
+		file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err == nil {
+			fmt.Fprintf(file, "%d\n", os.Getpid())
+			_ = file.Close()
+			return func() { _ = os.Remove(lockPath) }, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timed out waiting for token lock: %s", lockPath)
+		}
+		time.Sleep(tokenLockPoll)
+	}
 }
 
 func replaceFile(tmpPath, path string) error {

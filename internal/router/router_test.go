@@ -148,6 +148,43 @@ func TestEnsureTokenRegeneratesNonHexTokenFile(t *testing.T) {
 	}
 }
 
+func TestEnsureTokenConcurrentCreateReturnsSingleToken(t *testing.T) {
+	dir := t.TempDir()
+	start := make(chan struct{})
+	type result struct {
+		token string
+		err   error
+	}
+	results := make(chan result, 32)
+
+	for i := 0; i < cap(results); i++ {
+		go func() {
+			<-start
+			token, err := EnsureToken(dir)
+			results <- result{token: token, err: err}
+		}()
+	}
+	close(start)
+
+	var tokens []string
+	for i := 0; i < cap(results); i++ {
+		result := <-results
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		tokens = append(tokens, result.token)
+	}
+	fileToken, err := ReadToken(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range tokens {
+		if token != fileToken {
+			t.Fatalf("EnsureToken returned %q, token file contains %q; all concurrent callers should observe the same token", token, fileToken)
+		}
+	}
+}
+
 func TestReplaceFileForWindowsReplacesExistingTarget(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "token")
