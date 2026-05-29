@@ -59,7 +59,7 @@ When one `gohere` run starts multiple services, each service can discover the ot
 target: process.env.GOHERE_WORKER_URL
 ```
 
-Use `GOHERE_<NAME>_URL` for app config. `PORT` and `TARGET` are advanced values and are only set when `gohere` controls that service port.
+Use `GOHERE_<NAME>_URL` for app config. `GOHERE_<NAME>_PORT`, `GOHERE_<NAME>_TARGET`, and `GOHERE_SERVICES_JSON` are also available when multiple managed services start together. `PORT` and `TARGET` are advanced values and are only set when `gohere` controls that service port.
 
 Run any current package script exactly as written by naming it explicitly:
 
@@ -100,6 +100,12 @@ Route to a known target port:
 gohere --target 5173 -- npm run dev
 ```
 
+Use a custom port flag for tools that do not use `--port`:
+
+```bash
+gohere --port-flag --local-port dev
+```
+
 Open the project URL in your browser:
 
 ```bash
@@ -125,7 +131,10 @@ about.html     -> http://myproject.localhost/about.html
 ```bash
 gohere list
 gohere list --verbose
+gohere list --json
 gohere stop
+gohere stop web
+gohere stop --all
 gohere prune
 gohere doctor
 gohere service stop
@@ -133,6 +142,10 @@ gohere uninstall
 ```
 
 `gohere list --verbose` shows host, target, status, PID, and working directory.
+
+`gohere list --json` returns the same route information in a stable machine-readable format.
+
+`gohere stop` stops routes for the current folder. `gohere stop <target>` stops a listed route by host, short host label, route name, or project name. `gohere stop --all` stops safely controllable routes and skips unverified live routes.
 
 Route status can be `ready`, `dead`, or `unknown`. `prune` removes only routes that are confidently dead.
 
