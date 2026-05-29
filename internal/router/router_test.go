@@ -1250,6 +1250,38 @@ func TestStartConfiguresHTTPServerTimeouts(t *testing.T) {
 	}
 }
 
+func TestDefaultHTTPAddrUsesDarwinWildcard(t *testing.T) {
+	if got := defaultHTTPAddrForGOOS("darwin"); got != "[::]:80" {
+		t.Fatalf("darwin default HTTP addr = %q, want [::]:80", got)
+	}
+	if got := defaultHTTPAddrForGOOS("linux"); got != "127.0.0.1:80" {
+		t.Fatalf("linux default HTTP addr = %q, want 127.0.0.1:80", got)
+	}
+	if got := defaultHTTPAddrForGOOS("windows"); got != "127.0.0.1:80" {
+		t.Fatalf("windows default HTTP addr = %q, want 127.0.0.1:80", got)
+	}
+}
+
+func TestLoopbackOnlyListenerRejectsNonLoopbackBeforeHTTP(t *testing.T) {
+	rejected := &fakeConn{remote: tcpAddr("192.168.1.187")}
+	accepted := &fakeConn{remote: tcpAddr("127.0.0.1")}
+	listener := &fakeListener{conns: []net.Conn{rejected, accepted}}
+
+	conn, err := (loopbackOnlyListener{Listener: listener}).Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn != accepted {
+		t.Fatalf("accepted conn = %#v, want loopback conn", conn)
+	}
+	if !rejected.closed {
+		t.Fatal("non-loopback connection was not closed")
+	}
+	if accepted.closed {
+		t.Fatal("loopback connection should not be closed")
+	}
+}
+
 func TestCloseRemovesRouterPID(t *testing.T) {
 	stateDir := t.TempDir()
 	running, err := Start(t.Context(), StartConfig{
@@ -1524,4 +1556,67 @@ func (r *countingReader) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
 	r.read += int64(n)
 	return n, err
+}
+
+type fakeListener struct {
+	conns []net.Conn
+}
+
+func (l *fakeListener) Accept() (net.Conn, error) {
+	if len(l.conns) == 0 {
+		return nil, io.EOF
+	}
+	conn := l.conns[0]
+	l.conns = l.conns[1:]
+	return conn, nil
+}
+
+func (l *fakeListener) Close() error {
+	return nil
+}
+
+func (l *fakeListener) Addr() net.Addr {
+	return tcpAddr("127.0.0.1")
+}
+
+type fakeConn struct {
+	remote net.Addr
+	closed bool
+}
+
+func (c *fakeConn) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (c *fakeConn) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (c *fakeConn) Close() error {
+	c.closed = true
+	return nil
+}
+
+func (c *fakeConn) LocalAddr() net.Addr {
+	return tcpAddr("127.0.0.1")
+}
+
+func (c *fakeConn) RemoteAddr() net.Addr {
+	return c.remote
+}
+
+func (c *fakeConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (c *fakeConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (c *fakeConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+func tcpAddr(ip string) *net.TCPAddr {
+	return &net.TCPAddr{IP: net.ParseIP(ip), Port: 12345}
 }

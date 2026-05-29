@@ -141,6 +141,45 @@ func Windows(ctx context.Context, cfg Config) error {
 	return nil
 }
 
+func Darwin(ctx context.Context, cfg Config) error {
+	if cfg.RouterHealth != nil && cfg.RouterHealth(ctx) == nil {
+		return nil
+	}
+	if cfg.StateDir == "" {
+		cfg.StateDir = router.DefaultStateDir()
+	}
+	if cfg.CurrentBinary == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		cfg.CurrentBinary = exe
+	}
+	if cfg.CommandRunner == nil {
+		cfg.CommandRunner = realRunner{}
+	}
+
+	binDir := filepath.Join(cfg.StateDir, "bin")
+	if err := os.MkdirAll(binDir, 0700); err != nil {
+		return err
+	}
+	stableBinary := filepath.Join(binDir, "gohere")
+	if err := copyFile(cfg.CurrentBinary, stableBinary, 0755); err != nil {
+		return err
+	}
+	if _, err := router.EnsureToken(cfg.StateDir); err != nil {
+		return err
+	}
+	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "service", "run")
+	if err != nil {
+		return err
+	}
+	if err := writeDetachedRouterPID(cfg.StateDir, pid); err != nil {
+		return err
+	}
+	return nil
+}
+
 func StartInstalledRouter(ctx context.Context, cfg Config, binaryName string) error {
 	if cfg.StateDir == "" {
 		cfg.StateDir = router.DefaultStateDir()

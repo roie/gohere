@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -63,9 +63,13 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           version="${VERSION#v}"
-          mkdir -p vendor/linux-x64 vendor/win32-x64
+          mkdir -p vendor/linux-x64 vendor/linux-arm64 vendor/win32-x64 vendor/win32-arm64 vendor/darwin-x64 vendor/darwin-arm64
           GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.version=${version}" -o vendor/linux-x64/gohere ./cmd/gohere
+          GOOS=linux GOARCH=arm64 go build -ldflags "-s -w -X main.version=${version}" -o vendor/linux-arm64/gohere ./cmd/gohere
           GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X main.version=${version}" -o vendor/win32-x64/gohere.exe ./cmd/gohere
+          GOOS=windows GOARCH=arm64 go build -ldflags "-s -w -X main.version=${version}" -o vendor/win32-arm64/gohere.exe ./cmd/gohere
+          GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w -X main.version=${version}" -o vendor/darwin-x64/gohere ./cmd/gohere
+          GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w -X main.version=${version}" -o vendor/darwin-arm64/gohere ./cmd/gohere
 
       - name: Generate npm package files
         env:
@@ -101,10 +105,12 @@ jobs:
             ],
             "os": [
               "linux",
-              "win32"
+              "win32",
+              "darwin"
             ],
             "cpu": [
-              "x64"
+              "x64",
+              "arm64"
             ]
           }
           EOF

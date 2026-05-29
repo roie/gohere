@@ -41,6 +41,7 @@ var (
 	}
 	setupLinuxFunc                                       = setup.Linux
 	setupWindowsFunc                                     = setup.Windows
+	setupDarwinFunc                                      = setup.Darwin
 	startInstalledRouterFunc                             = startInstalledRouter
 	defaultAdminClientFunc   func() (adminClient, error) = func() (adminClient, error) {
 		return defaultAdminClient()
@@ -1524,6 +1525,8 @@ func setupForGOOS(ctx context.Context, goos string) error {
 		return setupLinuxFunc(ctx, cfg)
 	case "windows":
 		return setupWindowsFunc(ctx, cfg)
+	case "darwin":
+		return setupDarwinFunc(ctx, cfg)
 	default:
 		return fmt.Errorf("gohere setup is not supported on %s yet", goos)
 	}

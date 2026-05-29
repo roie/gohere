@@ -392,6 +392,49 @@ func TestWindowsSetupCopiesExeEnsuresTokenAndStartsDetachedRouter(t *testing.T) 
 	}
 }
 
+func TestDarwinSetupCopiesBinaryEnsuresTokenAndStartsDetachedRouter(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source-gohere")
+	if err := os.WriteFile(source, []byte("darwin-binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &detachingRunner{pid: 4242}
+
+	err := Darwin(context.Background(), Config{
+		StateDir:      filepath.Join(dir, "state"),
+		CurrentBinary: source,
+		CommandRunner: runner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stable := filepath.Join(dir, "state", "bin", "gohere")
+	data, err := os.ReadFile(stable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "darwin-binary" {
+		t.Fatalf("stable binary contents = %q", string(data))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state", "token")); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.saw(stable, "service", "run") {
+		t.Fatalf("detached service command missing: %#v", runner.commands)
+	}
+	if runner.saw("sudo", "setcap", "cap_net_bind_service=+ep", stable) {
+		t.Fatalf("darwin setup should not run setcap: %#v", runner.commands)
+	}
+	data, err = os.ReadFile(filepath.Join(dir, "state", "router.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "4242\n" {
+		t.Fatalf("router.pid = %q", string(data))
+	}
+}
+
 type recordingRunner struct {
 	commands [][]string
 }

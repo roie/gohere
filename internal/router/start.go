@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,7 +48,7 @@ const (
 
 func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 	if cfg.HTTPAddr == "" {
-		cfg.HTTPAddr = "127.0.0.1:80"
+		cfg.HTTPAddr = defaultHTTPAddrForGOOS(runtime.GOOS)
 	}
 	if cfg.AdminAddr == "" {
 		cfg.AdminAddr = "127.0.0.1:39399"
@@ -84,7 +85,7 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		}
 	}})
 
-	httpLn, err := net.Listen("tcp", cfg.HTTPAddr)
+	httpLn, err := listenHTTPForGOOS(runtime.GOOS, cfg.HTTPAddr)
 	if err != nil {
 		logFile.Close()
 		return nil, listenError(cfg.HTTPAddr, err)
@@ -131,6 +132,42 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		running.Close()
 	}()
 	return running, nil
+}
+
+func defaultHTTPAddrForGOOS(goos string) string {
+	if goos == "darwin" {
+		return "[::]:80"
+	}
+	return "127.0.0.1:80"
+}
+
+func listenHTTPForGOOS(goos, addr string) (net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if goos == "darwin" && addr == "[::]:80" {
+		return loopbackOnlyListener{Listener: ln}, nil
+	}
+	return ln, nil
+}
+
+type loopbackOnlyListener struct {
+	net.Listener
+}
+
+func (l loopbackOnlyListener) Accept() (net.Conn, error) {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		remote, ok := conn.RemoteAddr().(*net.TCPAddr)
+		if ok && remote.IP.IsLoopback() {
+			return conn, nil
+		}
+		_ = conn.Close()
+	}
 }
 
 func listenError(addr string, err error) error {

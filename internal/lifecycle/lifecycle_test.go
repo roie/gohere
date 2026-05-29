@@ -575,6 +575,49 @@ func TestParseWindowsProcessStartTimeRejectsInvalidOutput(t *testing.T) {
 	}
 }
 
+func TestParseDarwinProcessStartTime(t *testing.T) {
+	startedAt, ok := parseDarwinProcessStartTime("Thu May 28 21:37:17 2026\n", time.UTC)
+	if !ok {
+		t.Fatal("expected Darwin start time to parse")
+	}
+	if got := startedAt.Format(time.RFC3339); got != "2026-05-28T21:37:17Z" {
+		t.Fatalf("startedAt = %s", got)
+	}
+}
+
+func TestDarwinProcessStartTimeUsesBoundedCommand(t *testing.T) {
+	oldCommandOutput := commandOutput
+	defer func() {
+		commandOutput = oldCommandOutput
+	}()
+	commandOutput = func(timeout time.Duration, name string, args ...string) ([]byte, error) {
+		if timeout != processCommandTimeout {
+			t.Fatalf("timeout = %s, want %s", timeout, processCommandTimeout)
+		}
+		if name != "ps" {
+			t.Fatalf("command = %q, want ps", name)
+		}
+		want := []string{"-o", "lstart=", "-p", "26312"}
+		if len(args) != len(want) {
+			t.Fatalf("args = %#v, want %#v", args, want)
+		}
+		for i := range want {
+			if args[i] != want[i] {
+				t.Fatalf("args = %#v, want %#v", args, want)
+			}
+		}
+		return []byte("Thu May 28 21:37:17 2026\n"), nil
+	}
+
+	startedAt, ok := darwinProcessStartTime(26312)
+	if !ok {
+		t.Fatal("expected Darwin process start time")
+	}
+	if startedAt.IsZero() {
+		t.Fatal("startedAt is zero")
+	}
+}
+
 func TestWindowsPIDAliveUsesBoundedCommand(t *testing.T) {
 	oldCommandOutput := commandOutput
 	defer func() {

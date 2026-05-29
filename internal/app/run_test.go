@@ -1026,6 +1026,25 @@ func TestSetupForGOOSUsesWindowsSetup(t *testing.T) {
 	}
 }
 
+func TestSetupForGOOSUsesDarwinSetup(t *testing.T) {
+	oldSetupDarwin := setupDarwinFunc
+	defer func() {
+		setupDarwinFunc = oldSetupDarwin
+	}()
+	calls := 0
+	setupDarwinFunc = func(ctx context.Context, cfg setup.Config) error {
+		calls++
+		return nil
+	}
+
+	if err := setupForGOOS(context.Background(), "darwin"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("darwin setup calls = %d, want 1", calls)
+	}
+}
+
 func TestRunStartsLocalProjectBeforeServiceRegistration(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
@@ -2290,6 +2309,9 @@ func TestFirstRunPromptMentionsSudoOnLinux(t *testing.T) {
 	}
 	if strings.Contains(firstRunPromptForGOOS("windows"), "sudo") {
 		t.Fatalf("windows prompt should not mention sudo: %q", firstRunPromptForGOOS("windows"))
+	}
+	if strings.Contains(firstRunPromptForGOOS("darwin"), "sudo") {
+		t.Fatalf("darwin prompt should not mention sudo: %q", firstRunPromptForGOOS("darwin"))
 	}
 }
 

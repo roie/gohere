@@ -155,9 +155,13 @@ npm uninstall -g gohere
 
 ## How it works
 
-`gohere` runs a local service on HTTP port `80`.
+`gohere` runs one local service on HTTP port `80`.
 
 Each project gets a hidden local port. The service maps the clean `.localhost` hostname to that port using the request `Host` header.
+
+First-time setup installs the local service in `~/.gohere/` and starts it in the background. After that, `gohere` only starts your project and registers its route.
+
+The service only serves local machine traffic. On macOS, gohere uses a port `80` listener that rejects non-loopback connections before requests reach the router.
 
 State is stored in:
 
@@ -165,19 +169,17 @@ State is stored in:
 ~/.gohere/
 ```
 
-On Linux/WSL, first-time setup may ask for permission so the service can bind to local port `80`.
-
-On Windows, first-time setup starts the local service directly on `127.0.0.1:80`.
+Linux may ask for one-time permission to bind port `80`.
 
 When used from WSL, `gohere` reuses a running Windows service automatically.
 
 ## Platform support
 
-Current target: Linux / WSL and Windows.
+- Linux / WSL
+- Windows
+- macOS (experimental)
 
-Planned: macOS.
-
-The npm package currently targets Linux x64 and Windows x64.
+The npm package includes x64 and arm64 binaries for these platforms.
 
 ## Limits
 

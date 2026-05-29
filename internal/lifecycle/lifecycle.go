@@ -369,6 +369,13 @@ func realProcessIdentity(pid int) (string, bool) {
 		}
 		return "windows:" + startedAt.Format(time.RFC3339Nano), true
 	}
+	if runtime.GOOS == "darwin" {
+		startedAt, ok := darwinProcessStartTime(pid)
+		if !ok {
+			return "", false
+		}
+		return "darwin:" + startedAt.Format(time.RFC3339Nano), true
+	}
 	return "", false
 }
 
@@ -392,6 +399,9 @@ func realProcessStartTime(pid int) (time.Time, bool) {
 	}
 	if runtime.GOOS == "windows" {
 		return windowsProcessStartTime(pid)
+	}
+	if runtime.GOOS == "darwin" {
+		return darwinProcessStartTime(pid)
 	}
 	if runtime.GOOS != "linux" {
 		return time.Time{}, false
@@ -431,6 +441,36 @@ func parseWindowsProcessStartTime(output string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	startedAt, err := time.Parse(time.RFC3339Nano, output)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return startedAt, true
+}
+
+func darwinProcessStartTime(pid int) (time.Time, bool) {
+	output, err := commandOutput(
+		processCommandTimeout,
+		"ps",
+		"-o",
+		"lstart=",
+		"-p",
+		strconv.Itoa(pid),
+	)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parseDarwinProcessStartTime(string(output), time.Local)
+}
+
+func parseDarwinProcessStartTime(output string, location *time.Location) (time.Time, bool) {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return time.Time{}, false
+	}
+	if location == nil {
+		location = time.Local
+	}
+	startedAt, err := time.ParseInLocation("Mon Jan _2 15:04:05 2006", output, location)
 	if err != nil {
 		return time.Time{}, false
 	}
