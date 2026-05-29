@@ -48,6 +48,16 @@ func TestChooseFreePortForHostReturnsFreePortOnRequestedHost(t *testing.T) {
 	ln.Close()
 }
 
+func TestListenerPortRejectsNonTCPListener(t *testing.T) {
+	_, err := listenerPort(nonTCPListener{})
+	if err == nil {
+		t.Fatal("expected non-TCP listener error")
+	}
+	if !strings.Contains(err.Error(), "not TCP") {
+		t.Fatalf("error = %q, want not TCP", err.Error())
+	}
+}
+
 func TestChildEnvSetsHiddenPortAndHost(t *testing.T) {
 	env := ChildEnv([]string{"PATH=/bin", "PORT=3000"}, 49231)
 
@@ -596,3 +606,14 @@ func sameStrings(a, b []string) bool {
 	}
 	return true
 }
+
+type nonTCPListener struct{}
+
+func (nonTCPListener) Accept() (net.Conn, error) { return nil, errors.New("unused") }
+func (nonTCPListener) Close() error              { return nil }
+func (nonTCPListener) Addr() net.Addr            { return nonTCPAddr("pipe") }
+
+type nonTCPAddr string
+
+func (a nonTCPAddr) Network() string { return string(a) }
+func (a nonTCPAddr) String() string  { return string(a) }

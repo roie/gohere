@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -80,7 +81,15 @@ func ChooseFreePortForHost(host string) (int, error) {
 	}
 	defer ln.Close()
 
-	return ln.Addr().(*net.TCPAddr).Port, nil
+	return listenerPort(ln)
+}
+
+func listenerPort(ln net.Listener) (int, error) {
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("listener address %s is not TCP", ln.Addr())
+	}
+	return addr.Port, nil
 }
 
 func ChildEnv(base []string, port int) []string {

@@ -1211,6 +1211,27 @@ func TestRunUsesAsAliasInOutputAndRoute(t *testing.T) {
 	}
 }
 
+func TestRegisterRouteCleanupLogsDeleteError(t *testing.T) {
+	admin := &multiRecordingAdminClient{deleteErr: errors.New("delete failed")}
+	plan := RunPlan{
+		Host: "app.localhost",
+		Name: "app",
+		CWD:  t.TempDir(),
+	}
+	var stdout, stderr strings.Builder
+	cleanup, err := registerRoute(context.Background(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 3000, os.Getpid(), &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup()
+
+	if !strings.Contains(stderr.String(), "Could not remove route app.localhost") ||
+		!strings.Contains(stderr.String(), "delete failed") {
+		t.Fatalf("stderr = %q, want route cleanup warning", stderr.String())
+	}
+}
+
 func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc

@@ -911,10 +911,12 @@ func waitForMulti(ctx context.Context, items []multiRunItem) error {
 				item.result.Stop()
 			}
 		}
+		timer := time.NewTimer(3 * time.Second)
+		defer timer.Stop()
 		for range items {
 			select {
 			case <-done:
-			case <-time.After(3 * time.Second):
+			case <-timer.C:
 				return nil
 			}
 		}
@@ -979,7 +981,9 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		fmt.Fprintf(stdout, "service: %s\n", routerLabel)
 	}
 	return func() {
-		adminClient.DeleteRoute(context.Background(), route.Host)
+		if err := adminClient.DeleteRoute(context.Background(), route.Host); err != nil && stderr != nil {
+			fmt.Fprintf(stderr, "Could not remove route %s: %v\n", route.Host, err)
+		}
 	}, nil
 }
 

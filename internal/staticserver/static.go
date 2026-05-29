@@ -120,20 +120,37 @@ func StartWithConfig(ctx context.Context, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	listenPort, err := listenerPort(ln)
+	if err != nil {
+		ln.Close()
+		return nil, err
+	}
 
 	if cfg.Live {
 		cfg.broker = newLiveBroker()
-		initial, _ := snapshotStaticRoot(cfg.Dir)
+		initial, err := snapshotStaticRoot(cfg.Dir)
+		if err != nil {
+			ln.Close()
+			return nil, fmt.Errorf("snapshot static root: %w", err)
+		}
 		go watchStaticRoot(ctx, cfg.Dir, cfg.PollInterval, initial, cfg.broker)
 	}
 	server := &http.Server{Handler: HandlerWithConfig(cfg)}
-	staticServer := &Server{port: ln.Addr().(*net.TCPAddr).Port, server: server, ln: ln}
+	staticServer := &Server{port: listenPort, server: server, ln: ln}
 	go server.Serve(ln)
 	go func() {
 		<-ctx.Done()
 		staticServer.Close()
 	}()
 	return staticServer, nil
+}
+
+func listenerPort(ln net.Listener) (int, error) {
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("listener address %s is not TCP", ln.Addr())
+	}
+	return addr.Port, nil
 }
 
 func isHTMLFile(path string) bool {
@@ -287,6 +304,9 @@ func snapshotStaticRoot(root string) (map[string]fileState, error) {
 	out := make(map[string]fileState)
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
+			if path == root {
+				return err
+			}
 			return nil
 		}
 		if entry.IsDir() {

@@ -3,7 +3,9 @@ package staticserver
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -218,3 +220,38 @@ func TestStartServesOnHiddenPort(t *testing.T) {
 		t.Fatalf("body = %q", string(data))
 	}
 }
+
+func TestListenerPortRejectsNonTCPListener(t *testing.T) {
+	_, err := listenerPort(nonTCPListener{})
+	if err == nil {
+		t.Fatal("expected non-TCP listener error")
+	}
+	if !strings.Contains(err.Error(), "not TCP") {
+		t.Fatalf("error = %q, want not TCP", err.Error())
+	}
+}
+
+func TestStartWithConfigLiveReturnsSnapshotError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	server, err := StartWithConfig(t.Context(), Config{Dir: missing, Live: true})
+	if err == nil {
+		if server != nil {
+			server.Close()
+		}
+		t.Fatal("expected missing static root error")
+	}
+	if !strings.Contains(err.Error(), "snapshot static root") {
+		t.Fatalf("error = %q, want snapshot static root context", err.Error())
+	}
+}
+
+type nonTCPListener struct{}
+
+func (nonTCPListener) Accept() (net.Conn, error) { return nil, errors.New("unused") }
+func (nonTCPListener) Close() error              { return nil }
+func (nonTCPListener) Addr() net.Addr            { return nonTCPAddr("pipe") }
+
+type nonTCPAddr string
+
+func (a nonTCPAddr) Network() string { return string(a) }
+func (a nonTCPAddr) String() string  { return string(a) }
