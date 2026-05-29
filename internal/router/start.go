@@ -278,7 +278,40 @@ func writeRouterPID(pidPath string) error {
 	if err := os.MkdirAll(filepath.Dir(pidPath), 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0600)
+	tmp, err := os.CreateTemp(filepath.Dir(pidPath), filepath.Base(pidPath)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write([]byte(strconv.Itoa(os.Getpid()) + "\n")); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := replaceFile(tmpPath, pidPath); err != nil {
+		return err
+	}
+	if err := os.Chmod(pidPath, 0600); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 func openRouterLog(logPath string) (*os.File, error) {
