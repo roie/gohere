@@ -486,6 +486,9 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 	if err := resolveMultiRunHosts(ctx, adminClient, items); err != nil {
 		return err
 	}
+	if err := markReusableExistingRoutes(ctx, adminClient, items); err != nil {
+		return err
+	}
 	if err := applyServiceDiscoveryEnv(items); err != nil {
 		return err
 	}
@@ -493,6 +496,10 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 	for i := range items {
 		itemCmd := items[i].cmd
 		plan := items[i].plan
+		if items[i].reused {
+			fmt.Fprint(stdout, runSuccessOutput(itemCmd, items[i].reusedRoute.Host, plan.URLPath))
+			continue
+		}
 		if routerResolved {
 			applyRunRouter(&plan, resolvedRouter)
 		}
@@ -588,10 +595,12 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 }
 
 type multiRunItem struct {
-	cmd     cli.Command
-	plan    RunPlan
-	result  *runner.Result
-	cleanup func()
+	cmd         cli.Command
+	plan        RunPlan
+	result      *runner.Result
+	cleanup     func()
+	reusedRoute router.Route
+	reused      bool
 }
 
 func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Writer) error {
@@ -664,6 +673,9 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 	if err := resolveMultiRunHosts(ctx, adminClient, items); err != nil {
 		return err
 	}
+	if err := markReusableExistingRoutes(ctx, adminClient, items); err != nil {
+		return err
+	}
 	if err := applyServiceDiscoveryEnv(items); err != nil {
 		return err
 	}
@@ -671,6 +683,10 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 	for i := range items {
 		itemCmd := items[i].cmd
 		plan := items[i].plan
+		if items[i].reused {
+			fmt.Fprint(stdout, runSuccessOutput(itemCmd, items[i].reusedRoute.Host, plan.URLPath))
+			continue
+		}
 		if routerResolved {
 			applyRunRouter(&plan, resolvedRouter)
 		}
@@ -810,6 +826,57 @@ func resolveMultiRunHosts(ctx context.Context, client adminClient, items []multi
 	return nil
 }
 
+func markReusableExistingRoutes(ctx context.Context, client adminClient, items []multiRunItem) error {
+	needsStatus := false
+	for _, item := range items {
+		if !item.plan.ManagedPort {
+			needsStatus = true
+			break
+		}
+	}
+	if !needsStatus {
+		return nil
+	}
+
+	statuses, err := adminRouteStatuses(ctx, client)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		if items[i].plan.ManagedPort {
+			continue
+		}
+		route, ok := reusableExistingRoute(items[i].plan, statuses)
+		if !ok {
+			continue
+		}
+		items[i].reusedRoute = route
+		items[i].reused = true
+		items[i].plan.Host = route.Host
+		items[i].plan.Name = strings.TrimSuffix(route.Host, ".localhost")
+	}
+	return nil
+}
+
+func reusableExistingRoute(plan RunPlan, statuses []lifecycle.RouteStatus) (router.Route, bool) {
+	absCWDs, err := lifecycle.AbsCWDSet([]string{plan.CWD})
+	if err != nil {
+		return router.Route{}, false
+	}
+	for _, status := range statuses {
+		if status.Status != lifecycle.RouteStatusReady {
+			continue
+		}
+		if !strings.EqualFold(status.Route.Host, plan.Host) {
+			continue
+		}
+		if lifecycle.RouteMatchesAnyCWD(status.Route, absCWDs) {
+			return status.Route, true
+		}
+	}
+	return router.Route{}, false
+}
+
 func serviceDiscoveryLabel(item multiRunItem) string {
 	name := runName(item.cmd)
 	if index := strings.LastIndex(name, ":"); index >= 0 && index < len(name)-1 {
@@ -898,8 +965,20 @@ func waitForMulti(ctx context.Context, items []multiRunItem) error {
 		cmd cli.Command
 		err error
 	}
-	done := make(chan waitResult, len(items))
+	running := 0
 	for _, item := range items {
+		if item.result != nil {
+			running++
+		}
+	}
+	if running == 0 {
+		return nil
+	}
+	done := make(chan waitResult, running)
+	for _, item := range items {
+		if item.result == nil {
+			continue
+		}
 		cmd := item.cmd
 		result := item.result
 		go func() {
@@ -920,7 +999,7 @@ func waitForMulti(ctx context.Context, items []multiRunItem) error {
 		}
 		timer := time.NewTimer(3 * time.Second)
 		defer timer.Stop()
-		for range items {
+		for range running {
 			select {
 			case <-done:
 			case <-timer.C:

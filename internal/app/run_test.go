@@ -1370,6 +1370,62 @@ func TestRunImplicitDevAtWorkspaceRootLaunchesWorkspacePackages(t *testing.T) {
 	}
 }
 
+func TestRunWorkspaceReusesReadyUnmanagedRouteFromSameCWD(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	workerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer workerServer.Close()
+
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"ctrltube","workspaces":["apps/*"],"scripts":{"dev":"pnpm --parallel --filter @ctrltube/worker --filter @ctrltube/web dev"}}`,
+		"pnpm-lock.yaml":           "",
+		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"wrangler dev --local --port 8787"}}`,
+	})
+	workerDir := filepath.Join(root, "apps", "worker")
+	admin := &multiRecordingAdminClient{routes: []router.Route{{
+		Host:   "worker.ctrltube.localhost",
+		Target: workerServer.URL,
+		CWD:    workerDir,
+	}}}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+
+	var dirs []string
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		dirs = append(dirs, filepath.Base(cfg.Dir))
+		if filepath.Base(cfg.Dir) == "worker" {
+			return nil, errors.New("address already in use")
+		}
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+
+	var stdout, stderr strings.Builder
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	if !sameStrings(dirs, []string{"web"}) {
+		t.Fatalf("started dirs = %#v, want only web", dirs)
+	}
+	if countString(admin.upsertedHosts(), "worker.ctrltube.localhost") != 1 {
+		t.Fatalf("reused worker route should not be duplicated: %#v", admin.upsertedHosts())
+	}
+	wantOut := "gohere web \u2192 http://web.ctrltube.localhost\n" +
+		"gohere worker \u2192 http://worker.ctrltube.localhost\n"
+	if stdout.String() != wantOut || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
+	}
+}
+
 func TestRunWorkspaceInjectsServiceDiscoveryEnv(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
@@ -5227,6 +5283,16 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func countString(values []string, want string) int {
+	count := 0
+	for _, value := range values {
+		if value == want {
+			count++
+		}
+	}
+	return count
 }
 
 type interleavingAppRouteStore struct {
