@@ -356,6 +356,32 @@ func TestRunFallsBackToChosenPortWhenReachable(t *testing.T) {
 	}
 }
 
+func TestRunWaitsForSlowChosenPortWhenNoURLIsPrinted(t *testing.T) {
+	port, err := ChooseFreePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		Command:        []string{os.Args[0], "-test.run=TestHelperProcess", "--", "delayed-listen", strconv.Itoa(port), "150ms"},
+		Env:            []string{"GOHERE_HELPER_PROCESS=1"},
+		ChosenPort:     port,
+		Stdout:         &bytes.Buffer{},
+		Stderr:         &bytes.Buffer{},
+		StartupTimeout: 10 * time.Millisecond,
+	}
+
+	result, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stop()
+
+	if result.Port != port {
+		t.Fatalf("fallback port = %d, want %d", result.Port, port)
+	}
+}
+
 func TestStartRunsCommandInConfiguredDir(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{
@@ -568,6 +594,25 @@ func TestHelperProcess(t *testing.T) {
 		time.Sleep(2 * time.Second)
 	case "sleep":
 		time.Sleep(2 * time.Second)
+	case "delayed-listen":
+		if len(args) < 4 {
+			os.Exit(2)
+		}
+		port, err := strconv.Atoi(args[2])
+		if err != nil {
+			os.Exit(2)
+		}
+		delay, err := time.ParseDuration(args[3])
+		if err != nil {
+			os.Exit(2)
+		}
+		time.Sleep(delay)
+		server := &http.Server{Addr: "127.0.0.1:" + strconv.Itoa(port), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})}
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			os.Exit(1)
+		}
 	case "print-env-count":
 		key := args[len(args)-1]
 		count := 0

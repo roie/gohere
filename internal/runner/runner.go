@@ -28,6 +28,7 @@ type Config struct {
 	Stdout              io.Writer
 	Stderr              io.Writer
 	StartupTimeout      time.Duration
+	ReachabilityTimeout time.Duration
 }
 
 type Result struct {
@@ -37,6 +38,8 @@ type Result struct {
 	done    chan struct{}
 	waitErr error
 }
+
+const defaultChosenPortStartupDeadline = 60 * time.Second
 
 func (r *Result) Stop() error {
 	if r == nil || r.cmd == nil || r.cmd.Process == nil {
@@ -299,20 +302,63 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 		result.Port = port
 		return result, nil
 	case <-done:
-		if result.waitErr == nil {
-			result.waitErr = ErrProcessFinished
-		} else {
-			result.waitErr = errors.Join(ErrProcessFailed, result.waitErr)
-		}
-		return nil, result.waitErr
+		return nil, result.startupError()
 	case <-time.After(timeout):
 		if !cfg.RequireDetectedPort && cfg.ChosenPort != 0 && PortReachable(cfg.ChosenPort) {
 			result.Port = cfg.ChosenPort
 			return result, nil
 		}
+		if !cfg.RequireDetectedPort && cfg.ChosenPort != 0 {
+			reachabilityTimeout := cfg.ReachabilityTimeout
+			if reachabilityTimeout == 0 {
+				reachabilityTimeout = defaultChosenPortStartupDeadline - timeout
+			}
+			port, err := waitForChosenPort(result, detected, done, cfg.ChosenPort, reachabilityTimeout)
+			if err == nil {
+				result.Port = port
+				return result, nil
+			}
+			if !errors.Is(err, ErrNoLocalURL) {
+				return nil, err
+			}
+		}
 		terminateProcessTree(cmd)
 		<-done
 		return nil, ErrNoLocalURL
+	}
+}
+
+func (r *Result) startupError() error {
+	if r.waitErr == nil {
+		r.waitErr = ErrProcessFinished
+	} else {
+		r.waitErr = errors.Join(ErrProcessFailed, r.waitErr)
+	}
+	return r.waitErr
+}
+
+func waitForChosenPort(result *Result, detected <-chan int, done <-chan struct{}, chosenPort int, timeout time.Duration) (int, error) {
+	if timeout <= 0 {
+		return 0, ErrNoLocalURL
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case port := <-detected:
+			return port, nil
+		case <-done:
+			return 0, result.startupError()
+		case <-ticker.C:
+			if PortReachable(chosenPort) {
+				return chosenPort, nil
+			}
+		case <-timer.C:
+			return 0, ErrNoLocalURL
+		}
 	}
 }
 
