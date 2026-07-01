@@ -1868,7 +1868,7 @@ func TestRunExplicitPackageDirectoryUsesTargetCWDAndLabelsPath(t *testing.T) {
 	}
 }
 
-func TestRunImplicitDevAtWorkspaceRootWithoutDevPackagesDoesNotRunRootScript(t *testing.T) {
+func TestRunImplicitDevAtWorkspaceRootWithoutDevPackagesFallsBackToRootScript(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -1893,18 +1893,18 @@ func TestRunImplicitDevAtWorkspaceRootWithoutDevPackagesDoesNotRunRootScript(t *
 	})
 
 	var stdout, stderr strings.Builder
-	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), `No workspace packages with a "dev" script found`) {
-		t.Fatalf("Run() error = %v, want missing workspace dev scripts error", err)
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, &stdout, &stderr); err != nil {
+		t.Fatal(err)
 	}
-	if len(commands) != 0 {
-		t.Fatalf("workspace mode should not fall back to root aggregate script, commands = %#v", commands)
+	if len(commands) != 1 || !strings.Contains(commands[0], "pnpm run dev") {
+		t.Fatalf("commands = %#v, want root dev script", commands)
 	}
-	if len(admin.upsertedHosts()) != 0 {
-		t.Fatalf("upserted hosts = %#v, want none", admin.upsertedHosts())
+	if !sameStrings(admin.upsertedHosts(), []string{"ctrltube.localhost"}) {
+		t.Fatalf("upserted hosts = %#v, want ctrltube.localhost", admin.upsertedHosts())
 	}
-	if stdout.String() != "" || stderr.String() != "" {
-		t.Fatalf("stdout=%q stderr=%q, want both empty", stdout.String(), stderr.String())
+	wantOut := "gohere \u2192 http://ctrltube.localhost\n"
+	if stdout.String() != wantOut || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
 	}
 }
 

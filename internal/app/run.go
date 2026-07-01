@@ -405,7 +405,7 @@ func runWorkspaceIfAvailable(ctx context.Context, cmd cli.Command, cwd string, s
 		return false, err
 	}
 	if len(packages) == 0 {
-		return true, noWorkspacePackageScriptError(cmd.Script)
+		return false, nil
 	}
 
 	pm, _, err := project.DetectPackageManager(cwd)
@@ -414,10 +414,6 @@ func runWorkspaceIfAvailable(ctx context.Context, cmd cli.Command, cwd string, s
 	}
 
 	return true, runWorkspace(ctx, cmd, cwd, pm, packages, stdout, stderr)
-}
-
-func noWorkspacePackageScriptError(script string) error {
-	return fmt.Errorf("gohere error: No workspace packages with a %q script found.\nRun `gohere %s` to run the current package script exactly as written.", script, script)
 }
 
 func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.PackageManager, packages []project.WorkspacePackage, stdout, stderr io.Writer) error {
