@@ -130,6 +130,9 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 	}
 	if cfg.UntrustCA == nil {
 		cfg.UntrustCA = func(ctx context.Context, fingerprint string) error {
+			if runtime.GOOS == "linux" && detectWSLFunc() {
+				return untrustCAForWSL(ctx, fingerprint)
+			}
 			return certtrust.UntrustCA(ctx, runtime.GOOS, cfg.CommandRunner, fingerprint)
 		}
 	}

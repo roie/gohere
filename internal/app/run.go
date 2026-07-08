@@ -25,6 +25,7 @@ import (
 	"github.com/roie/gohere/internal/admin"
 	"github.com/roie/gohere/internal/bridge"
 	localcert "github.com/roie/gohere/internal/cert"
+	"github.com/roie/gohere/internal/certtrust"
 	"github.com/roie/gohere/internal/cli"
 	appconfig "github.com/roie/gohere/internal/config"
 	"github.com/roie/gohere/internal/lifecycle"
@@ -1635,8 +1636,6 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 				return promptAndRunSetup(ctx, out, health, true)
 			}
 			return nil
-		} else {
-			return installedRouterUnavailableError(err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return installedRouterUnavailableError(err)
@@ -1740,6 +1739,9 @@ func setupForGOOS(ctx context.Context, goos string) error {
 	switch goos {
 	case "linux":
 		cfg.SystemdAvailable = systemdUserAvailable()
+		if detectWSLFunc() {
+			cfg.TrustCA = trustCAForWSL
+		}
 		return setupLinuxFunc(ctx, cfg)
 	case "windows":
 		return setupWindowsFunc(ctx, cfg)
@@ -1748,6 +1750,44 @@ func setupForGOOS(ctx context.Context, goos string) error {
 	default:
 		return fmt.Errorf("gohere setup is not supported on %s yet", goos)
 	}
+}
+
+type appCommandRunner struct{}
+
+func (appCommandRunner) Run(ctx context.Context, command string, args ...string) error {
+	cmd := execCommandContext(ctx, command, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
+}
+
+func trustCAForWSL(ctx context.Context, caPath string) error {
+	runner := appCommandRunner{}
+	if err := certtrust.TrustCA(ctx, "linux", runner, caPath); err != nil {
+		return err
+	}
+	windowsPath, err := wslWindowsPath(ctx, caPath)
+	if err != nil {
+		return err
+	}
+	return runner.Run(ctx, "certutil.exe", "-user", "-addstore", "Root", windowsPath)
+}
+
+func untrustCAForWSL(ctx context.Context, fingerprint string) error {
+	runner := appCommandRunner{}
+	if err := certtrust.UntrustCA(ctx, "linux", runner, fingerprint); err != nil {
+		return err
+	}
+	return runner.Run(ctx, "certutil.exe", "-user", "-delstore", "Root", fingerprint)
+}
+
+func wslWindowsPath(ctx context.Context, path string) (string, error) {
+	output, err := execCommandContext(ctx, "wslpath", "-w", path).Output()
+	if err != nil {
+		return "", commandOutputError("wslpath", output, err)
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 type ListOptions struct {

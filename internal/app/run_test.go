@@ -884,7 +884,7 @@ func TestEnsureRouterPromptsAndStopsHealthyHTTPServiceWhenHTTPSRequired(t *testi
 	}
 }
 
-func TestEnsureRouterDoesNotPromptWhenInstalledRouterRestartFails(t *testing.T) {
+func TestEnsureRouterPromptsWhenInstalledRouterStartsButStaysUnhealthy(t *testing.T) {
 	oldSetup := setupFunc
 	oldPromptInput := promptInput
 	oldStartInstalledRouter := startInstalledRouterFunc
@@ -894,35 +894,41 @@ func TestEnsureRouterDoesNotPromptWhenInstalledRouterRestartFails(t *testing.T) 
 		startInstalledRouterFunc = oldStartInstalledRouter
 	}()
 
+	setupCalls := 0
 	setupFunc = func(ctx context.Context) error {
-		t.Fatal("setup should not run when installed router restart fails")
+		setupCalls++
 		return nil
 	}
-	promptInput = strings.NewReader("y\n")
+	promptInput = strings.NewReader("\n")
 	startInstalledCalls := 0
 	startInstalledRouterFunc = func(context.Context) error {
 		startInstalledCalls++
-		return errors.New("port already in use")
+		return nil
 	}
+	healthCalls := 0
 	var out strings.Builder
 
 	err := ensureRouter(context.Background(), &out, func(context.Context) error {
+		healthCalls++
+		if setupCalls > 0 {
+			return nil
+		}
 		return errors.New("router unavailable")
 	}, false)
-	if err == nil {
-		t.Fatal("expected installed router restart error")
-	}
-	if !strings.Contains(err.Error(), "installed gohere service is not reachable") {
-		t.Fatalf("error = %q", err.Error())
-	}
-	if !strings.Contains(err.Error(), "gohere doctor") {
-		t.Fatalf("error should point to doctor, got %q", err.Error())
+	if err != nil {
+		t.Fatal(err)
 	}
 	if startInstalledCalls != 1 {
 		t.Fatalf("installed router restart calls = %d, want 1", startInstalledCalls)
 	}
-	if out.String() != "" {
-		t.Fatalf("prompt output = %q, want empty", out.String())
+	if setupCalls != 1 {
+		t.Fatalf("setup calls = %d, want 1", setupCalls)
+	}
+	if healthCalls < 2 {
+		t.Fatalf("health calls = %d, want restart attempt and setup verification", healthCalls)
+	}
+	if out.String() != firstRunPrompt()+"\n" {
+		t.Fatalf("prompt output = %q", out.String())
 	}
 }
 
@@ -1132,6 +1138,31 @@ func TestSetupForGOOSUsesDarwinSetup(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("darwin setup calls = %d, want 1", calls)
+	}
+}
+
+func TestSetupForGOOSUsesWSLTrustHookOnLinux(t *testing.T) {
+	oldSetupLinux := setupLinuxFunc
+	oldDetectWSL := detectWSLFunc
+	defer func() {
+		setupLinuxFunc = oldSetupLinux
+		detectWSLFunc = oldDetectWSL
+	}()
+	detectWSLFunc = func() bool { return true }
+	calls := 0
+	setupLinuxFunc = func(ctx context.Context, cfg setup.Config) error {
+		calls++
+		if cfg.TrustCA == nil {
+			t.Fatal("expected WSL setup to install a custom CA trust hook")
+		}
+		return nil
+	}
+
+	if err := setupForGOOS(context.Background(), "linux"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("linux setup calls = %d, want 1", calls)
 	}
 }
 
