@@ -10,6 +10,9 @@ import (
 	"runtime"
 	"strconv"
 
+	localcert "github.com/roie/gohere/internal/cert"
+	"github.com/roie/gohere/internal/certtrust"
+	appconfig "github.com/roie/gohere/internal/config"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/userpath"
 )
@@ -30,6 +33,8 @@ type Config struct {
 	RouterHealth     func(context.Context) error
 	Stderr           io.Writer
 	SystemdAvailable bool
+	HTTPS            bool
+	TrustCA          func(context.Context, string) error
 }
 
 var stopDetachedProcess = func(pid int) {
@@ -65,6 +70,9 @@ func Linux(ctx context.Context, cfg Config) error {
 	}
 	if cfg.Stderr == nil {
 		cfg.Stderr = io.Discard
+	}
+	if err := enableHTTPSIfRequested(ctx, cfg, "linux"); err != nil {
+		return err
 	}
 
 	binDir := filepath.Join(cfg.StateDir, "bin")
@@ -119,6 +127,9 @@ func Windows(ctx context.Context, cfg Config) error {
 	if cfg.CommandRunner == nil {
 		cfg.CommandRunner = realRunner{}
 	}
+	if err := enableHTTPSIfRequested(ctx, cfg, "windows"); err != nil {
+		return err
+	}
 
 	binDir := filepath.Join(cfg.StateDir, "bin")
 	if err := os.MkdirAll(binDir, 0700); err != nil {
@@ -158,6 +169,9 @@ func Darwin(ctx context.Context, cfg Config) error {
 	if cfg.CommandRunner == nil {
 		cfg.CommandRunner = realRunner{}
 	}
+	if err := enableHTTPSIfRequested(ctx, cfg, "darwin"); err != nil {
+		return err
+	}
 
 	binDir := filepath.Join(cfg.StateDir, "bin")
 	if err := os.MkdirAll(binDir, 0700); err != nil {
@@ -178,6 +192,26 @@ func Darwin(ctx context.Context, cfg Config) error {
 		return err
 	}
 	return nil
+}
+
+func enableHTTPSIfRequested(ctx context.Context, cfg Config, goos string) error {
+	if !cfg.HTTPS {
+		return nil
+	}
+	store := localcert.Store{StateDir: cfg.StateDir}
+	if _, err := store.EnsureCA(); err != nil {
+		return err
+	}
+	trustCA := cfg.TrustCA
+	if trustCA == nil {
+		trustCA = func(ctx context.Context, caPath string) error {
+			return certtrust.TrustCA(ctx, goos, cfg.CommandRunner, caPath)
+		}
+	}
+	if err := trustCA(ctx, store.CACertPath()); err != nil {
+		return err
+	}
+	return appconfig.Save(cfg.StateDir, appconfig.Config{HTTPS: true})
 }
 
 func StartInstalledRouter(ctx context.Context, cfg Config, binaryName string) error {

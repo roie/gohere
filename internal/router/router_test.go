@@ -3,6 +3,7 @@ package router
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	localcert "github.com/roie/gohere/internal/cert"
 )
 
 func TestTokenGeneratedWith0600Permissions(t *testing.T) {
@@ -1458,6 +1461,67 @@ func TestStartProxiesForwardedHeadersOverHTTP(t *testing.T) {
 	}
 	if resp.Header.Get("X-Smoke-Forwarded-Proto") != "http" {
 		t.Fatalf("X-Forwarded-Proto = %q, want http", resp.Header.Get("X-Smoke-Forwarded-Proto"))
+	}
+}
+
+func TestStartProxiesForwardedHeadersOverHTTPS(t *testing.T) {
+	stateDir := t.TempDir()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Smoke-Forwarded-Proto", r.Header.Get("X-Forwarded-Proto"))
+		w.Header().Set("X-Smoke-Forwarded-Host", r.Header.Get("X-Forwarded-Host"))
+		io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+
+	store := NewRouteStore(filepath.Join(stateDir, RoutesFilename))
+	if err := store.Save([]Route{{Host: "smoke.localhost", Target: backend.URL}}); err != nil {
+		t.Fatal(err)
+	}
+	tlsCert, err := localcert.Store{StateDir: stateDir}.EnsureHostCert("smoke.localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := Start(t.Context(), StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		HTTPSAddr: "127.0.0.1:0",
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  stateDir,
+		TLSConfig: &tls.Config{Certificates: []tls.Certificate{tlsCert}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+	if running.HTTPSAddr == "" {
+		t.Fatal("HTTPSAddr is empty")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "https://"+running.HTTPSAddr+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "smoke.localhost"
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body %q", resp.StatusCode, string(body))
+	}
+	if resp.Header.Get("X-Smoke-Forwarded-Proto") != "https" {
+		t.Fatalf("X-Forwarded-Proto = %q, want https", resp.Header.Get("X-Smoke-Forwarded-Proto"))
+	}
+	if resp.Header.Get("X-Smoke-Forwarded-Host") != "smoke.localhost" {
+		t.Fatalf("X-Forwarded-Host = %q, want smoke.localhost", resp.Header.Get("X-Smoke-Forwarded-Host"))
 	}
 }
 

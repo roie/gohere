@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"github.com/roie/gohere/internal/admin"
+	localcert "github.com/roie/gohere/internal/cert"
+	"github.com/roie/gohere/internal/certtrust"
+	appconfig "github.com/roie/gohere/internal/config"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/setup"
 	"github.com/roie/gohere/internal/userpath"
@@ -27,6 +30,7 @@ type UninstallConfig struct {
 	CommandRunner  setup.CommandRunner
 	ProcessSignal  func(int) error
 	ProcessMatches func(int, string) bool
+	UntrustCA      func(context.Context, string) error
 }
 
 type ServiceStopConfig struct {
@@ -124,6 +128,11 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 	if cfg.ProcessMatches == nil {
 		cfg.ProcessMatches = processMatchesInstalledBinary
 	}
+	if cfg.UntrustCA == nil {
+		cfg.UntrustCA = func(ctx context.Context, fingerprint string) error {
+			return certtrust.UntrustCA(ctx, runtime.GOOS, cfg.CommandRunner, fingerprint)
+		}
+	}
 
 	_ = shutdownInstalledService(ctx, cfg.StateDir)
 	servicePath := filepath.Join(cfg.ConfigDir, "systemd", "user", "gohere-router.service")
@@ -150,6 +159,9 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 	if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	if err := untrustHTTPSCAIfEnabled(ctx, cfg.StateDir, cfg.UntrustCA); err != nil {
+		return err
+	}
 	fmt.Fprintln(stdout, "gohere service removed.")
 
 	fmt.Fprint(stdout, "\nRemove gohere local state too? This deletes routes, token, and logs. [y/N] ")
@@ -163,6 +175,21 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 	}
 	fmt.Fprintln(stdout, "gohere local state kept.")
 	return nil
+}
+
+func untrustHTTPSCAIfEnabled(ctx context.Context, stateDir string, untrustCA func(context.Context, string) error) error {
+	cfg, err := appconfig.Load(stateDir)
+	if err != nil {
+		return err
+	}
+	if !cfg.HTTPS {
+		return nil
+	}
+	fingerprint, err := localcert.Store{StateDir: stateDir}.Fingerprint()
+	if err != nil {
+		return err
+	}
+	return untrustCA(ctx, fingerprint)
 }
 
 func readRouterPID(path string) (int, bool) {

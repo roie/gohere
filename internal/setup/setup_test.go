@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	appconfig "github.com/roie/gohere/internal/config"
 )
 
 func TestLinuxSetupCopiesBinaryEnsuresTokenAndRunsSetcap(t *testing.T) {
@@ -346,6 +348,83 @@ func TestLinuxSetupReusesHealthyRouter(t *testing.T) {
 	}
 	if len(runner.commands) != 0 {
 		t.Fatalf("setup should not run commands when router is healthy: %#v", runner.commands)
+	}
+}
+
+func TestLinuxSetupHTTPSGeneratesCATrustsAndMarksConfig(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source-gohere")
+	if err := os.WriteFile(source, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(dir, "state")
+	runner := &detachingRunner{pid: 4242}
+	var trustedCAPath string
+
+	err := Linux(context.Background(), Config{
+		StateDir:         stateDir,
+		CurrentBinary:    source,
+		CommandRunner:    runner,
+		SystemdAvailable: false,
+		HTTPS:            true,
+		TrustCA: func(ctx context.Context, caPath string) error {
+			trustedCAPath = caPath
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if trustedCAPath != filepath.Join(stateDir, "ca", "ca.pem") {
+		t.Fatalf("trusted CA path = %q, want state CA", trustedCAPath)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "ca", "ca.key")); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := appconfig.Load(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.HTTPS {
+		t.Fatalf("config = %#v, want HTTPS enabled", cfg)
+	}
+	if !runner.saw(filepath.Join(stateDir, "bin", "gohere"), "service", "run") {
+		t.Fatalf("detached service command missing: %#v", runner.commands)
+	}
+}
+
+func TestLinuxSetupHTTPSDoesNotMarkConfigWhenTrustFails(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source-gohere")
+	if err := os.WriteFile(source, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(dir, "state")
+	trustErr := errors.New("trust failed")
+
+	err := Linux(context.Background(), Config{
+		StateDir:         stateDir,
+		CurrentBinary:    source,
+		CommandRunner:    &detachingRunner{pid: 4242},
+		SystemdAvailable: false,
+		HTTPS:            true,
+		TrustCA: func(ctx context.Context, caPath string) error {
+			return trustErr
+		},
+	})
+	if !errors.Is(err, trustErr) {
+		t.Fatalf("err = %v, want trust failure", err)
+	}
+	cfg, loadErr := appconfig.Load(stateDir)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if cfg.HTTPS {
+		t.Fatalf("config = %#v, want HTTPS disabled after trust failure", cfg)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "router.pid")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("router.pid stat err = %v, want not exist", err)
 	}
 }
 

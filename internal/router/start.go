@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -21,18 +22,23 @@ import (
 
 type StartConfig struct {
 	HTTPAddr  string
+	HTTPSAddr string
 	AdminAddr string
 	StateDir  string
 	LogPath   string
+	TLSConfig *tls.Config
 }
 
 type Running struct {
 	HTTPAddr  string
+	HTTPSAddr string
 	AdminAddr string
 
 	httpServer  *http.Server
+	httpsServer *http.Server
 	adminServer *http.Server
 	httpLn      net.Listener
+	httpsLn     net.Listener
 	adminLn     net.Listener
 	pidPath     string
 	logFile     *os.File
@@ -51,6 +57,9 @@ const (
 func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 	if cfg.HTTPAddr == "" {
 		cfg.HTTPAddr = defaultHTTPAddrForGOOS(runtime.GOOS)
+	}
+	if cfg.TLSConfig != nil && cfg.HTTPSAddr == "" {
+		cfg.HTTPSAddr = defaultHTTPSAddrForGOOS(runtime.GOOS)
 	}
 	if cfg.AdminAddr == "" {
 		cfg.AdminAddr = "127.0.0.1:39399"
@@ -92,26 +101,48 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		logFile.Close()
 		return nil, listenError(cfg.HTTPAddr, err)
 	}
+	var httpsLn net.Listener
+	if cfg.TLSConfig != nil {
+		httpsLn, err = listenHTTPForGOOS(runtime.GOOS, cfg.HTTPSAddr)
+		if err != nil {
+			httpLn.Close()
+			logFile.Close()
+			return nil, listenError(cfg.HTTPSAddr, err)
+		}
+	}
 	adminLn, err := net.Listen("tcp", cfg.AdminAddr)
 	if err != nil {
 		httpLn.Close()
+		if httpsLn != nil {
+			httpsLn.Close()
+		}
 		logFile.Close()
 		return nil, err
 	}
 	pidPath := filepath.Join(cfg.StateDir, "router.pid")
 	if err := writeRouterPID(pidPath); err != nil {
 		httpLn.Close()
+		if httpsLn != nil {
+			httpsLn.Close()
+		}
 		adminLn.Close()
 		logFile.Close()
 		return nil, err
 	}
-	fmt.Fprintf(logFile, "gohere router started http=%s admin=%s\n", httpLn.Addr().String(), adminLn.Addr().String())
+	httpsAddr := ""
+	if httpsLn != nil {
+		httpsAddr = httpsLn.Addr().String()
+	}
+	fmt.Fprintf(logFile, "gohere router started http=%s https=%s admin=%s\n", httpLn.Addr().String(), httpsAddr, adminLn.Addr().String())
+
+	proxyHandler := server.HTTPHandler()
 
 	running = &Running{
 		HTTPAddr:  httpLn.Addr().String(),
+		HTTPSAddr: httpsAddr,
 		AdminAddr: adminLn.Addr().String(),
 		httpServer: &http.Server{
-			Handler:           server.HTTPHandler(),
+			Handler:           proxyHandler,
 			ReadHeaderTimeout: proxyReadHeaderTimeout,
 		},
 		adminServer: &http.Server{
@@ -122,12 +153,23 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 			IdleTimeout:       adminIdleTimeout,
 		},
 		httpLn:  httpLn,
+		httpsLn: httpsLn,
 		adminLn: adminLn,
 		pidPath: pidPath,
 		logFile: logFile,
 		done:    make(chan struct{}),
 	}
+	if cfg.TLSConfig != nil {
+		running.httpsServer = &http.Server{
+			Handler:           proxyHandler,
+			TLSConfig:         preparedTLSConfig(cfg.TLSConfig),
+			ReadHeaderTimeout: proxyReadHeaderTimeout,
+		}
+	}
 	go running.httpServer.Serve(httpLn)
+	if running.httpsServer != nil {
+		go running.httpsServer.Serve(tls.NewListener(httpsLn, running.httpsServer.TLSConfig))
+	}
 	go running.adminServer.Serve(adminLn)
 	go func() {
 		<-ctx.Done()
@@ -141,6 +183,21 @@ func defaultHTTPAddrForGOOS(goos string) string {
 		return "[::]:80"
 	}
 	return "127.0.0.1:80"
+}
+
+func defaultHTTPSAddrForGOOS(goos string) string {
+	if goos == "darwin" {
+		return "[::]:443"
+	}
+	return "127.0.0.1:443"
+}
+
+func preparedTLSConfig(cfg *tls.Config) *tls.Config {
+	clone := cfg.Clone()
+	if clone.MinVersion == 0 {
+		clone.MinVersion = tls.VersionTLS12
+	}
+	return clone
 }
 
 func listenHTTPForGOOS(goos, addr string) (net.Listener, error) {
@@ -241,6 +298,11 @@ func (r *Running) Close() error {
 			firstErr = err
 		}
 	}
+	if r.httpsServer != nil {
+		if err := r.httpsServer.Shutdown(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if r.adminServer != nil {
 		if err := r.adminServer.Shutdown(ctx); err != nil && firstErr == nil {
 			firstErr = err
@@ -248,6 +310,9 @@ func (r *Running) Close() error {
 	}
 	if r.httpLn != nil {
 		r.httpLn.Close()
+	}
+	if r.httpsLn != nil {
+		r.httpsLn.Close()
 	}
 	if r.adminLn != nil {
 		r.adminLn.Close()

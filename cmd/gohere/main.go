@@ -9,7 +9,9 @@ import (
 	"syscall"
 
 	"github.com/roie/gohere/internal/app"
+	localcert "github.com/roie/gohere/internal/cert"
 	"github.com/roie/gohere/internal/cli"
+	appconfig "github.com/roie/gohere/internal/config"
 	"github.com/roie/gohere/internal/router"
 )
 
@@ -27,6 +29,7 @@ func main() {
 
 	switch cmd.Kind {
 	case cli.CommandRun, cli.CommandRaw:
+		cmd.URLScheme = app.AutoURLScheme
 		cwd, err := os.Getwd()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -77,12 +80,16 @@ func main() {
 			os.Exit(1)
 		}
 	case cli.CommandServiceRun:
-		running, err := router.Start(ctx, router.StartConfig{})
+		running, err := router.Start(ctx, routerStartConfig())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "gohere service listening on %s\n", running.HTTPAddr)
+		fmt.Fprintf(os.Stderr, "gohere service listening on %s", running.HTTPAddr)
+		if running.HTTPSAddr != "" {
+			fmt.Fprintf(os.Stderr, " and %s", running.HTTPSAddr)
+		}
+		fmt.Fprintln(os.Stderr)
 		waitForRouter(ctx, running.Done())
 	case cli.CommandHelp:
 		printUsage(os.Stdout, cmd.HelpTopic)
@@ -91,6 +98,17 @@ func main() {
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command")
 		os.Exit(2)
+	}
+}
+
+func routerStartConfig() router.StartConfig {
+	stateDir := router.DefaultStateDir()
+	cfg, err := appconfig.Load(stateDir)
+	if err != nil || !cfg.HTTPS {
+		return router.StartConfig{}
+	}
+	return router.StartConfig{
+		TLSConfig: localcert.Store{StateDir: stateDir}.TLSConfig(),
 	}
 }
 

@@ -35,9 +35,11 @@ type Command struct {
 	JSON           bool
 	Open           bool
 	Live           bool
+	HTTP           bool
 	As             string
 	TargetPort     int
 	PortFlag       string
+	URLScheme      string
 	HelpTopic      string
 	StopTarget     string
 	StopAll        bool
@@ -77,6 +79,8 @@ func Parse(args []string) (Command, error) {
 			cmd.Open = true
 		case "--live":
 			cmd.Live = true
+		case "--http":
+			cmd.HTTP = true
 		case "--as":
 			if len(rest) == 0 || strings.HasPrefix(rest[0], "-") {
 				return Command{}, parseError("--as requires a name")
@@ -313,6 +317,8 @@ func fixedCommand(kind CommandKind, topic string, args []string) (Command, error
 			cmd.JSON = true
 		case "--open", "-o":
 			return Command{}, openAfterFixedCommandError()
+		case "--http":
+			return Command{}, httpAfterFixedCommandError()
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return Command{}, unknownOptionError(arg)
@@ -344,7 +350,7 @@ func openRequested(args []string) bool {
 
 func isReservedValueFlag(arg string) bool {
 	switch arg {
-	case "--verbose", "--open", "-o", "--live", "--as", "--target", "--port-flag", "--help", "-h", "--version", "-v":
+	case "--verbose", "--open", "-o", "--live", "--http", "--as", "--target", "--port-flag", "--help", "-h", "--version", "-v":
 		return true
 	default:
 		return false
@@ -353,6 +359,10 @@ func isReservedValueFlag(arg string) bool {
 
 func openAfterFixedCommandError() error {
 	return errors.New("gohere error: --open is only supported when running a project")
+}
+
+func httpAfterFixedCommandError() error {
+	return errors.New("gohere error: --http is only supported when running a project")
 }
 
 func parseError(message string) error {

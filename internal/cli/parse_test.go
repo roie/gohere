@@ -251,6 +251,27 @@ func TestParseLiveFlag(t *testing.T) {
 	}
 }
 
+func TestParseHTTPFlag(t *testing.T) {
+	tests := [][]string{
+		{"gohere", "--http"},
+		{"gohere", "dev:web", "--http"},
+		{"gohere", "./dist", "--http"},
+		{"gohere", "--http", "--", "npm", "run", "dev"},
+	}
+
+	for _, args := range tests {
+		t.Run(args[len(args)-1], func(t *testing.T) {
+			cmd, err := Parse(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !cmd.HTTP {
+				t.Fatalf("HTTP = false for args %#v", args)
+			}
+		})
+	}
+}
+
 func TestParseAsFlag(t *testing.T) {
 	tests := []struct {
 		name string
@@ -496,6 +517,17 @@ func TestParseRejectsOpenAfterFixedCommandWithOtherFlags(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	want := "gohere error: --open is only supported when running a project"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestParseRejectsHTTPAfterFixedCommand(t *testing.T) {
+	_, err := Parse([]string{"gohere", "list", "--http"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "gohere error: --http is only supported when running a project"
 	if err.Error() != want {
 		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}

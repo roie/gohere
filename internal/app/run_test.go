@@ -19,7 +19,9 @@ import (
 
 	"github.com/roie/gohere/internal/admin"
 	"github.com/roie/gohere/internal/bridge"
+	localcert "github.com/roie/gohere/internal/cert"
 	"github.com/roie/gohere/internal/cli"
+	appconfig "github.com/roie/gohere/internal/config"
 	"github.com/roie/gohere/internal/lifecycle"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/runner"
@@ -714,6 +716,21 @@ func TestRunSuccessOutputDoesNotLabelRawCommand(t *testing.T) {
 	}
 }
 
+func TestRunSuccessOutputCanUseHTTPS(t *testing.T) {
+	got := runSuccessOutputForScheme(cli.Command{Kind: cli.CommandRun, Script: "dev"}, "https", "eventca.localhost", "")
+	want := "gohere \u2192 https://eventca.localhost\n"
+	if got != want {
+		t.Fatalf("runSuccessOutputForScheme() = %q, want %q", got, want)
+	}
+}
+
+func TestPublicURLSchemeHTTPFlagOverridesHTTPS(t *testing.T) {
+	got := publicURLScheme(cli.Command{Kind: cli.CommandRun, Script: "dev", HTTP: true, URLScheme: "https"})
+	if got != "http" {
+		t.Fatalf("publicURLScheme() = %q, want http", got)
+	}
+}
+
 func TestShouldRunSetupFromAnswer(t *testing.T) {
 	tests := map[string]bool{
 		"\n":    true,
@@ -762,7 +779,7 @@ func TestEnsureRouterPromptsAndRunsSetup(t *testing.T) {
 			return errors.New("router unavailable")
 		}
 		return nil
-	})
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -804,7 +821,7 @@ func TestEnsureRouterRestartsInstalledRouterWithoutPrompt(t *testing.T) {
 			return errors.New("router unavailable")
 		}
 		return nil
-	})
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -813,6 +830,57 @@ func TestEnsureRouterRestartsInstalledRouterWithoutPrompt(t *testing.T) {
 	}
 	if out.String() != "" {
 		t.Fatalf("prompt output = %q, want empty", out.String())
+	}
+}
+
+func TestEnsureRouterPromptsAndStopsHealthyHTTPServiceWhenHTTPSRequired(t *testing.T) {
+	oldSetup := setupFunc
+	oldPromptInput := promptInput
+	oldStartInstalledRouter := startInstalledRouterFunc
+	oldServiceStop := serviceStopFunc
+	defer func() {
+		setupFunc = oldSetup
+		promptInput = oldPromptInput
+		startInstalledRouterFunc = oldStartInstalledRouter
+		serviceStopFunc = oldServiceStop
+	}()
+
+	setupCalls := 0
+	setupFunc = func(ctx context.Context) error {
+		setupCalls++
+		return nil
+	}
+	startInstalledRouterFunc = func(context.Context) error {
+		t.Fatal("installed router restart should not run when current service is healthy")
+		return nil
+	}
+	stopCalls := 0
+	serviceStopFunc = func(context.Context) error {
+		stopCalls++
+		return nil
+	}
+	promptInput = strings.NewReader("\n")
+	var out strings.Builder
+	healthCalls := 0
+
+	err := ensureRouter(context.Background(), &out, func(context.Context) error {
+		healthCalls++
+		return nil
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("service stop calls = %d, want 1", stopCalls)
+	}
+	if setupCalls != 1 {
+		t.Fatalf("setup calls = %d, want 1", setupCalls)
+	}
+	if healthCalls < 2 {
+		t.Fatalf("health calls = %d, want setup verification", healthCalls)
+	}
+	if out.String() != firstRunPrompt()+"\n" {
+		t.Fatalf("prompt output = %q", out.String())
 	}
 }
 
@@ -840,7 +908,7 @@ func TestEnsureRouterDoesNotPromptWhenInstalledRouterRestartFails(t *testing.T) 
 
 	err := ensureRouter(context.Background(), &out, func(context.Context) error {
 		return errors.New("router unavailable")
-	})
+	}, false)
 	if err == nil {
 		t.Fatal("expected installed router restart error")
 	}
@@ -880,7 +948,7 @@ func TestEnsureRouterDeclinePrintsCalmMessage(t *testing.T) {
 
 	err := ensureRouter(context.Background(), &out, func(context.Context) error {
 		return errors.New("router unavailable")
-	})
+	}, false)
 	if err == nil {
 		t.Fatal("expected decline error")
 	}
@@ -915,7 +983,7 @@ func TestEnsureRouterDoesNotRunSetupWhenPromptReadFailsEmpty(t *testing.T) {
 
 	err := ensureRouter(context.Background(), &out, func(context.Context) error {
 		return errors.New("router unavailable")
-	})
+	}, false)
 	if err == nil {
 		t.Fatal("expected prompt read failure to decline setup")
 	}
@@ -954,7 +1022,7 @@ func TestEnsureRouterAddsBlankLineAfterSetup(t *testing.T) {
 			return errors.New("router unavailable")
 		}
 		return nil
-	})
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -989,7 +1057,7 @@ func TestEnsureRouterWaitsForRouterAfterSetup(t *testing.T) {
 			return errors.New("router still starting")
 		}
 		return nil
-	})
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1020,7 +1088,7 @@ func TestEnsureRouterSetupFailureWrapsHealthError(t *testing.T) {
 
 	err := ensureRouter(context.Background(), &out, func(context.Context) error {
 		return healthErr
-	})
+	}, false)
 	if !errors.Is(err, healthErr) {
 		t.Fatalf("ensureRouter error = %v, want wrapped health error", err)
 	}
@@ -2460,6 +2528,12 @@ func TestFirstRunPromptMentionsSudoOnLinux(t *testing.T) {
 	if !strings.Contains(firstRunPromptForGOOS("linux"), "sudo") {
 		t.Fatalf("linux prompt should mention sudo: %q", firstRunPromptForGOOS("linux"))
 	}
+	if !strings.Contains(firstRunPromptForGOOS("linux"), "certificate authority") {
+		t.Fatalf("prompt should mention certificate authority: %q", firstRunPromptForGOOS("linux"))
+	}
+	if !strings.Contains(firstRunPromptForGOOS("windows"), "HTTPS .localhost") {
+		t.Fatalf("prompt should mention HTTPS .localhost: %q", firstRunPromptForGOOS("windows"))
+	}
 	if strings.Contains(firstRunPromptForGOOS("windows"), "sudo") {
 		t.Fatalf("windows prompt should not mention sudo: %q", firstRunPromptForGOOS("windows"))
 	}
@@ -2519,7 +2593,7 @@ func TestResolveRunRouterFallsBackWhenWindowsRouterAbsent(t *testing.T) {
 	})
 	defer restore()
 
-	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2540,7 +2614,7 @@ func TestResolveRunRouterReportsWindowsStartFailureWhenInstalled(t *testing.T) {
 	})
 	defer restore()
 
-	_, err := resolveRunRouter(context.Background(), io.Discard)
+	_, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err == nil {
 		t.Fatal("expected Windows start failure")
 	}
@@ -2721,7 +2795,7 @@ func TestResolveRunRouterStartsWindowsServiceFromWSLWhenInstalledButStopped(t *t
 	})
 	defer restore()
 
-	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2742,7 +2816,7 @@ func TestResolveRunRouterFallsBackWhenOnlyWindowsTokenRemains(t *testing.T) {
 	})
 	defer restore()
 
-	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2760,7 +2834,7 @@ func TestResolveRunRouterFallsBackWhenStaleWindowsTokenSeesWSLLocalRouter(t *tes
 	})
 	defer restore()
 
-	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2808,7 +2882,7 @@ func TestResolveRunRouterRunsSetupBeforeReadingMissingToken(t *testing.T) {
 	}
 	promptInput = strings.NewReader("\n")
 
-	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2835,7 +2909,7 @@ func TestResolveRunRouterReportsUncontrolledRouterWhenTokenMissingAfterHealth(t 
 		return nil
 	}
 
-	_, err := resolveRunRouter(context.Background(), io.Discard)
+	_, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err == nil {
 		t.Fatal("expected uncontrolled router error")
 	}
@@ -2863,7 +2937,7 @@ func TestResolveRunRouterHandlesTypedNilAdminClientAfterHealth(t *testing.T) {
 		return nil
 	}
 
-	_, err := resolveRunRouter(context.Background(), io.Discard)
+	_, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err == nil {
 		t.Fatal("expected uncontrolled router error")
 	}
@@ -2916,7 +2990,7 @@ func TestResolveRunRouterStopsWhenWindowsRouterExistsButTokenNotFound(t *testing
 	})
 	defer restore()
 
-	_, err := resolveRunRouter(context.Background(), io.Discard)
+	_, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err == nil {
 		t.Fatal("expected windows token error")
 	}
@@ -2934,7 +3008,7 @@ func TestResolveRunRouterFallsBackWhenOnlyWSLLocalRouterLooksHealthy(t *testing.
 	})
 	defer restore()
 
-	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2954,7 +3028,7 @@ func TestResolveRunRouterStopsWhenWindowsRouterCannotReachWSL(t *testing.T) {
 	})
 	defer restore()
 
-	_, err := resolveRunRouter(context.Background(), io.Discard)
+	_, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err == nil {
 		t.Fatal("expected bridge reachability error")
 	}
@@ -2977,7 +3051,7 @@ func TestResolveRunRouterIncludesBridgeProbeError(t *testing.T) {
 	})
 	defer restore()
 
-	_, err := resolveRunRouter(context.Background(), io.Discard)
+	_, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err == nil {
 		t.Fatal("expected bridge probe error")
 	}
@@ -3003,7 +3077,7 @@ func TestResolveRunRouterUsesLoopbackForwardingWhenWSLIPUnreachable(t *testing.T
 	})
 	defer restore()
 
-	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3033,7 +3107,7 @@ func TestResolveRunRouterBindsAllInterfacesOnlyWhenWSLIPIsRequired(t *testing.T)
 	})
 	defer restore()
 
-	runRouter, err := resolveRunRouter(context.Background(), io.Discard)
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4297,6 +4371,39 @@ func TestDoctorReportsRouteStoreCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "fail route store invalid character") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorReportsHTTPSDisabled(t *testing.T) {
+	stateDir := t.TempDir()
+	var out strings.Builder
+
+	if err := DoctorWithChecks(t.Context(), &out, stateDir, router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(out.String(), "fail https config disabled") {
+		t.Fatalf("doctor output = %q", out.String())
+	}
+}
+
+func TestDoctorReportsHTTPSCertificateAuthority(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := appconfig.Save(stateDir, appconfig.Config{HTTPS: true}); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := localcert.Store{StateDir: stateDir}.EnsureCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+
+	if err := DoctorWithChecks(t.Context(), &out, stateDir, router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(out.String(), "ok https certificate authority "+ca.Fingerprint) {
 		t.Fatalf("doctor output = %q", out.String())
 	}
 }

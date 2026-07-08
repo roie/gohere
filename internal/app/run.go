@@ -24,7 +24,9 @@ import (
 
 	"github.com/roie/gohere/internal/admin"
 	"github.com/roie/gohere/internal/bridge"
+	localcert "github.com/roie/gohere/internal/cert"
 	"github.com/roie/gohere/internal/cli"
+	appconfig "github.com/roie/gohere/internal/config"
 	"github.com/roie/gohere/internal/lifecycle"
 	"github.com/roie/gohere/internal/opener"
 	"github.com/roie/gohere/internal/probe"
@@ -54,6 +56,7 @@ var (
 	discoverWindowsTokenFunc   = bridge.DiscoverWindowsToken
 	windowsStableBinaryExists  = bridge.WindowsStableBinaryExists
 	startWindowsServiceFunc    = startWindowsService
+	serviceStopFunc            = func(ctx context.Context) error { return ServiceStopWithConfig(ctx, io.Discard, ServiceStopConfig{}) }
 	execCommandContext         = exec.CommandContext
 	windowsServiceStartTimeout = routerStartTimeout
 	newWindowsAdminClientFunc  = func(token string) bridgeAdminClient { return admin.NewClient(windowsAdminBaseURL, token) }
@@ -69,6 +72,7 @@ var (
 )
 
 const routerStartTimeout = 10 * time.Second
+const AutoURLScheme = "auto"
 
 const (
 	doctorLocalhostProbeURL     = "http://gohere-doctor.localhost/"
@@ -130,6 +134,7 @@ type RunPlan struct {
 	StaticBindHost      string
 	ManagedPort         bool
 	Mode                string
+	URLScheme           string
 }
 
 func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
@@ -290,7 +295,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		if routerResolved {
 			return nil
 		}
-		rr, err := resolveRunRouter(ctx, stderr)
+		rr, err := resolveRunRouter(ctx, stderr, cmd)
 		if err != nil {
 			return err
 		}
@@ -324,6 +329,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		if err := ensureRunRouter(); err != nil {
 			return err
 		}
+		applyPublicURLScheme(&plan, cmd)
 
 		staticServer, err := staticserver.StartWithConfig(ctx, staticserver.Config{
 			Dir:  plan.CWD,
@@ -373,6 +379,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	if err := ensureRunRouter(); err != nil {
 		return err
 	}
+	applyPublicURLScheme(&plan, cmd)
 
 	cleanup, err := registerRoute(ctx, adminClient, cmd, plan, result.Port, result.PID(), stdout, stderr)
 	if err != nil {
@@ -436,7 +443,7 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 		if routerResolved {
 			return runRouter{Client: adminClient}, nil
 		}
-		rr, err := resolveRunRouter(ctx, stderr)
+		rr, err := resolveRunRouter(ctx, stderr, cmd)
 		if err != nil {
 			return runRouter{}, err
 		}
@@ -485,6 +492,9 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 	if err := markReusableExistingRoutes(ctx, adminClient, items); err != nil {
 		return err
 	}
+	for i := range items {
+		applyPublicURLScheme(&items[i].plan, items[i].cmd)
+	}
 	if err := applyServiceDiscoveryEnv(items); err != nil {
 		return err
 	}
@@ -493,7 +503,7 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 		itemCmd := items[i].cmd
 		plan := items[i].plan
 		if items[i].reused {
-			fmt.Fprint(stdout, runSuccessOutput(itemCmd, items[i].reusedRoute.Host, plan.URLPath))
+			fmt.Fprint(stdout, runSuccessOutputForScheme(itemCmd, plan.URLScheme, items[i].reusedRoute.Host, plan.URLPath))
 			continue
 		}
 		if routerResolved {
@@ -619,7 +629,7 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 		if routerResolved {
 			return runRouter{Client: adminClient}, nil
 		}
-		rr, err := resolveRunRouter(ctx, stderr)
+		rr, err := resolveRunRouter(ctx, stderr, cmd)
 		if err != nil {
 			return runRouter{}, err
 		}
@@ -672,6 +682,9 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 	if err := markReusableExistingRoutes(ctx, adminClient, items); err != nil {
 		return err
 	}
+	for i := range items {
+		applyPublicURLScheme(&items[i].plan, items[i].cmd)
+	}
 	if err := applyServiceDiscoveryEnv(items); err != nil {
 		return err
 	}
@@ -680,7 +693,7 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 		itemCmd := items[i].cmd
 		plan := items[i].plan
 		if items[i].reused {
-			fmt.Fprint(stdout, runSuccessOutput(itemCmd, items[i].reusedRoute.Host, plan.URLPath))
+			fmt.Fprint(stdout, runSuccessOutputForScheme(itemCmd, plan.URLScheme, items[i].reusedRoute.Host, plan.URLPath))
 			continue
 		}
 		if routerResolved {
@@ -775,7 +788,7 @@ func serviceDiscoveryEnv(items []multiRunItem) (map[string]string, error) {
 		}
 		seen[key] = serviceDiscoverySource(item)
 
-		url := publicRouteURL(item.plan.Host, item.plan.URLPath)
+		url := publicRouteURLForScheme(item.plan.URLScheme, item.plan.Host, item.plan.URLPath)
 		entry := serviceDiscoveryEntry{
 			Key:     key,
 			URL:     url,
@@ -1043,8 +1056,8 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		return nil, err
 	}
 
-	publicURL := publicRouteURL(route.Host, plan.URLPath)
-	fmt.Fprint(stdout, runSuccessOutput(cmd, route.Host, plan.URLPath))
+	publicURL := publicRouteURLForScheme(plan.URLScheme, route.Host, plan.URLPath)
+	fmt.Fprint(stdout, runSuccessOutputForScheme(cmd, plan.URLScheme, route.Host, plan.URLPath))
 	if cmd.Open {
 		if err := openBrowserFunc(ctx, publicURL); err != nil {
 			fmt.Fprintf(stderr, "Could not open browser automatically.\nOpen manually: %s\n", publicURL)
@@ -1089,7 +1102,7 @@ func runOwnerEnv() string {
 	return runtime.GOOS
 }
 
-func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) {
+func resolveRunRouter(ctx context.Context, stderr io.Writer, cmd cli.Command) (runRouter, error) {
 	local := func() (runRouter, error) {
 		client, err := defaultAdminClientFunc()
 		health := routerHealthFunc
@@ -1098,7 +1111,7 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer) (runRouter, error) 
 		} else {
 			client = nil
 		}
-		if err := ensureRouter(ctx, stderr, health); err != nil {
+		if err := ensureRouter(ctx, stderr, health, requiresHTTPSSetup(cmd)); err != nil {
 			return runRouter{}, err
 		}
 		if client == nil {
@@ -1378,6 +1391,10 @@ func toRegisteredRoutes(routes []router.Route) []registeredRoute {
 }
 
 func runSuccessOutput(cmd cli.Command, host, urlPath string) string {
+	return runSuccessOutputForScheme(cmd, "http", host, urlPath)
+}
+
+func runSuccessOutputForScheme(cmd cli.Command, scheme, host, urlPath string) string {
 	label := "gohere"
 	if cmd.Kind == cli.CommandRun {
 		switch {
@@ -1387,11 +1404,44 @@ func runSuccessOutput(cmd cli.Command, host, urlPath string) string {
 			label += " " + cmd.Script
 		}
 	}
-	return fmt.Sprintf("%s \u2192 http://%s%s\n", label, host, escapedURLPath(urlPath))
+	return fmt.Sprintf("%s \u2192 %s://%s%s\n", label, normalizedURLScheme(scheme), host, escapedURLPath(urlPath))
 }
 
 func publicRouteURL(host, urlPath string) string {
-	return fmt.Sprintf("http://%s%s", host, escapedURLPath(urlPath))
+	return publicRouteURLForScheme("http", host, urlPath)
+}
+
+func publicRouteURLForScheme(scheme, host, urlPath string) string {
+	return fmt.Sprintf("%s://%s%s", normalizedURLScheme(scheme), host, escapedURLPath(urlPath))
+}
+
+func applyPublicURLScheme(plan *RunPlan, cmd cli.Command) {
+	if plan.URLScheme == "" {
+		plan.URLScheme = publicURLScheme(cmd)
+	}
+}
+
+func publicURLScheme(cmd cli.Command) string {
+	if cmd.HTTP {
+		return "http"
+	}
+	if cmd.URLScheme == "https" {
+		return "https"
+	}
+	if cmd.URLScheme == AutoURLScheme {
+		cfg, err := appconfig.Load(router.DefaultStateDir())
+		if err == nil && cfg.HTTPS {
+			return "https"
+		}
+	}
+	return "http"
+}
+
+func normalizedURLScheme(scheme string) string {
+	if scheme == "https" {
+		return "https"
+	}
+	return "http"
 }
 
 func isFileTarget(cmd cli.Command) bool {
@@ -1573,12 +1623,17 @@ func (w *limitedCapture) String() string {
 	return w.buf.String()
 }
 
-func ensureRouter(ctx context.Context, out io.Writer, health func(context.Context) error) error {
-	if err := health(ctx); err == nil {
+func ensureRouter(ctx context.Context, out io.Writer, health func(context.Context) error, requireHTTPSSetup bool) error {
+	if err := health(ctx); err == nil && !requireHTTPSSetup {
 		return nil
+	} else if err == nil && requireHTTPSSetup {
+		return promptAndRunSetup(ctx, out, health, true)
 	}
 	if err := startInstalledRouterFunc(ctx); err == nil {
 		if err := waitForRouterHealth(ctx, health, routerStartTimeout); err == nil {
+			if requireHTTPSSetup {
+				return promptAndRunSetup(ctx, out, health, true)
+			}
 			return nil
 		} else {
 			return installedRouterUnavailableError(err)
@@ -1586,7 +1641,10 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return installedRouterUnavailableError(err)
 	}
+	return promptAndRunSetup(ctx, out, health, false)
+}
 
+func promptAndRunSetup(ctx context.Context, out io.Writer, health func(context.Context) error, stopExisting bool) error {
 	fmt.Fprint(out, firstRunPrompt())
 	answer, readErr := bufio.NewReader(promptInput).ReadString('\n')
 	if readErr != nil && strings.TrimSpace(answer) == "" {
@@ -1597,6 +1655,11 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 		fmt.Fprint(out, "gohere was not enabled.\n\nRun gohere again when you are ready.\n")
 		return errors.New("gohere was not enabled")
 	}
+	if stopExisting {
+		if err := serviceStopFunc(ctx); err != nil {
+			return err
+		}
+	}
 	if err := setupFunc(ctx); err != nil {
 		return err
 	}
@@ -1605,6 +1668,15 @@ func ensureRouter(ctx context.Context, out io.Writer, health func(context.Contex
 	}
 	fmt.Fprintln(out)
 	return nil
+}
+
+func requiresHTTPSSetup(cmd cli.Command) bool {
+	return cmd.URLScheme == AutoURLScheme && !cmd.HTTP && !httpsConfigEnabled(router.DefaultStateDir())
+}
+
+func httpsConfigEnabled(stateDir string) bool {
+	cfg, err := appconfig.Load(stateDir)
+	return err == nil && cfg.HTTPS
 }
 
 func installedRouterUnavailableError(err error) error {
@@ -1643,9 +1715,9 @@ func firstRunPrompt() string {
 
 func firstRunPromptForGOOS(goos string) string {
 	if goos == "linux" {
-		return "gohere needs one-time permission to enable .localhost project URLs.\nThis lets gohere use port 80 locally, and sudo access may be requested. Continue? [Y/n] "
+		return "gohere needs one-time permission to enable HTTPS .localhost project URLs.\nThis lets gohere use local HTTP/HTTPS ports and install a local trusted certificate authority. sudo access may be requested.\n\nContinue? [Y/n] "
 	}
-	return "gohere needs one-time permission to enable .localhost project URLs.\nThis lets gohere use port 80 locally. Continue? [Y/n] "
+	return "gohere needs one-time permission to enable HTTPS .localhost project URLs.\nThis lets gohere use local HTTP/HTTPS ports and install a local trusted certificate authority.\n\nContinue? [Y/n] "
 }
 
 func shouldRunSetupFromAnswer(answer string) bool {
@@ -1656,6 +1728,7 @@ func shouldRunSetupFromAnswer(answer string) bool {
 func setupForGOOS(ctx context.Context, goos string) error {
 	cfg := setup.Config{
 		Stderr: os.Stderr,
+		HTTPS:  true,
 		RouterHealth: func(ctx context.Context) error {
 			client, err := defaultAdminClient()
 			if err != nil {
@@ -2504,6 +2577,7 @@ func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, st
 	} else {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "route store", OK: false, Detail: err.Error(), Hint: "Try: gohere prune or remove ~/.gohere/routes.json if it is corrupt."})
 	}
+	checks = append(checks, httpsDoctorCheck(stateDir))
 	if extra.Port80Status != nil {
 		status := extra.Port80Status()
 		ok := status.OK
@@ -2546,6 +2620,21 @@ func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, st
 	checks = append(checks, bridgeDoctorChecks(ctx)...)
 	fmt.Fprint(stdout, lifecycle.FormatDoctor(checks))
 	return nil
+}
+
+func httpsDoctorCheck(stateDir string) lifecycle.DoctorCheck {
+	cfg, err := appconfig.Load(stateDir)
+	if err != nil {
+		return lifecycle.DoctorCheck{Name: "https config", OK: false, Detail: "invalid", Hint: err.Error()}
+	}
+	if !cfg.HTTPS {
+		return lifecycle.DoctorCheck{Name: "https config", OK: false, Detail: "disabled", Hint: "Run gohere again to enable HTTPS."}
+	}
+	fingerprint, err := localcert.Store{StateDir: stateDir}.Fingerprint()
+	if err != nil || fingerprint == "" {
+		return lifecycle.DoctorCheck{Name: "https certificate authority", OK: false, Detail: "missing", Hint: "Run gohere again to repair HTTPS setup."}
+	}
+	return lifecycle.DoctorCheck{Name: "https certificate authority", OK: true, Detail: fingerprint}
 }
 
 func bridgeDoctorChecks(ctx context.Context) []lifecycle.DoctorCheck {

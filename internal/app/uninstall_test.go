@@ -9,6 +9,9 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	localcert "github.com/roie/gohere/internal/cert"
+	appconfig "github.com/roie/gohere/internal/config"
 )
 
 func TestUninstallRemovesRouterInstallButKeepsStateByDefault(t *testing.T) {
@@ -280,6 +283,65 @@ func TestUninstallDeletesAllStateAfterConfirmation(t *testing.T) {
 
 	if exists(stateDir) {
 		t.Fatal("state dir should be removed after confirmation")
+	}
+}
+
+func TestUninstallUntrustsHTTPSCAWhenEnabled(t *testing.T) {
+	stateDir := t.TempDir()
+	configDir := t.TempDir()
+	if err := appconfig.Save(stateDir, appconfig.Config{HTTPS: true}); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := localcert.Store{StateDir: stateDir}.EnsureCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPromptInput := promptInput
+	defer func() {
+		promptInput = oldPromptInput
+	}()
+	promptInput = strings.NewReader("\n")
+	var fingerprints []string
+
+	var out strings.Builder
+	if err := UninstallWithConfig(context.Background(), &out, UninstallConfig{
+		StateDir:  stateDir,
+		ConfigDir: configDir,
+		UntrustCA: func(ctx context.Context, fingerprint string) error {
+			fingerprints = append(fingerprints, fingerprint)
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fingerprints) != 1 || fingerprints[0] != ca.Fingerprint {
+		t.Fatalf("untrusted fingerprints = %#v, want %q", fingerprints, ca.Fingerprint)
+	}
+}
+
+func TestUninstallDoesNotUntrustWhenHTTPSDisabled(t *testing.T) {
+	stateDir := t.TempDir()
+	configDir := t.TempDir()
+	if err := appconfig.Save(stateDir, appconfig.Config{HTTPS: false}); err != nil {
+		t.Fatal(err)
+	}
+	oldPromptInput := promptInput
+	defer func() {
+		promptInput = oldPromptInput
+	}()
+	promptInput = strings.NewReader("\n")
+
+	var out strings.Builder
+	if err := UninstallWithConfig(context.Background(), &out, UninstallConfig{
+		StateDir:  stateDir,
+		ConfigDir: configDir,
+		UntrustCA: func(ctx context.Context, fingerprint string) error {
+			t.Fatal("untrust should not run when HTTPS is disabled")
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
