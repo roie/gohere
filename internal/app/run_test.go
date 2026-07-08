@@ -1103,6 +1103,90 @@ func TestEnsureRouterSetupFailureWrapsHealthError(t *testing.T) {
 	}
 }
 
+func TestEnsureHTTPSBrowserTrustRepairsMissingWindowsTrustFromWSL(t *testing.T) {
+	oldDetectWSL := detectWSLFunc
+	oldWindowsTrust := windowsHTTPSCATrustedFunc
+	oldRepairWindowsTrust := repairWindowsHTTPSTrustFunc
+	defer func() {
+		detectWSLFunc = oldDetectWSL
+		windowsHTTPSCATrustedFunc = oldWindowsTrust
+		repairWindowsHTTPSTrustFunc = oldRepairWindowsTrust
+	}()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stateDir := filepath.Join(home, ".gohere")
+	if err := appconfig.Save(stateDir, appconfig.Config{HTTPS: true}); err != nil {
+		t.Fatal(err)
+	}
+	store := localcert.Store{StateDir: stateDir}
+	if _, err := store.EnsureCA(); err != nil {
+		t.Fatal(err)
+	}
+	wantFingerprint, err := store.TrustFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	detectWSLFunc = func() bool { return true }
+	trustCalls := 0
+	windowsHTTPSCATrustedFunc = func(ctx context.Context, fingerprint string) (bool, string) {
+		if fingerprint != wantFingerprint {
+			t.Fatalf("fingerprint = %q, want %q", fingerprint, wantFingerprint)
+		}
+		trustCalls++
+		return trustCalls > 1, "missing"
+	}
+	repairCalls := 0
+	repairWindowsHTTPSTrustFunc = func(ctx context.Context, gotStateDir string) error {
+		repairCalls++
+		if gotStateDir != stateDir {
+			t.Fatalf("state dir = %q, want %q", gotStateDir, stateDir)
+		}
+		return nil
+	}
+
+	if err := ensureHTTPSBrowserTrust(t.Context(), cli.Command{URLScheme: AutoURLScheme}); err != nil {
+		t.Fatal(err)
+	}
+	if repairCalls != 1 {
+		t.Fatalf("repair calls = %d, want 1", repairCalls)
+	}
+	if trustCalls != 2 {
+		t.Fatalf("trust calls = %d, want pre and post repair checks", trustCalls)
+	}
+}
+
+func TestEnsureHTTPSBrowserTrustSkipsRepairWhenWindowsTrustExists(t *testing.T) {
+	oldDetectWSL := detectWSLFunc
+	oldWindowsTrust := windowsHTTPSCATrustedFunc
+	oldRepairWindowsTrust := repairWindowsHTTPSTrustFunc
+	defer func() {
+		detectWSLFunc = oldDetectWSL
+		windowsHTTPSCATrustedFunc = oldWindowsTrust
+		repairWindowsHTTPSTrustFunc = oldRepairWindowsTrust
+	}()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stateDir := filepath.Join(home, ".gohere")
+	if err := appconfig.Save(stateDir, appconfig.Config{HTTPS: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (localcert.Store{StateDir: stateDir}).EnsureCA(); err != nil {
+		t.Fatal(err)
+	}
+	detectWSLFunc = func() bool { return true }
+	windowsHTTPSCATrustedFunc = func(ctx context.Context, fingerprint string) (bool, string) {
+		return true, "trusted"
+	}
+	repairWindowsHTTPSTrustFunc = func(ctx context.Context, gotStateDir string) error {
+		t.Fatal("repair should not run when Windows trust exists")
+		return nil
+	}
+
+	if err := ensureHTTPSBrowserTrust(t.Context(), cli.Command{URLScheme: AutoURLScheme}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSetupForGOOSUsesWindowsSetup(t *testing.T) {
 	oldSetupWindows := setupWindowsFunc
 	defer func() {

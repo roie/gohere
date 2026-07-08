@@ -50,20 +50,21 @@ var (
 	defaultAdminClientFunc   func() (adminClient, error) = func() (adminClient, error) {
 		return defaultAdminClient()
 	}
-	startRunnerFunc            = runner.Start
-	detectWSLFunc              = bridge.DetectWSL
-	routerHealthFunc           = func(ctx context.Context) error { return admin.NewClient("http://127.0.0.1:39399", "").Health(ctx) }
-	windowsRouterHealthFunc    = func(ctx context.Context) error { return admin.NewClient(windowsAdminBaseURL, "").Health(ctx) }
-	discoverWindowsTokenFunc   = bridge.DiscoverWindowsToken
-	windowsStableBinaryExists  = bridge.WindowsStableBinaryExists
-	startWindowsServiceFunc    = startWindowsService
-	serviceStopFunc            = func(ctx context.Context) error { return ServiceStopWithConfig(ctx, io.Discard, ServiceStopConfig{}) }
-	execCommandContext         = exec.CommandContext
-	windowsServiceStartTimeout = routerStartTimeout
-	newWindowsAdminClientFunc  = func(token string) bridgeAdminClient { return admin.NewClient(windowsAdminBaseURL, token) }
-	windowsHTTPSCATrustedFunc  = windowsHTTPSCATrusted
-	currentWSLIPFunc           = bridge.CurrentWSLIP
-	probeBridgeFunc            = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
+	startRunnerFunc             = runner.Start
+	detectWSLFunc               = bridge.DetectWSL
+	routerHealthFunc            = func(ctx context.Context) error { return admin.NewClient("http://127.0.0.1:39399", "").Health(ctx) }
+	windowsRouterHealthFunc     = func(ctx context.Context) error { return admin.NewClient(windowsAdminBaseURL, "").Health(ctx) }
+	discoverWindowsTokenFunc    = bridge.DiscoverWindowsToken
+	windowsStableBinaryExists   = bridge.WindowsStableBinaryExists
+	startWindowsServiceFunc     = startWindowsService
+	serviceStopFunc             = func(ctx context.Context) error { return ServiceStopWithConfig(ctx, io.Discard, ServiceStopConfig{}) }
+	execCommandContext          = exec.CommandContext
+	windowsServiceStartTimeout  = routerStartTimeout
+	newWindowsAdminClientFunc   = func(token string) bridgeAdminClient { return admin.NewClient(windowsAdminBaseURL, token) }
+	windowsHTTPSCATrustedFunc   = windowsHTTPSCATrusted
+	repairWindowsHTTPSTrustFunc = repairWindowsHTTPSTrust
+	currentWSLIPFunc            = bridge.CurrentWSLIP
+	probeBridgeFunc             = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
 		return bridge.ProbeBridge(ctx, client, wslIP)
 	}
 	localhostHTTPStatusFunc = localhostHTTPStatus
@@ -1116,6 +1117,9 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer, cmd cli.Command) (r
 		if err := ensureRouter(ctx, stderr, health, requiresHTTPSSetup(cmd)); err != nil {
 			return runRouter{}, err
 		}
+		if err := ensureHTTPSBrowserTrust(ctx, cmd); err != nil {
+			return runRouter{}, err
+		}
 		if client == nil {
 			client, err = defaultAdminClientFunc()
 			if err != nil {
@@ -1674,6 +1678,38 @@ func requiresHTTPSSetup(cmd cli.Command) bool {
 	return cmd.URLScheme == AutoURLScheme && !cmd.HTTP && !httpsConfigEnabled(router.DefaultStateDir())
 }
 
+func ensureHTTPSBrowserTrust(ctx context.Context, cmd cli.Command) error {
+	if cmd.HTTP || cmd.URLScheme != AutoURLScheme || !detectWSLFunc() {
+		return nil
+	}
+	stateDir := router.DefaultStateDir()
+	if !httpsConfigEnabled(stateDir) {
+		return nil
+	}
+	store := localcert.Store{StateDir: stateDir}
+	trustFingerprint, err := store.TrustFingerprint()
+	if err != nil || trustFingerprint == "" {
+		return httpsBrowserTrustRepairError(err)
+	}
+	if ok, _ := windowsHTTPSCATrustedFunc(ctx, trustFingerprint); ok {
+		return nil
+	}
+	if err := repairWindowsHTTPSTrustFunc(ctx, stateDir); err != nil {
+		return httpsBrowserTrustRepairError(err)
+	}
+	if ok, detail := windowsHTTPSCATrustedFunc(ctx, trustFingerprint); !ok {
+		return httpsBrowserTrustRepairError(errors.New(detail))
+	}
+	return nil
+}
+
+func httpsBrowserTrustRepairError(err error) error {
+	if err == nil {
+		err = errors.New("Windows browser trust is missing")
+	}
+	return fmt.Errorf("gohere error: HTTPS is enabled, but Windows browser trust is missing and could not be repaired.\nRun:\n  gohere doctor\n\nDetails: %w", err)
+}
+
 func httpsConfigEnabled(stateDir string) bool {
 	cfg, err := appconfig.Load(stateDir)
 	return err == nil && cfg.HTTPS
@@ -1773,6 +1809,15 @@ func trustCAForWSL(ctx context.Context, caPath string) error {
 		return err
 	}
 	return runner.Run(ctx, "certutil.exe", "-user", "-addstore", "Root", windowsPath)
+}
+
+func repairWindowsHTTPSTrust(ctx context.Context, stateDir string) error {
+	caPath := localcert.Store{StateDir: stateDir}.CACertPath()
+	windowsPath, err := wslWindowsPath(ctx, caPath)
+	if err != nil {
+		return err
+	}
+	return appCommandRunner{}.Run(ctx, "certutil.exe", "-user", "-addstore", "Root", windowsPath)
 }
 
 func untrustCAForWSL(ctx context.Context, fingerprint string) error {
