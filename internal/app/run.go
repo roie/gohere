@@ -1763,8 +1763,9 @@ func shouldRunSetupFromAnswer(answer string) bool {
 
 func setupForGOOS(ctx context.Context, goos string) error {
 	cfg := setup.Config{
-		Stderr: os.Stderr,
-		HTTPS:  true,
+		Stderr:   os.Stderr,
+		HTTPS:    true,
+		Progress: os.Stderr,
 		RouterHealth: func(ctx context.Context) error {
 			client, err := defaultAdminClient()
 			if err != nil {
@@ -1808,6 +1809,7 @@ func trustCAForWSL(ctx context.Context, caPath string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Fprintln(os.Stderr, "Trusting certificate authority in Windows...")
 	return runner.Run(ctx, "certutil.exe", "-user", "-addstore", "Root", windowsPath)
 }
 

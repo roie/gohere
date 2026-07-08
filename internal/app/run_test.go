@@ -1239,6 +1239,9 @@ func TestSetupForGOOSUsesWSLTrustHookOnLinux(t *testing.T) {
 		if cfg.TrustCA == nil {
 			t.Fatal("expected WSL setup to install a custom CA trust hook")
 		}
+		if cfg.Progress == nil {
+			t.Fatal("expected setup progress writer")
+		}
 		return nil
 	}
 

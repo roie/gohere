@@ -225,6 +225,33 @@ func TestLinuxSetupDetachedFallbackIsQuiet(t *testing.T) {
 	}
 }
 
+func TestLinuxSetupReportsProgressWhenEnabled(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source-gohere")
+	if err := os.WriteFile(source, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	var progress bytes.Buffer
+
+	err := Linux(context.Background(), Config{
+		StateDir:         filepath.Join(dir, "state"),
+		CurrentBinary:    source,
+		CommandRunner:    &detachingRunner{pid: 4242},
+		Progress:         &progress,
+		SystemdAvailable: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := "Installing local service...\n" +
+		"Allowing local HTTP/HTTPS ports...\n" +
+		"Starting gohere service...\n"
+	if progress.String() != want {
+		t.Fatalf("progress = %q, want %q", progress.String(), want)
+	}
+}
+
 func TestLinuxSetupWritesSystemdServiceWhenAvailable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("systemd service files are Linux-specific")
@@ -391,6 +418,41 @@ func TestLinuxSetupHTTPSGeneratesCATrustsAndMarksConfig(t *testing.T) {
 	}
 	if !runner.saw(filepath.Join(stateDir, "bin", "gohere"), "service", "run") {
 		t.Fatalf("detached service command missing: %#v", runner.commands)
+	}
+}
+
+func TestLinuxSetupHTTPSReportsCertificateProgress(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source-gohere")
+	if err := os.WriteFile(source, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	var progress bytes.Buffer
+
+	err := Linux(context.Background(), Config{
+		StateDir:         filepath.Join(dir, "state"),
+		CurrentBinary:    source,
+		CommandRunner:    &detachingRunner{pid: 4242},
+		SystemdAvailable: false,
+		HTTPS:            true,
+		Progress:         &progress,
+		TrustCA: func(ctx context.Context, caPath string) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{
+		"Setting up HTTPS certificates...\n",
+		"Trusting certificate authority in Linux...\n",
+		"Installing local service...\n",
+		"Starting gohere service...\n",
+	} {
+		if !contains(progress.String(), want) {
+			t.Fatalf("progress missing %q:\n%s", want, progress.String())
+		}
 	}
 }
 

@@ -32,6 +32,7 @@ type Config struct {
 	CommandRunner    CommandRunner
 	RouterHealth     func(context.Context) error
 	Stderr           io.Writer
+	Progress         io.Writer
 	SystemdAvailable bool
 	HTTPS            bool
 	TrustCA          func(context.Context, string) error
@@ -75,6 +76,7 @@ func Linux(ctx context.Context, cfg Config) error {
 		return err
 	}
 
+	progressf(cfg.Progress, "Installing local service...\n")
 	binDir := filepath.Join(cfg.StateDir, "bin")
 	if err := os.MkdirAll(binDir, 0700); err != nil {
 		return err
@@ -86,10 +88,12 @@ func Linux(ctx context.Context, cfg Config) error {
 	if _, err := router.EnsureToken(cfg.StateDir); err != nil {
 		return err
 	}
+	progressf(cfg.Progress, "Allowing local HTTP/HTTPS ports...\n")
 	if err := cfg.CommandRunner.Run(ctx, "sudo", "setcap", "cap_net_bind_service=+ep", stableBinary); err != nil {
 		return err
 	}
 
+	progressf(cfg.Progress, "Starting gohere service...\n")
 	if cfg.SystemdAvailable {
 		if err := writeSystemdService(cfg.ConfigDir, stableBinary); err != nil {
 			return err
@@ -131,6 +135,7 @@ func Windows(ctx context.Context, cfg Config) error {
 		return err
 	}
 
+	progressf(cfg.Progress, "Installing local service...\n")
 	binDir := filepath.Join(cfg.StateDir, "bin")
 	if err := os.MkdirAll(binDir, 0700); err != nil {
 		return err
@@ -142,6 +147,7 @@ func Windows(ctx context.Context, cfg Config) error {
 	if _, err := router.EnsureToken(cfg.StateDir); err != nil {
 		return err
 	}
+	progressf(cfg.Progress, "Starting gohere service...\n")
 	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "service", "run")
 	if err != nil {
 		return err
@@ -173,6 +179,7 @@ func Darwin(ctx context.Context, cfg Config) error {
 		return err
 	}
 
+	progressf(cfg.Progress, "Installing local service...\n")
 	binDir := filepath.Join(cfg.StateDir, "bin")
 	if err := os.MkdirAll(binDir, 0700); err != nil {
 		return err
@@ -184,6 +191,7 @@ func Darwin(ctx context.Context, cfg Config) error {
 	if _, err := router.EnsureToken(cfg.StateDir); err != nil {
 		return err
 	}
+	progressf(cfg.Progress, "Starting gohere service...\n")
 	pid, err := startDetached(ctx, cfg.CommandRunner, stableBinary, "service", "run")
 	if err != nil {
 		return err
@@ -198,6 +206,7 @@ func enableHTTPSIfRequested(ctx context.Context, cfg Config, goos string) error 
 	if !cfg.HTTPS {
 		return nil
 	}
+	progressf(cfg.Progress, "Setting up HTTPS certificates...\n")
 	store := localcert.Store{StateDir: cfg.StateDir}
 	if _, err := store.EnsureCA(); err != nil {
 		return err
@@ -208,10 +217,38 @@ func enableHTTPSIfRequested(ctx context.Context, cfg Config, goos string) error 
 			return certtrust.TrustCA(ctx, goos, cfg.CommandRunner, caPath)
 		}
 	}
+	progress(cfg.Progress, trustProgressMessage(goos))
 	if err := trustCA(ctx, store.CACertPath()); err != nil {
 		return err
 	}
 	return appconfig.Save(cfg.StateDir, appconfig.Config{HTTPS: true})
+}
+
+func progressf(w io.Writer, format string, args ...any) {
+	if w == nil {
+		return
+	}
+	fmt.Fprintf(w, format, args...)
+}
+
+func progress(w io.Writer, message string) {
+	if w == nil {
+		return
+	}
+	fmt.Fprint(w, message)
+}
+
+func trustProgressMessage(goos string) string {
+	switch goos {
+	case "linux":
+		return "Trusting certificate authority in Linux...\n"
+	case "windows":
+		return "Trusting certificate authority in Windows...\n"
+	case "darwin":
+		return "Trusting certificate authority in macOS...\n"
+	default:
+		return "Trusting certificate authority...\n"
+	}
 }
 
 func StartInstalledRouter(ctx context.Context, cfg Config, binaryName string) error {
