@@ -1440,6 +1440,27 @@ func TestRegisterRouteCleanupLogsDeleteError(t *testing.T) {
 	}
 }
 
+func TestRegisterRouteCleanupTimeoutUsesActionableWarning(t *testing.T) {
+	admin := &multiRecordingAdminClient{deleteErr: context.DeadlineExceeded}
+	plan := RunPlan{
+		Host: "app.localhost",
+		Name: "app",
+		CWD:  t.TempDir(),
+	}
+	var stdout, stderr strings.Builder
+	cleanup, err := registerRoute(context.Background(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 3000, os.Getpid(), &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup()
+
+	want := "Could not remove route app.localhost before shutdown; run gohere prune if it still appears in gohere list.\n"
+	if stderr.String() != want {
+		t.Fatalf("stderr = %q, want %q", stderr.String(), want)
+	}
+}
+
 func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc

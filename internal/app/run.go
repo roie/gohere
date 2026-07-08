@@ -1079,10 +1079,30 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		fmt.Fprintf(stdout, "service: %s\n", routerLabel)
 	}
 	return func() {
-		if err := adminClient.DeleteRoute(context.Background(), route.Host); err != nil && stderr != nil {
-			fmt.Fprintf(stderr, "Could not remove route %s: %v\n", route.Host, err)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := adminClient.DeleteRoute(cleanupCtx, route.Host); err != nil && stderr != nil {
+			fmt.Fprintln(stderr, routeCleanupWarning(route.Host, err))
 		}
 	}, nil
+}
+
+func routeCleanupWarning(host string, err error) string {
+	if routeCleanupTimedOut(err) {
+		return fmt.Sprintf("Could not remove route %s before shutdown; run gohere prune if it still appears in gohere list.", host)
+	}
+	return fmt.Sprintf("Could not remove route %s: %v", host, err)
+}
+
+func routeCleanupTimedOut(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if os.IsTimeout(err) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func runMode(cmd cli.Command, plan RunPlan) string {
