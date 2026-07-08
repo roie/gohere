@@ -36,6 +36,13 @@ func TestEnsureCAGeneratesAndPersistsFingerprint(t *testing.T) {
 	if got != ca.Fingerprint {
 		t.Fatalf("fingerprint = %q, want %q", got, ca.Fingerprint)
 	}
+	trustFingerprint, err := store.TrustFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trustFingerprint) != 40 || strings.ToUpper(trustFingerprint) != trustFingerprint {
+		t.Fatalf("trust fingerprint = %q, want uppercase SHA-1 thumbprint", trustFingerprint)
+	}
 }
 
 func TestEnsureHostCertSupportsNestedLocalhost(t *testing.T) {

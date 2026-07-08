@@ -3,6 +3,7 @@ package cert
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -117,6 +118,16 @@ func (s Store) Fingerprint() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+func (s Store) TrustFingerprint() (string, error) {
+	certPath, _, _ := s.caPaths()
+	der, err := readPEMBlock(certPath, "CERTIFICATE")
+	if err != nil {
+		return "", err
+	}
+	sum := sha1.Sum(der)
+	return strings.ToUpper(hex.EncodeToString(sum[:])), nil
 }
 
 func (s Store) EnsureHostCert(host string) (tls.Certificate, error) {

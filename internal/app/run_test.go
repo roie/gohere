@@ -4439,6 +4439,69 @@ func TestDoctorReportsHTTPSCertificateAuthority(t *testing.T) {
 	}
 }
 
+func TestHTTPSDoctorChecksReportWindowsTrustFromWSL(t *testing.T) {
+	oldDetectWSL := detectWSLFunc
+	oldWindowsTrust := windowsHTTPSCATrustedFunc
+	defer func() {
+		detectWSLFunc = oldDetectWSL
+		windowsHTTPSCATrustedFunc = oldWindowsTrust
+	}()
+	detectWSLFunc = func() bool { return true }
+
+	stateDir := t.TempDir()
+	if err := appconfig.Save(stateDir, appconfig.Config{HTTPS: true}); err != nil {
+		t.Fatal(err)
+	}
+	store := localcert.Store{StateDir: stateDir}
+	if _, err := store.EnsureCA(); err != nil {
+		t.Fatal(err)
+	}
+	wantFingerprint, err := store.TrustFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotFingerprint string
+	windowsHTTPSCATrustedFunc = func(ctx context.Context, fingerprint string) (bool, string) {
+		gotFingerprint = fingerprint
+		return true, "trusted"
+	}
+
+	out := lifecycle.FormatDoctor(httpsDoctorChecks(t.Context(), stateDir))
+	if gotFingerprint != wantFingerprint {
+		t.Fatalf("windows trust fingerprint = %q, want %q", gotFingerprint, wantFingerprint)
+	}
+	if !strings.Contains(out, "ok windows https trust trusted") {
+		t.Fatalf("doctor output = %q", out)
+	}
+}
+
+func TestHTTPSDoctorChecksReportMissingWindowsTrustFromWSL(t *testing.T) {
+	oldDetectWSL := detectWSLFunc
+	oldWindowsTrust := windowsHTTPSCATrustedFunc
+	defer func() {
+		detectWSLFunc = oldDetectWSL
+		windowsHTTPSCATrustedFunc = oldWindowsTrust
+	}()
+	detectWSLFunc = func() bool { return true }
+
+	stateDir := t.TempDir()
+	if err := appconfig.Save(stateDir, appconfig.Config{HTTPS: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (localcert.Store{StateDir: stateDir}).EnsureCA(); err != nil {
+		t.Fatal(err)
+	}
+	windowsHTTPSCATrustedFunc = func(ctx context.Context, fingerprint string) (bool, string) {
+		return false, "missing"
+	}
+
+	out := lifecycle.FormatDoctor(httpsDoctorChecks(t.Context(), stateDir))
+	if !strings.Contains(out, "fail windows https trust missing") ||
+		!strings.Contains(out, "Run gohere again to repair Windows browser trust.") {
+		t.Fatalf("doctor output = %q", out)
+	}
+}
+
 func TestDoctorReportsDeadServicePID(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "router.pid"), []byte("999999\n"), 0600); err != nil {

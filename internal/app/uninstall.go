@@ -188,11 +188,19 @@ func untrustHTTPSCAIfEnabled(ctx context.Context, stateDir string, untrustCA fun
 	if !cfg.HTTPS {
 		return nil
 	}
-	fingerprint, err := localcert.Store{StateDir: stateDir}.Fingerprint()
+	fingerprint, err := caUntrustFingerprint(stateDir)
 	if err != nil {
 		return err
 	}
 	return untrustCA(ctx, fingerprint)
+}
+
+func caUntrustFingerprint(stateDir string) (string, error) {
+	store := localcert.Store{StateDir: stateDir}
+	if runtime.GOOS == "linux" && !detectWSLFunc() {
+		return store.Fingerprint()
+	}
+	return store.TrustFingerprint()
 }
 
 func readRouterPID(path string) (int, bool) {

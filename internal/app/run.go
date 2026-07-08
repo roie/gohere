@@ -61,6 +61,7 @@ var (
 	execCommandContext         = exec.CommandContext
 	windowsServiceStartTimeout = routerStartTimeout
 	newWindowsAdminClientFunc  = func(token string) bridgeAdminClient { return admin.NewClient(windowsAdminBaseURL, token) }
+	windowsHTTPSCATrustedFunc  = windowsHTTPSCATrusted
 	currentWSLIPFunc           = bridge.CurrentWSLIP
 	probeBridgeFunc            = func(ctx context.Context, client bridgeProbeClient, wslIP string) (bool, string, error) {
 		return bridge.ProbeBridge(ctx, client, wslIP)
@@ -2617,7 +2618,7 @@ func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, st
 	} else {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "route store", OK: false, Detail: err.Error(), Hint: "Try: gohere prune or remove ~/.gohere/routes.json if it is corrupt."})
 	}
-	checks = append(checks, httpsDoctorCheck(stateDir))
+	checks = append(checks, httpsDoctorChecks(ctx, stateDir)...)
 	if extra.Port80Status != nil {
 		status := extra.Port80Status()
 		ok := status.OK
@@ -2675,6 +2676,42 @@ func httpsDoctorCheck(stateDir string) lifecycle.DoctorCheck {
 		return lifecycle.DoctorCheck{Name: "https certificate authority", OK: false, Detail: "missing", Hint: "Run gohere again to repair HTTPS setup."}
 	}
 	return lifecycle.DoctorCheck{Name: "https certificate authority", OK: true, Detail: fingerprint}
+}
+
+func httpsDoctorChecks(ctx context.Context, stateDir string) []lifecycle.DoctorCheck {
+	check := httpsDoctorCheck(stateDir)
+	checks := []lifecycle.DoctorCheck{check}
+	if !check.OK || !detectWSLFunc() {
+		return checks
+	}
+	trustFingerprint, err := localcert.Store{StateDir: stateDir}.TrustFingerprint()
+	if err != nil || trustFingerprint == "" {
+		checks = append(checks, lifecycle.DoctorCheck{Name: "windows https trust", OK: false, Detail: "missing", Hint: "Run gohere again to repair Windows browser trust."})
+		return checks
+	}
+	ok, detail := windowsHTTPSCATrustedFunc(ctx, trustFingerprint)
+	hint := ""
+	if !ok {
+		hint = "Run gohere again to repair Windows browser trust."
+	}
+	checks = append(checks, lifecycle.DoctorCheck{Name: "windows https trust", OK: ok, Detail: detail, Hint: hint})
+	return checks
+}
+
+func windowsHTTPSCATrusted(ctx context.Context, fingerprint string) (bool, string) {
+	fingerprint = strings.TrimSpace(fingerprint)
+	if fingerprint == "" {
+		return false, "missing fingerprint"
+	}
+	output, err := execCommandContext(ctx, "certutil.exe", "-user", "-store", "Root", fingerprint).CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail == "" {
+			detail = err.Error()
+		}
+		return false, compactDoctorDetail(detail)
+	}
+	return true, "trusted"
 }
 
 func bridgeDoctorChecks(ctx context.Context) []lifecycle.DoctorCheck {
