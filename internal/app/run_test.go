@@ -3327,10 +3327,8 @@ func TestListVerboseOutput(t *testing.T) {
 		Host:        "vibe-oke.localhost",
 		Target:      "http://127.0.0.1:46387",
 		CWD:         "/tmp/vibe-oke",
-		PID:         123,
+		PID:         999999,
 		Mode:        "package",
-		Source:      "wsl",
-		OwnerEnv:    "windows",
 		ProjectName: "vibe",
 		StartedAt:   time.Date(2026, 5, 28, 1, 2, 3, 0, time.UTC),
 	}})
@@ -3343,10 +3341,10 @@ func TestListVerboseOutput(t *testing.T) {
 	if !strings.Contains(text, "host") || !strings.Contains(text, "target") || !strings.Contains(text, "status") || !strings.Contains(text, "pid") || !strings.Contains(text, "cwd") {
 		t.Fatalf("verbose list output = %q", text)
 	}
-	if !strings.Contains(text, "vibe-oke.localhost") || !strings.Contains(text, "dead") || !strings.Contains(text, "123") || !strings.Contains(text, "/tmp/vibe-oke") {
+	if !strings.Contains(text, "vibe-oke.localhost") || !strings.Contains(text, "dead") || !strings.Contains(text, "999999") || !strings.Contains(text, "/tmp/vibe-oke") {
 		t.Fatalf("verbose list output = %q", text)
 	}
-	for _, want := range []string{"mode", "source", "owner", "started", "stop", "package", "wsl", "2026-05-28T01:02:03Z"} {
+	for _, want := range []string{"mode", "source", "owner", "started", "stop", "package", "local", "2026-05-28T01:02:03Z"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("verbose list output missing %q: %q", want, text)
 		}
@@ -3361,7 +3359,7 @@ func TestListJSONOutput(t *testing.T) {
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{{
 		Host:        "vibe-oke.localhost",
-		Target:      "http://127.0.0.1:46387",
+		Target:      "://bad-url",
 		CWD:         "/tmp/vibe-oke",
 		PID:         123,
 		Mode:        "static",
@@ -3385,8 +3383,8 @@ func TestListJSONOutput(t *testing.T) {
 	}
 	route := routes[0]
 	if route.Host != "vibe-oke.localhost" ||
-		route.Target != "http://127.0.0.1:46387" ||
-		route.Status != string(lifecycle.RouteStatusDead) ||
+		route.Target != "://bad-url" ||
+		route.Status != string(lifecycle.RouteStatusUnknown) ||
 		route.PID != 123 ||
 		route.CWD != "/tmp/vibe-oke" ||
 		route.Mode != "static" ||
