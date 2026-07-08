@@ -1507,6 +1507,34 @@ func TestRegisterRouteCleanupTimeoutUsesActionableWarning(t *testing.T) {
 	}
 }
 
+func TestRegisterRouteCleanupSuppressesWarningWhenTimedOutDeleteRemovedRoute(t *testing.T) {
+	admin := &cleanupVerifiedAdminClient{
+		deleteErr: context.DeadlineExceeded,
+		routesAfterDelete: []router.Route{{
+			Host: "other.localhost",
+		}},
+	}
+	plan := RunPlan{
+		Host: "app.localhost",
+		Name: "app",
+		CWD:  t.TempDir(),
+	}
+	var stdout, stderr strings.Builder
+	cleanup, err := registerRoute(context.Background(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 3000, os.Getpid(), &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup()
+
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want no cleanup warning after route was removed", stderr.String())
+	}
+	if !admin.deleteCalled || !admin.routesChecked {
+		t.Fatalf("deleteCalled=%v routesChecked=%v, want both true", admin.deleteCalled, admin.routesChecked)
+	}
+}
+
 func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
@@ -5336,6 +5364,14 @@ type multiRecordingAdminClient struct {
 	deleteErr error
 }
 
+type cleanupVerifiedAdminClient struct {
+	route             router.Route
+	deleteErr         error
+	routesAfterDelete []router.Route
+	deleteCalled      bool
+	routesChecked     bool
+}
+
 func (c *multiRecordingAdminClient) Health(context.Context) error {
 	return nil
 }
@@ -5380,6 +5416,31 @@ func (c *multiRecordingAdminClient) deletedHosts() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]string(nil), c.deleted...)
+}
+
+func (c *cleanupVerifiedAdminClient) Health(context.Context) error {
+	return nil
+}
+
+func (c *cleanupVerifiedAdminClient) Routes(context.Context) ([]router.Route, error) {
+	if c.deleteCalled {
+		c.routesChecked = true
+		return append([]router.Route(nil), c.routesAfterDelete...), nil
+	}
+	if c.route.Host == "" {
+		return nil, nil
+	}
+	return []router.Route{c.route}, nil
+}
+
+func (c *cleanupVerifiedAdminClient) UpsertRoute(ctx context.Context, route router.Route) error {
+	c.route = route
+	return nil
+}
+
+func (c *cleanupVerifiedAdminClient) DeleteRoute(context.Context, string) error {
+	c.deleteCalled = true
+	return c.deleteErr
 }
 
 func (c *recordingAdminClient) Health(context.Context) error {

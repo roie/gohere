@@ -1078,6 +1078,9 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		if err := adminClient.DeleteRoute(cleanupCtx, route.Host); err != nil && stderr != nil {
+			if routeCleanupTimedOut(err) && !routeStillRegistered(adminClient, route.Host) {
+				return
+			}
 			fmt.Fprintln(stderr, routeCleanupWarning(route.Host, err))
 		}
 	}, nil
@@ -1121,6 +1124,21 @@ func routeCleanupTimedOut(err error) bool {
 	}
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func routeStillRegistered(client adminClient, host string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	routes, err := client.Routes(ctx)
+	if err != nil {
+		return true
+	}
+	for _, route := range routes {
+		if strings.EqualFold(route.Host, host) {
+			return true
+		}
+	}
+	return false
 }
 
 func runMode(cmd cli.Command, plan RunPlan) string {
