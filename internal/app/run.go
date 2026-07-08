@@ -327,6 +327,16 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 			applyRunRouter(&plan, resolvedRouter)
 		}
 	}
+	if routerResolved {
+		applyPublicURLScheme(&plan, cmd)
+		reused, err := reuseReadySingleRoute(ctx, adminClient, cmd, plan, stdout)
+		if err != nil {
+			return err
+		}
+		if reused {
+			return nil
+		}
+	}
 
 	if plan.Static {
 		if err := ensureRunRouter(); err != nil {
@@ -839,25 +849,11 @@ func resolveMultiRunHosts(ctx context.Context, client adminClient, items []multi
 }
 
 func markReusableExistingRoutes(ctx context.Context, client adminClient, items []multiRunItem) error {
-	needsStatus := false
-	for _, item := range items {
-		if !item.plan.ManagedPort {
-			needsStatus = true
-			break
-		}
-	}
-	if !needsStatus {
-		return nil
-	}
-
 	statuses, err := adminRouteStatuses(ctx, client)
 	if err != nil {
 		return err
 	}
 	for i := range items {
-		if items[i].plan.ManagedPort {
-			continue
-		}
 		route, ok := reusableExistingRoute(items[i].plan, statuses)
 		if !ok {
 			continue
@@ -876,7 +872,7 @@ func reusableExistingRoute(plan RunPlan, statuses []lifecycle.RouteStatus) (rout
 		return router.Route{}, false
 	}
 	for _, status := range statuses {
-		if status.Status != lifecycle.RouteStatusReady {
+		if status.Status != lifecycle.RouteStatusReady && status.Status != lifecycle.RouteStatusUnknown {
 			continue
 		}
 		if !strings.EqualFold(status.Route.Host, plan.Host) {
@@ -1085,6 +1081,28 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 			fmt.Fprintln(stderr, routeCleanupWarning(route.Host, err))
 		}
 	}, nil
+}
+
+func reuseReadySingleRoute(ctx context.Context, client adminClient, cmd cli.Command, plan RunPlan, stdout io.Writer) (bool, error) {
+	if cmd.Kind != cli.CommandRun {
+		return false, nil
+	}
+	statuses, err := adminRouteStatuses(ctx, client)
+	if err != nil {
+		if errors.Is(err, admin.ErrUnauthorized) {
+			return false, staleRouterTokenError()
+		}
+		return false, err
+	}
+	route, ok := reusableExistingRoute(plan, statuses)
+	if !ok {
+		return false, nil
+	}
+	if cmd.TargetPort != 0 && route.Target != routeTarget(plan.RouteTargetHost, cmd.TargetPort) {
+		return false, nil
+	}
+	fmt.Fprint(stdout, runSuccessOutputForScheme(cmd, plan.URLScheme, route.Host, plan.URLPath))
+	return true, nil
 }
 
 func routeCleanupWarning(host string, err error) string {

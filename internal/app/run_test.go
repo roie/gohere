@@ -1283,6 +1283,52 @@ func TestRunStartsLocalProjectBeforeServiceRegistration(t *testing.T) {
 	}
 }
 
+func TestRunWSLReusesReadyRouteBeforeStartingRunner(t *testing.T) {
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		startRunnerFunc = oldStartRunner
+	}()
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"name":"ctrltube","scripts":{"dev":"vite"}}`,
+	})
+	admin := &recordingAdminClient{statuses: []router.RouteStatus{{
+		Route: router.Route{
+			Host:   "ctrltube.localhost",
+			Target: "http://127.0.0.1:57940",
+			CWD:    dir,
+		},
+		Status: "ready",
+	}}}
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:      true,
+		tokenErr:   bridge.ErrWindowsTokenNotFound,
+		localAdmin: admin,
+	})
+	defer restore()
+
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		t.Fatal("runner should not start when a ready route exists for the same WSL project")
+		return nil, nil
+	}
+
+	var stdout, stderr strings.Builder
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "gohere \u2192 http://ctrltube.localhost\n"
+	if stdout.String() != want || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), want)
+	}
+	if admin.route.Host != "" {
+		t.Fatalf("route was upserted = %#v, want existing route reused", admin.route)
+	}
+	if admin.deleted != "" {
+		t.Fatalf("route was deleted = %q, want existing route kept", admin.deleted)
+	}
+}
+
 func TestRunReportsStaleRouterToken(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
@@ -1630,6 +1676,105 @@ func TestRunWorkspaceReusesReadyUnmanagedRouteFromSameCWD(t *testing.T) {
 		"gohere worker \u2192 http://worker.ctrltube.localhost\n"
 	if stdout.String() != wantOut || stderr.String() != "" {
 		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
+	}
+}
+
+func TestRunWorkspaceReusesReadyManagedRouteFromSameCWD(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer webServer.Close()
+
+	root := tempProject(t, map[string]string{
+		"package.json":          `{"name":"ctrltube","workspaces":["apps/*"],"scripts":{"dev":"pnpm --filter @ctrltube/web dev"}}`,
+		"pnpm-lock.yaml":        "",
+		"apps/web/package.json": `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+	})
+	webDir := filepath.Join(root, "apps", "web")
+	admin := &multiRecordingAdminClient{routes: []router.Route{{
+		Host:   "web.ctrltube.localhost",
+		Target: webServer.URL,
+		CWD:    webDir,
+	}}}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		t.Fatal("runner should not start when a ready managed route exists for the same workspace package")
+		return nil, nil
+	}
+
+	var stdout, stderr strings.Builder
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	if countString(admin.upsertedHosts(), "web.ctrltube.localhost") != 1 {
+		t.Fatalf("reused web route should not be duplicated: %#v", admin.upsertedHosts())
+	}
+	if deleted := admin.deletedHosts(); len(deleted) != 0 {
+		t.Fatalf("deleted routes = %#v, want none", deleted)
+	}
+	wantOut := "gohere web \u2192 http://web.ctrltube.localhost\n"
+	if stdout.String() != wantOut || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
+	}
+}
+
+func TestRunWorkspaceReusesUnknownManagedRouteFromSameCWD(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	root := tempProject(t, map[string]string{
+		"package.json":          `{"name":"ctrltube","workspaces":["apps/*"],"scripts":{"dev":"pnpm --filter @ctrltube/web dev"}}`,
+		"pnpm-lock.yaml":        "",
+		"apps/web/package.json": `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+	})
+	webDir := filepath.Join(root, "apps", "web")
+	route := router.Route{
+		Host:   "web.ctrltube.localhost",
+		Target: "http://127.0.0.1:57940",
+		CWD:    webDir,
+	}
+	admin := &recordingAdminClient{
+		routes:   []router.Route{route},
+		statuses: []router.RouteStatus{{Route: route, Status: "unknown"}},
+	}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		t.Fatal("runner should not start when an unknown route exists for the same workspace package")
+		return nil, nil
+	}
+
+	var stdout, stderr strings.Builder
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	wantOut := "gohere web \u2192 http://web.ctrltube.localhost\n"
+	if stdout.String() != wantOut || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
+	}
+	if admin.route.Host != "" {
+		t.Fatalf("route was upserted = %#v, want existing unknown route reused", admin.route)
+	}
+	if admin.deleted != "" {
+		t.Fatalf("route was deleted = %q, want existing route kept", admin.deleted)
 	}
 }
 
