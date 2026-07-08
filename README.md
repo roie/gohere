@@ -34,12 +34,14 @@ Run the default command:
 gohere
 ```
 
-In a package project, this runs the nearest `package.json` `dev` script. In a workspace root, this discovers workspace packages from `pnpm-workspace.yaml` or `package.json` workspaces, starts each package with a `dev` script, and gives each package its own route:
+In a package project, this runs the nearest `package.json` `dev` script. In a workspace root with child packages that have `dev` scripts, this starts each matching package and gives each package its own route:
 
 ```text
 gohere web    -> http://web.myrepo.localhost
 gohere worker -> http://worker.myrepo.localhost
 ```
+
+If workspace metadata exists but no child package has a `dev` script, `gohere` falls back to the current package's `dev` script. If there is no package script and the folder has `index.html`, `gohere` serves it as a static site.
 
 Run a named package script:
 
