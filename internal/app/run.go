@@ -363,8 +363,8 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		return nil
 	}
 
-	childStdout := newLimitedCapture(32 * 1024)
-	childStderr := newLimitedCapture(32 * 1024)
+	liveStdout := newReplayWriter(32*1024, stdout)
+	liveStderr := newReplayWriter(32*1024, stderr)
 
 	result, err := startRunnerFunc(ctx, runner.Config{
 		Command:             plan.Command,
@@ -372,15 +372,15 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		Env:                 plan.Env,
 		ChosenPort:          plan.Port,
 		RequireDetectedPort: plan.RequireDetectedPort,
-		Stdout:              childStdout,
-		Stderr:              childStderr,
+		Stdout:              liveStdout,
+		Stderr:              liveStderr,
 		StartupTimeout:      15 * time.Second,
 	})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}
-		replayCapturedOutput(stderr, childStdout, childStderr)
+		replayCapturedOutput(stderr, liveStdout.capture(), liveStderr.capture())
 		if errors.Is(err, runner.ErrProcessFinished) {
 			fmt.Fprint(stdout, runFinishedOutput(cmd))
 			return nil
@@ -399,6 +399,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		return err
 	}
 	defer cleanup()
+	startLiveOutput(liveStdout, liveStderr, cmd.Verbose)
 	return result.Wait()
 }
 
@@ -522,22 +523,23 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 		if routerResolved {
 			applyRunRouter(&plan, resolvedRouter)
 		}
-		childStdout := newLimitedCapture(32 * 1024)
-		childStderr := newLimitedCapture(32 * 1024)
+		outputPrefix := "[" + serviceDiscoveryLabel(multiRunItem{cmd: itemCmd, plan: plan}) + "] "
+		liveStdout := newReplayWriter(32*1024, newLinePrefixWriter(stdout, outputPrefix))
+		liveStderr := newReplayWriter(32*1024, newLinePrefixWriter(stderr, outputPrefix))
 		result, err := startRunnerFunc(ctx, runner.Config{
 			Command:        plan.Command,
 			Dir:            plan.CWD,
 			Env:            plan.Env,
 			ChosenPort:     plan.Port,
-			Stdout:         childStdout,
-			Stderr:         childStderr,
+			Stdout:         liveStdout,
+			Stderr:         liveStderr,
 			StartupTimeout: 15 * time.Second,
 		})
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			replayCapturedOutput(stderr, childStdout, childStderr)
+			replayCapturedOutput(newLinePrefixWriter(stderr, outputPrefix), liveStdout.capture(), liveStderr.capture())
 			return formatMultiRunError(itemCmd, err)
 		}
 
@@ -556,6 +558,7 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 			result.Stop()
 			return err
 		}
+		startLiveOutput(liveStdout, liveStderr, cmd.Verbose)
 		items[i].plan = plan
 		items[i].result = result
 		items[i].cleanup = cleanup
@@ -712,22 +715,23 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 		if routerResolved {
 			applyRunRouter(&plan, resolvedRouter)
 		}
-		childStdout := newLimitedCapture(32 * 1024)
-		childStderr := newLimitedCapture(32 * 1024)
+		outputPrefix := "[" + serviceDiscoveryLabel(multiRunItem{cmd: itemCmd, plan: plan}) + "] "
+		liveStdout := newReplayWriter(32*1024, newLinePrefixWriter(stdout, outputPrefix))
+		liveStderr := newReplayWriter(32*1024, newLinePrefixWriter(stderr, outputPrefix))
 		result, err := startRunnerFunc(ctx, runner.Config{
 			Command:             plan.Command,
 			Env:                 plan.Env,
 			ChosenPort:          plan.Port,
 			RequireDetectedPort: plan.RequireDetectedPort,
-			Stdout:              childStdout,
-			Stderr:              childStderr,
+			Stdout:              liveStdout,
+			Stderr:              liveStderr,
 			StartupTimeout:      15 * time.Second,
 		})
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			replayCapturedOutput(stderr, childStdout, childStderr)
+			replayCapturedOutput(newLinePrefixWriter(stderr, outputPrefix), liveStdout.capture(), liveStderr.capture())
 			return formatMultiRunError(itemCmd, err)
 		}
 
@@ -746,6 +750,7 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 			result.Stop()
 			return err
 		}
+		startLiveOutput(liveStdout, liveStderr, cmd.Verbose)
 		items[i].plan = plan
 		items[i].result = result
 		items[i].cleanup = cleanup
@@ -1127,18 +1132,32 @@ func routeCleanupTimedOut(err error) bool {
 }
 
 func routeStillRegistered(client adminClient, host string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
-	routes, err := client.Routes(ctx)
-	if err != nil {
-		return true
-	}
-	for _, route := range routes {
-		if strings.EqualFold(route.Host, host) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		routes, err := client.Routes(ctx)
+		if err != nil {
 			return true
 		}
+		found := false
+		for _, route := range routes {
+			if strings.EqualFold(route.Host, host) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return true
+		case <-ticker.C:
+		}
 	}
-	return false
 }
 
 func runMode(cmd cli.Command, plan RunPlan) string {
@@ -1683,6 +1702,96 @@ func (w *limitedCapture) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.buf.String()
+}
+
+type replayWriter struct {
+	mu     sync.Mutex
+	cap    *limitedCapture
+	target io.Writer
+	live   bool
+}
+
+func newReplayWriter(max int, target io.Writer) *replayWriter {
+	return &replayWriter{cap: newLimitedCapture(max), target: target}
+}
+
+func startLiveOutput(stdoutWriter, stderrWriter *replayWriter, replayStartup bool) {
+	stdoutWriter.Start(replayStartup)
+	stderrWriter.Start(replayStartup)
+}
+
+func (w *replayWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.cap.Write(p)
+	if w.live && w.target != nil {
+		_, _ = w.target.Write(p)
+	}
+	w.mu.Unlock()
+	return len(p), nil
+}
+
+func (w *replayWriter) Start(replay bool) {
+	w.mu.Lock()
+	if w.live {
+		w.mu.Unlock()
+		return
+	}
+	w.live = true
+	target := w.target
+	captured := ""
+	if replay {
+		captured = w.cap.String()
+	}
+	w.mu.Unlock()
+
+	if target != nil && captured != "" {
+		_, _ = io.WriteString(target, captured)
+	}
+}
+
+func (w *replayWriter) capture() *limitedCapture {
+	return w.cap
+}
+
+type linePrefixWriter struct {
+	mu          sync.Mutex
+	target      io.Writer
+	prefix      string
+	atLineStart bool
+}
+
+func newLinePrefixWriter(target io.Writer, prefix string) io.Writer {
+	return &linePrefixWriter{target: target, prefix: prefix, atLineStart: true}
+}
+
+func (w *linePrefixWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.target == nil {
+		return len(p), nil
+	}
+	written := len(p)
+	for len(p) > 0 {
+		if w.atLineStart {
+			if _, err := io.WriteString(w.target, w.prefix); err != nil {
+				return written, err
+			}
+			w.atLineStart = false
+		}
+		idx := bytes.IndexByte(p, '\n')
+		if idx < 0 {
+			if _, err := w.target.Write(p); err != nil {
+				return written, err
+			}
+			return written, nil
+		}
+		if _, err := w.target.Write(p[:idx+1]); err != nil {
+			return written, err
+		}
+		w.atLineStart = true
+		p = p[idx+1:]
+	}
+	return written, nil
 }
 
 func ensureRouter(ctx context.Context, out io.Writer, health func(context.Context) error, requireHTTPSSetup bool) error {

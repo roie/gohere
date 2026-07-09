@@ -1368,7 +1368,7 @@ func TestRunReportsStaleRouterToken(t *testing.T) {
 	}
 }
 
-func TestRunSuppressesChildOutputOnSuccessfulStartup(t *testing.T) {
+func TestRunSuppressesChildStartupOutputOnSuccessfulStartup(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -1393,12 +1393,12 @@ func TestRunSuppressesChildOutputOnSuccessfulStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(stdout.String(), "127.0.0.1") || strings.Contains(stderr.String(), "vite noisy warning") {
-		t.Fatalf("normal output leaked child startup logs, stdout=%q stderr=%q", stdout.String(), stderr.String())
-	}
 	want := "gohere \u2192 http://" + filepath.Base(dir) + ".localhost\n"
 	if stdout.String() != want {
 		t.Fatalf("normal output = %q, want %q", stdout.String(), want)
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 
@@ -1535,6 +1535,81 @@ func TestRegisterRouteCleanupSuppressesWarningWhenTimedOutDeleteRemovedRoute(t *
 	}
 }
 
+func TestRegisterRouteCleanupSuppressesWarningWhenTimedOutDeleteCompletesAfterCheck(t *testing.T) {
+	admin := &cleanupVerifiedAdminClient{
+		deleteErr: context.DeadlineExceeded,
+		routesAfterDelete: []router.Route{{
+			Host: "app.localhost",
+		}},
+		removeAfterRouteChecks: 2,
+	}
+	plan := RunPlan{
+		Host: "app.localhost",
+		Name: "app",
+		CWD:  t.TempDir(),
+	}
+	var stdout, stderr strings.Builder
+	cleanup, err := registerRoute(context.Background(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 3000, os.Getpid(), &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup()
+
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want no cleanup warning after delayed route removal", stderr.String())
+	}
+	if admin.routeChecks < 2 {
+		t.Fatalf("route checks = %d, want delayed follow-up checks", admin.routeChecks)
+	}
+}
+
+func TestReplayWriterStreamsOnlyAfterStart(t *testing.T) {
+	var out strings.Builder
+	writer := newReplayWriter(1024, &out)
+
+	writer.Write([]byte("startup hidden\n"))
+	if out.String() != "" {
+		t.Fatalf("output before start = %q, want empty", out.String())
+	}
+
+	writer.Start(false)
+	writer.Write([]byte("future log\n"))
+	if out.String() != "future log\n" {
+		t.Fatalf("output after start = %q, want future log only", out.String())
+	}
+	if writer.capture().String() != "startup hidden\nfuture log\n" {
+		t.Fatalf("capture = %q, want complete output for failure replay", writer.capture().String())
+	}
+}
+
+func TestReplayWriterReplaysStartupWhenStartedVerbose(t *testing.T) {
+	var out strings.Builder
+	writer := newReplayWriter(1024, &out)
+
+	writer.Write([]byte("startup shown\n"))
+	writer.Start(true)
+	writer.Write([]byte("future log\n"))
+
+	want := "startup shown\nfuture log\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestLinePrefixWriterPrefixesFutureLogs(t *testing.T) {
+	var out strings.Builder
+	writer := newLinePrefixWriter(&out, "[web] ")
+
+	writer.Write([]byte("ready\nupdate"))
+	writer.Write([]byte(" done\n"))
+
+	want := "[web] ready\n[web] update done\n"
+	if out.String() != want {
+		t.Fatalf("prefixed output = %q, want %q", out.String(), want)
+	}
+}
+
 func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
@@ -1587,6 +1662,90 @@ func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
 	}
 	if len(commands) != 2 || !strings.Contains(commands[0], "dev:web") || !strings.Contains(commands[1], "dev:api") {
 		t.Fatalf("commands = %#v", commands)
+	}
+}
+
+func TestRunMultiScriptsSuppressesChildStartupOutput(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	ports := []int{5101, 5102}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		port := ports[0]
+		ports = ports[1:]
+		if strings.Contains(strings.Join(cfg.Command, " "), "dev:web") {
+			cfg.Stdout.Write([]byte("web ready\n"))
+		} else {
+			cfg.Stderr.Write([]byte("api warning\n"))
+		}
+		return &runner.Result{Port: port}, nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev:web":"vite","dev:api":"vite"}}`,
+	})
+	cmd := cli.Command{Kind: cli.CommandRun, Script: "dev:web", Scripts: []string{"dev:web", "dev:api"}}
+	var stdout, stderr strings.Builder
+	if err := Run(context.Background(), cmd, dir, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	base := filepath.Base(dir)
+	wantOut := fmt.Sprintf("gohere dev:web \u2192 http://web.%s.localhost\ngohere dev:api \u2192 http://api.%s.localhost\n", base, base)
+	if stdout.String() != wantOut {
+		t.Fatalf("stdout=%q, want %q", stdout.String(), wantOut)
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr=%q, want no startup output", stderr.String())
+	}
+}
+
+func TestRunMultiScriptsVerboseReplaysPrefixedStartupOutput(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+	}()
+
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return admin, nil
+	}
+	ports := []int{5101, 5102}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		port := ports[0]
+		ports = ports[1:]
+		if strings.Contains(strings.Join(cfg.Command, " "), "dev:web") {
+			cfg.Stdout.Write([]byte("web ready\n"))
+		} else {
+			cfg.Stderr.Write([]byte("api warning\n"))
+		}
+		return &runner.Result{Port: port}, nil
+	}
+
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev:web":"vite","dev:api":"vite"}}`,
+	})
+	cmd := cli.Command{Kind: cli.CommandRun, Script: "dev:web", Scripts: []string{"dev:web", "dev:api"}, Verbose: true}
+	var stdout, stderr strings.Builder
+	if err := Run(context.Background(), cmd, dir, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(stdout.String(), "[web] web ready\n") {
+		t.Fatalf("stdout=%q, want prefixed web startup output", stdout.String())
+	}
+	if stderr.String() != "[api] api warning\n" {
+		t.Fatalf("stderr=%q, want prefixed api startup output", stderr.String())
 	}
 }
 
@@ -2813,7 +2972,8 @@ func TestRunVerboseOutputIncludesCleanURLAndMetadata(t *testing.T) {
 		!strings.Contains(stdout.String(), "\ntarget: http://127.0.0.1:5173\n") ||
 		!strings.Contains(stdout.String(), "project root: "+dir+"\n") ||
 		!strings.Contains(stdout.String(), "command: npm run dev -- --host 127.0.0.1 --port ") ||
-		!strings.Contains(stdout.String(), "service: running\n") {
+		!strings.Contains(stdout.String(), "service: running\n") ||
+		!strings.Contains(stdout.String(), "Local: http://127.0.0.1:5173/\n") {
 		t.Fatalf("verbose stdout = %q", stdout.String())
 	}
 }
@@ -5365,11 +5525,13 @@ type multiRecordingAdminClient struct {
 }
 
 type cleanupVerifiedAdminClient struct {
-	route             router.Route
-	deleteErr         error
-	routesAfterDelete []router.Route
-	deleteCalled      bool
-	routesChecked     bool
+	route                  router.Route
+	deleteErr              error
+	routesAfterDelete      []router.Route
+	removeAfterRouteChecks int
+	deleteCalled           bool
+	routesChecked          bool
+	routeChecks            int
 }
 
 func (c *multiRecordingAdminClient) Health(context.Context) error {
@@ -5425,6 +5587,10 @@ func (c *cleanupVerifiedAdminClient) Health(context.Context) error {
 func (c *cleanupVerifiedAdminClient) Routes(context.Context) ([]router.Route, error) {
 	if c.deleteCalled {
 		c.routesChecked = true
+		c.routeChecks++
+		if c.removeAfterRouteChecks > 0 && c.routeChecks >= c.removeAfterRouteChecks {
+			return nil, nil
+		}
 		return append([]router.Route(nil), c.routesAfterDelete...), nil
 	}
 	if c.route.Host == "" {
