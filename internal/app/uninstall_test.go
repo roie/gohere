@@ -292,7 +292,11 @@ func TestUninstallUntrustsHTTPSCAWhenEnabled(t *testing.T) {
 	if err := appconfig.Save(stateDir, appconfig.Config{HTTPS: true}); err != nil {
 		t.Fatal(err)
 	}
-	ca, err := localcert.Store{StateDir: stateDir}.EnsureCA()
+	store := localcert.Store{StateDir: stateDir}
+	if _, err := store.EnsureCA(); err != nil {
+		t.Fatal(err)
+	}
+	wantFingerprint, err := caUntrustFingerprint(stateDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,8 +319,8 @@ func TestUninstallUntrustsHTTPSCAWhenEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(fingerprints) != 1 || fingerprints[0] != ca.Fingerprint {
-		t.Fatalf("untrusted fingerprints = %#v, want %q", fingerprints, ca.Fingerprint)
+	if len(fingerprints) != 1 || fingerprints[0] != wantFingerprint {
+		t.Fatalf("untrusted fingerprints = %#v, want %q", fingerprints, wantFingerprint)
 	}
 }
 

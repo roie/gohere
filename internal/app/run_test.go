@@ -1104,6 +1104,10 @@ func TestEnsureRouterSetupFailureWrapsHealthError(t *testing.T) {
 }
 
 func TestEnsureHTTPSBrowserTrustRepairsMissingWindowsTrustFromWSL(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("WSL browser trust repair runs from Linux/WSL")
+	}
+
 	oldDetectWSL := detectWSLFunc
 	oldWindowsTrust := windowsHTTPSCATrustedFunc
 	oldRepairWindowsTrust := repairWindowsHTTPSTrustFunc
@@ -5068,6 +5072,7 @@ func TestDoctorSuppressesLocalWSLServiceChecksWhenWindowsBridgeAvailable(t *test
 
 	var out strings.Builder
 	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		GOOS:            "linux",
 		Port80Available: func() bool { return false },
 		SystemdUserServiceOK: func() (bool, bool) {
 			return true, false

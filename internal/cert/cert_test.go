@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,7 @@ func TestEnsureCAGeneratesAndPersistsFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if keyInfo.Mode().Perm() != 0600 {
+	if runtime.GOOS != "windows" && keyInfo.Mode().Perm() != 0600 {
 		t.Fatalf("ca.key permissions = %v, want 0600", keyInfo.Mode().Perm())
 	}
 
