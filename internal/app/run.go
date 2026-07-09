@@ -2787,6 +2787,7 @@ func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, st
 	tokenPath := filepath.Join(stateDir, "token")
 	binaryPath := filepath.Join(stateDir, "bin", stableBinaryName(goos))
 	pidPath := filepath.Join(stateDir, "router.pid")
+	usingWindowsBridge := goos == "linux" && wslWindowsServiceAvailable(ctx)
 	checks := []lifecycle.DoctorCheck{
 		{Name: "state dir", OK: exists(stateDir), Detail: stateDir, Hint: "Try: run gohere once to finish setup."},
 		{Name: "stable binary", OK: exists(binaryPath), Detail: binaryPath, Hint: "Try: run gohere once to reinstall the local service binary."},
@@ -2809,7 +2810,9 @@ func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, st
 	} else {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "admin API health", OK: false, Detail: "unavailable", Hint: "Try: run gohere once to start the service."})
 	}
-	if pidData, err := os.ReadFile(pidPath); err == nil {
+	if usingWindowsBridge {
+		checks = append(checks, lifecycle.DoctorCheck{Name: "local service", OK: true, Detail: "not required; using Windows service"})
+	} else if pidData, err := os.ReadFile(pidPath); err == nil {
 		pidText := strings.TrimSpace(string(pidData))
 		checks = append(checks, lifecycle.DoctorCheck{Name: "service pid", OK: true, Detail: pidText})
 		pid, err := strconv.Atoi(pidText)
@@ -2857,10 +2860,10 @@ func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, st
 		status := extra.LocalhostHTTPStatus(ctx)
 		checks = append(checks, lifecycle.DoctorCheck{Name: ".localhost routing", OK: status.OK, Detail: status.Detail, Hint: status.Hint})
 	}
-	if goos == "linux" && exists(binaryPath) {
+	if goos == "linux" && exists(binaryPath) && !usingWindowsBridge {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "setcap", OK: extra.SetcapEnabled(binaryPath), Detail: "cap_net_bind_service", Hint: "Try: sudo setcap cap_net_bind_service=+ep ~/.gohere/bin/gohere"})
 	}
-	if goos == "linux" {
+	if goos == "linux" && !usingWindowsBridge {
 		applicable, ok := extra.SystemdUserServiceOK()
 		if applicable {
 			detail := "inactive"
@@ -2908,6 +2911,22 @@ func httpsDoctorChecks(ctx context.Context, stateDir string) []lifecycle.DoctorC
 	}
 	checks = append(checks, lifecycle.DoctorCheck{Name: "windows https trust", OK: ok, Detail: detail, Hint: hint})
 	return checks
+}
+
+func wslWindowsServiceAvailable(ctx context.Context) bool {
+	if !detectWSLFunc() || !windowsStableBinaryExists(windowsUsersRoot) {
+		return false
+	}
+	if err := windowsRouterHealthFunc(ctx); err != nil {
+		return false
+	}
+	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
+	if err != nil {
+		return false
+	}
+	client := newWindowsAdminClientFunc(token)
+	_, err = client.Routes(ctx)
+	return err == nil
 }
 
 func windowsHTTPSCATrusted(ctx context.Context, fingerprint string) (bool, string) {

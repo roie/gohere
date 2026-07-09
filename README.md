@@ -3,7 +3,7 @@
 Tiny local dev URL launcher for `.localhost` projects.
 
 ```text
-http://myproject.localhost
+https://myproject.localhost
 ```
 
 Run `gohere` inside a package project, workspace root, or static folder. It starts or serves the project on a hidden local port, routes a clean `.localhost` hostname to it, and prints the URL.
@@ -37,8 +37,8 @@ gohere
 In a package project, this runs the nearest `package.json` `dev` script. In a workspace root with child packages that have `dev` scripts, this starts each matching package and gives each package its own route:
 
 ```text
-gohere web    -> http://web.myrepo.localhost
-gohere worker -> http://worker.myrepo.localhost
+gohere web    -> https://web.myrepo.localhost
+gohere worker -> https://worker.myrepo.localhost
 ```
 
 If workspace metadata exists but no child package has a `dev` script, `gohere` falls back to the current package's `dev` script. If there is no package script and the folder has `index.html`, `gohere` serves it as a static site.
@@ -114,18 +114,18 @@ Open the project URL in your browser:
 gohere --open
 ```
 
-For static folders, `gohere` serves `index.html`. You can also open a specific file, for example `gohere about.html`, which routes to `http://myproject.localhost/about.html`.
+For static folders, `gohere` serves `index.html`. You can also open a specific file, for example `gohere about.html`, which routes to `https://myproject.localhost/about.html`.
 
 CSS, images, and scripts are served normally.
 
 ## Examples
 
 ```text
-myproject      -> http://myproject.localhost
-@scope/web     -> http://web.localhost
-./apps/web     -> http://web.repo.localhost
-./dist         -> http://dist.localhost
-about.html     -> http://myproject.localhost/about.html
+myproject      -> https://myproject.localhost
+@scope/web     -> https://web.localhost
+./apps/web     -> https://web.repo.localhost
+./dist         -> https://dist.localhost
+about.html     -> https://myproject.localhost/about.html
 ```
 
 ## Route management
@@ -170,11 +170,11 @@ npm uninstall -g gohere
 
 ## How it works
 
-`gohere` runs one local service on HTTP port `80`.
+`gohere` runs one local service on HTTP port `80` and HTTPS port `443`.
 
 Each project gets a hidden local port. The service maps the clean `.localhost` hostname to that port using the request `Host` header.
 
-First-time setup installs the local service in `~/.gohere/` and starts it in the background. After that, `gohere` only starts your project and registers its route.
+First-time setup installs the local service in `~/.gohere/`, installs a local trusted certificate authority, and starts the service in the background. After that, `gohere` only starts your project and registers its route.
 
 The service only serves local machine traffic. On macOS, gohere uses a port `80` listener that rejects non-loopback connections before requests reach the router.
 
@@ -184,7 +184,7 @@ State is stored in:
 ~/.gohere/
 ```
 
-Linux may ask for one-time permission to bind port `80`.
+Linux may ask for one-time permission to bind local ports and trust the local certificate authority.
 
 When used from WSL, `gohere` reuses a running Windows service automatically.
 
@@ -198,9 +198,9 @@ The npm package includes x64 and arm64 binaries for these platforms.
 
 ## Limits
 
-- HTTP only
 - `.localhost` only
-- no HTTPS
+- HTTPS uses a local trusted certificate authority
+- HTTP remains available with `--http`
 - no LAN sharing
 - no custom TLDs
 - no project config files

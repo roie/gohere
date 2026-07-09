@@ -5057,6 +5057,36 @@ func TestDoctorReportsWindowsRouterWhenWSLBridgeAvailable(t *testing.T) {
 	}
 }
 
+func TestDoctorSuppressesLocalWSLServiceChecksWhenWindowsBridgeAvailable(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{
+		isWSL:         true,
+		token:         "windows-token",
+		windowsBinary: true,
+		admin:         &recordingAdminClient{},
+	})
+	defer restore()
+
+	var out strings.Builder
+	if err := DoctorWithChecks(t.Context(), &out, t.TempDir(), router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+		Port80Available: func() bool { return false },
+		SystemdUserServiceOK: func() (bool, bool) {
+			return true, false
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "ok local service not required; using Windows service") ||
+		!strings.Contains(text, "ok windows service available") {
+		t.Fatalf("doctor output = %q", text)
+	}
+	for _, unwanted := range []string{"fail service pid", "fail systemd user service", "ok setcap"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("doctor output should not contain %q: %q", unwanted, text)
+		}
+	}
+}
+
 func TestDoctorReportsMissingWindowsServiceInstallFromWSL(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL: true,

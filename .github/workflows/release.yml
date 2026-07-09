@@ -22,7 +22,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -43,7 +43,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -195,15 +195,15 @@ jobs:
           }
           trap cleanup_route EXIT
 
-          start_route package-live http://package-live.localhost/ ./live --live
+          start_route package-live https://package-live.localhost/ ./live --live
           grep -q '__gohere/live' "$smoke_dir/response.html"
           cleanup_route
 
-          start_route package-dist http://package-dist.localhost/ ./dist
+          start_route package-dist https://package-dist.localhost/ ./dist
           grep -q 'dist package smoke' "$smoke_dir/response.html"
           cleanup_route
 
-          start_route package-about http://package-about.localhost/pages/about.html pages/about.html
+          start_route package-about https://package-about.localhost/pages/about.html pages/about.html
           grep -q 'about package smoke' "$smoke_dir/response.html"
           cleanup_route
 
