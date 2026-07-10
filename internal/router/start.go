@@ -34,16 +34,17 @@ type Running struct {
 	HTTPSAddr string
 	AdminAddr string
 
-	httpServer  *http.Server
-	httpsServer *http.Server
-	adminServer *http.Server
-	httpLn      net.Listener
-	httpsLn     net.Listener
-	adminLn     net.Listener
-	pidPath     string
-	logFile     *os.File
-	done        chan struct{}
-	doneOnce    sync.Once
+	httpServer   *http.Server
+	httpsServer  *http.Server
+	adminServer  *http.Server
+	httpLn       net.Listener
+	httpsLn      net.Listener
+	adminLn      net.Listener
+	pidPath      string
+	instancePath string
+	logFile      *os.File
+	done         chan struct{}
+	doneOnce     sync.Once
 }
 
 const (
@@ -89,8 +90,13 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		return nil, err
 	}
 	store := NewRouteStore(filepath.Join(cfg.StateDir, RoutesFilename))
+	instanceID, err := generateToken()
+	if err != nil {
+		logFile.Close()
+		return nil, err
+	}
 	var running *Running
-	server := NewServer(Config{Token: token, Store: store, Shutdown: func() {
+	server := NewServer(Config{Token: token, Store: store, InstanceID: instanceID, Shutdown: func() {
 		if running != nil {
 			running.Close()
 		}
@@ -129,6 +135,17 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		logFile.Close()
 		return nil, err
 	}
+	instancePath := filepath.Join(cfg.StateDir, RouterInstanceFilename)
+	if err := writeRouterInstance(instancePath, instanceID); err != nil {
+		httpLn.Close()
+		if httpsLn != nil {
+			httpsLn.Close()
+		}
+		adminLn.Close()
+		_ = os.Remove(pidPath)
+		logFile.Close()
+		return nil, err
+	}
 	httpsAddr := ""
 	if httpsLn != nil {
 		httpsAddr = httpsLn.Addr().String()
@@ -152,12 +169,13 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 			WriteTimeout:      adminWriteTimeout,
 			IdleTimeout:       adminIdleTimeout,
 		},
-		httpLn:  httpLn,
-		httpsLn: httpsLn,
-		adminLn: adminLn,
-		pidPath: pidPath,
-		logFile: logFile,
-		done:    make(chan struct{}),
+		httpLn:       httpLn,
+		httpsLn:      httpsLn,
+		adminLn:      adminLn,
+		pidPath:      pidPath,
+		instancePath: instancePath,
+		logFile:      logFile,
+		done:         make(chan struct{}),
 	}
 	if cfg.TLSConfig != nil {
 		running.httpsServer = &http.Server{
@@ -320,6 +338,9 @@ func (r *Running) Close() error {
 	if r.pidPath != "" {
 		os.Remove(r.pidPath)
 	}
+	if r.instancePath != "" {
+		os.Remove(r.instancePath)
+	}
 	if r.logFile != nil {
 		r.logFile.Close()
 	}
@@ -377,6 +398,46 @@ func writeRouterPID(pidPath string) error {
 	}
 	cleanup = false
 	return nil
+}
+
+func writeRouterInstance(path, instanceID string) error {
+	if instanceID == "" {
+		return errors.New("router instance ID is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write([]byte(instanceID + "\n")); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := replaceFile(tmpPath, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return os.Chmod(path, 0600)
 }
 
 func openRouterLog(logPath string) (*os.File, error) {

@@ -382,6 +382,73 @@ func TestAdminAPIRequiresTokenForRoutes(t *testing.T) {
 	}
 }
 
+func TestHTTPRouterDoesNotServeExpiredWSLOwnerRoute(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{
+		Host:           "offline.localhost",
+		Target:         backend.URL,
+		OwnerEnv:       "wsl",
+		OwnerInstance:  "owner-1",
+		RunnerID:       "runner-1",
+		LeaseExpiresAt: time.Now().Add(-time.Minute),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Store: store})
+	req := httptest.NewRequest(http.MethodGet, "http://offline.localhost/", nil)
+	req.Host = "offline.localhost"
+	rec := httptest.NewRecorder()
+
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "owner is offline") {
+		t.Fatalf("response = %d %q", rec.Code, rec.Body.String())
+	}
+	if backendCalls != 0 {
+		t.Fatalf("backend calls = %d, want 0", backendCalls)
+	}
+}
+
+func TestPublicRouterIdentityUsesOpaqueInstanceID(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore(), InstanceID: "router-instance-123"})
+	req := httptest.NewRequest(http.MethodGet, "http://anything.localhost"+RouterIdentityPath, nil)
+	req.Host = "anything.localhost"
+	rec := httptest.NewRecorder()
+
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status = %d, headers = %#v", rec.Code, rec.Header())
+	}
+	var response struct {
+		RouterInstanceID string `json:"routerInstanceId"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.RouterInstanceID != "router-instance-123" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestPublicRouterIdentityIsNotAvailableWithoutInstanceID(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+	req := httptest.NewRequest(http.MethodGet, "http://anything.localhost"+RouterIdentityPath, nil)
+	rec := httptest.NewRecorder()
+
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
 func TestAdminAPIProbeTargetRequiresToken(t *testing.T) {
 	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
 
@@ -485,6 +552,39 @@ func TestAdminAPIProbeTargetReachable(t *testing.T) {
 	}
 }
 
+func TestAdminAPIProbeRouteTargetOnlyRequiresTCP(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{})
+	go func() {
+		connection, err := listener.Accept()
+		if err == nil {
+			close(accepted)
+			defer connection.Close()
+			<-t.Context().Done()
+		}
+	}()
+
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+	target := "http://" + listener.Addr().String()
+	req := httptest.NewRequest(http.MethodPost, "/probe-target", strings.NewReader(`{"target":`+fmt.Sprintf("%q", target)+`}`))
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"reachable":true`) {
+		t.Fatalf("POST /probe-target = %d body %q", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("target probe did not establish TCP")
+	}
+}
+
 func TestAdminAPIProbeTargetUnreachable(t *testing.T) {
 	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
 
@@ -538,6 +638,38 @@ func TestAdminAPIRouteStatusesComputedByRouter(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(statuses) != 1 || statuses[0].Route.Host != "squawk.localhost" || statuses[0].Status != "ready" {
+		t.Fatalf("statuses = %#v", statuses)
+	}
+}
+
+func TestAdminAPIRouteStatusesMarksReachableExpiredWSLOwnerUnknown(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{
+		Host:           "wsl-app.localhost",
+		Target:         target.URL,
+		OwnerEnv:       "wsl",
+		OwnerInstance:  "owner-1",
+		RunnerID:       "runner-1",
+		LeaseExpiresAt: time.Now().Add(-time.Minute),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Token: "secret", Store: store})
+	req := httptest.NewRequest(http.MethodGet, "/route-statuses", nil)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	var statuses []RouteStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &statuses); err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Status != "unknown" {
 		t.Fatalf("statuses = %#v", statuses)
 	}
 }
@@ -781,6 +913,98 @@ func TestAdminAPIUpsertHostCaseInsensitive(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(routes) != 1 || routes[0].Target != "http://127.0.0.1:49232" {
+		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestAdminAPIRejectsRouteReplacementFromDifferentWSLOwner(t *testing.T) {
+	store := NewMemoryStore()
+	original := Route{
+		Host:          "eventca.localhost",
+		Target:        "http://172.20.0.2:49231",
+		CWD:           "/home/alice/eventca",
+		OwnerCWD:      "/home/alice/eventca",
+		OwnerEnv:      "wsl",
+		OwnerInstance: "owner-a",
+		Distro:        "Ubuntu",
+		LinuxUser:     "alice",
+	}
+	if err := store.Save([]Route{original}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Token: "secret", Store: store})
+	replacement := original
+	replacement.Target = "http://172.21.0.3:49231"
+	replacement.OwnerInstance = "owner-b"
+	replacement.Distro = "Debian"
+	body, err := json.Marshal(replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/routes", bytes.NewReader(body))
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("POST /routes = %d body %q", rec.Code, rec.Body.String())
+	}
+	routes, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].OwnerInstance != "owner-a" || routes[0].Target != original.Target {
+		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestUpsertRejectsActiveWSLRouteReplacementFromDifferentRunner(t *testing.T) {
+	existing := Route{
+		Host:           "eventca.localhost",
+		Target:         "http://172.20.0.2:49231",
+		CWD:            "/home/alice/eventca",
+		OwnerCWD:       "/home/alice/eventca",
+		OwnerEnv:       "wsl",
+		OwnerInstance:  "owner-a",
+		Distro:         "Ubuntu",
+		LinuxUser:      "alice",
+		RunnerID:       "runner-a",
+		LeaseExpiresAt: time.Now().Add(time.Minute),
+	}
+	replacement := existing
+	replacement.RunnerID = "runner-b"
+	replacement.Target = "http://172.20.0.2:49232"
+
+	_, err := upsertRoute([]Route{existing}, replacement)
+	if !errors.Is(err, errRouteConflict) {
+		t.Fatalf("error = %v, want route conflict", err)
+	}
+}
+
+func TestUpsertLetsSameWSLOwnerReclaimExpiredRunnerRoute(t *testing.T) {
+	existing := Route{
+		Host:           "eventca.localhost",
+		Target:         "http://172.20.0.2:49231",
+		CWD:            "/home/alice/eventca",
+		OwnerCWD:       "/home/alice/eventca",
+		OwnerEnv:       "wsl",
+		OwnerInstance:  "owner-a",
+		Distro:         "Ubuntu",
+		LinuxUser:      "alice",
+		RunnerID:       "runner-a",
+		LeaseExpiresAt: time.Now().Add(-time.Minute),
+	}
+	replacement := existing
+	replacement.RunnerID = "runner-b"
+	replacement.Target = "http://172.20.0.2:49232"
+	replacement.LeaseExpiresAt = time.Now().Add(time.Minute)
+
+	routes, err := upsertRoute([]Route{existing}, replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].RunnerID != "runner-b" || routes[0].Target != replacement.Target {
 		t.Fatalf("routes = %#v", routes)
 	}
 }
@@ -1525,7 +1749,7 @@ func TestStartProxiesForwardedHeadersOverHTTPS(t *testing.T) {
 	}
 }
 
-func TestStartWritesRouterPID(t *testing.T) {
+func TestStartWritesRouterPIDAndOpaqueInstance(t *testing.T) {
 	stateDir := t.TempDir()
 
 	running, err := Start(t.Context(), StartConfig{
@@ -1544,6 +1768,13 @@ func TestStartWritesRouterPID(t *testing.T) {
 	}
 	if strings.TrimSpace(string(data)) == "" {
 		t.Fatalf("router.pid is empty")
+	}
+	instance, err := os.ReadFile(filepath.Join(stateDir, RouterInstanceFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strings.TrimSpace(string(instance))) != tokenLength {
+		t.Fatalf("router instance = %q, want %d hex characters", instance, tokenLength)
 	}
 }
 

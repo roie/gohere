@@ -24,8 +24,8 @@ func TestDetachedSysProcAttrHidesWindowsConsole(t *testing.T) {
 }
 
 func TestWindowsStartProcessScriptQuotesCommandAndArgs(t *testing.T) {
-	script := windowsStartProcessScript(`C:\Users\Jessa\go'here.exe`, []string{"service", "run"})
-	if !strings.Contains(script, "-FilePath 'C:\\Users\\Jessa\\go''here.exe'") {
+	script := windowsStartProcessScript(`C:\Users\Alice\go'here.exe`, []string{"service", "run"})
+	if !strings.Contains(script, "-FilePath 'C:\\Users\\Alice\\go''here.exe'") {
 		t.Fatalf("script = %q", script)
 	}
 	if !strings.Contains(script, "-ArgumentList @('service','run')") {

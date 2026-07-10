@@ -31,6 +31,7 @@ type UninstallConfig struct {
 	ProcessSignal  func(int) error
 	ProcessMatches func(int, string) bool
 	UntrustCA      func(context.Context, string) error
+	RemoveState    *bool
 }
 
 type ServiceStopConfig struct {
@@ -42,10 +43,25 @@ type ServiceStopConfig struct {
 }
 
 func Uninstall(ctx context.Context, stdout io.Writer) error {
+	if detectWSLFunc() {
+		return uninstallWSLIntegration(ctx, stdout)
+	}
 	return UninstallWithConfig(ctx, stdout, UninstallConfig{})
 }
 
 func ServiceStop(ctx context.Context, stdout io.Writer) error {
+	if detectWSLFunc() {
+		resolved, err := resolveWindowsCompanion(ctx, "control.stop-router")
+		if err != nil {
+			return err
+		}
+		output, err := resolved.Control.StopRouter(ctx)
+		if err != nil {
+			return windowsCompanionUnavailableError(err)
+		}
+		fmt.Fprint(stdout, output)
+		return nil
+	}
 	return ServiceStopWithConfig(ctx, stdout, ServiceStopConfig{})
 }
 
@@ -167,9 +183,15 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 	}
 	fmt.Fprintln(stdout, "gohere service removed.")
 
-	fmt.Fprint(stdout, "\nRemove gohere local state too? This deletes routes, token, and logs. [y/N] ")
-	answer, _ := bufio.NewReader(promptInput).ReadString('\n')
-	if shouldRemoveStateFromAnswer(answer) {
+	removeState := false
+	if cfg.RemoveState != nil {
+		removeState = *cfg.RemoveState
+	} else {
+		fmt.Fprint(stdout, "\nRemove gohere local state too? This deletes routes, token, and logs. [y/N] ")
+		answer, _ := bufio.NewReader(promptInput).ReadString('\n')
+		removeState = shouldRemoveStateFromAnswer(answer)
+	}
+	if removeState {
 		if err := os.RemoveAll(cfg.StateDir); err != nil {
 			return err
 		}

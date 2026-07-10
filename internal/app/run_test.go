@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -18,9 +17,9 @@ import (
 	"time"
 
 	"github.com/roie/gohere/internal/admin"
-	"github.com/roie/gohere/internal/bridge"
 	localcert "github.com/roie/gohere/internal/cert"
 	"github.com/roie/gohere/internal/cli"
+	"github.com/roie/gohere/internal/companion"
 	appconfig "github.com/roie/gohere/internal/config"
 	"github.com/roie/gohere/internal/lifecycle"
 	"github.com/roie/gohere/internal/router"
@@ -149,14 +148,6 @@ func TestInjectedArgsControlPortRecognizesJoinedPortFlags(t *testing.T) {
 				t.Fatalf("injectedArgsControlPort(%#v) = false, want true", args)
 			}
 		})
-	}
-}
-
-func TestWindowsTokenErrorWrapsCause(t *testing.T) {
-	cause := errors.New("token discovery failed")
-	err := windowsTokenError(cause)
-	if !errors.Is(err, cause) {
-		t.Fatalf("windowsTokenError does not wrap cause: %v", err)
 	}
 }
 
@@ -725,9 +716,23 @@ func TestRunSuccessOutputCanUseHTTPS(t *testing.T) {
 }
 
 func TestPublicURLSchemeHTTPFlagOverridesHTTPS(t *testing.T) {
-	got := publicURLScheme(cli.Command{Kind: cli.CommandRun, Script: "dev", HTTP: true, URLScheme: "https"})
+	got := publicURLScheme(cli.Command{Kind: cli.CommandRun, Script: "dev", HTTP: true, URLScheme: "https"}, "https")
 	if got != "http" {
 		t.Fatalf("publicURLScheme() = %q, want http", got)
+	}
+}
+
+func TestPublicURLSchemeUsesWindowsAuthorityHTTPS(t *testing.T) {
+	got := publicURLScheme(cli.Command{Kind: cli.CommandRun, Script: "dev", URLScheme: AutoURLScheme}, "https")
+	if got != "https" {
+		t.Fatalf("publicURLScheme() = %q, want https", got)
+	}
+}
+
+func TestCompanionPublicURLSchemeUsesHTTPSListener(t *testing.T) {
+	info := companion.Info{Listeners: []companion.Listener{{Name: "http"}, {Name: "https"}}}
+	if got := companionPublicURLScheme(info); got != "https" {
+		t.Fatalf("companionPublicURLScheme() = %q, want https", got)
 	}
 }
 
@@ -1298,15 +1303,23 @@ func TestRunWSLReusesReadyRouteBeforeStartingRunner(t *testing.T) {
 	})
 	admin := &recordingAdminClient{statuses: []router.RouteStatus{{
 		Route: router.Route{
-			Host:   "ctrltube.localhost",
-			Target: "http://127.0.0.1:57940",
-			CWD:    dir,
+			Host:           "ctrltube.localhost",
+			Target:         "http://127.0.0.1:57940",
+			CWD:            dir,
+			OwnerEnv:       "wsl",
+			OwnerInstance:  "test-owner",
+			Distro:         "Ubuntu",
+			LinuxUser:      "alice",
+			RunnerID:       "existing-runner",
+			LeaseExpiresAt: time.Now().Add(time.Minute),
 		},
 		Status: "ready",
 	}}}
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:      true,
-		tokenErr:   bridge.ErrWindowsTokenNotFound,
+		wslIP:      "172.20.10.2",
+		reachable:  true,
+		admin:      admin,
 		localAdmin: admin,
 	})
 	defer restore()
@@ -1355,14 +1368,14 @@ func TestRunReportsStaleRouterToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected stale router token error")
 	}
-	if !strings.Contains(err.Error(), "A gohere service is already using .localhost URLs") {
+	if !strings.Contains(err.Error(), "router rejected its local control credential") {
 		t.Fatalf("error = %q", err.Error())
 	}
 	if !strings.Contains(err.Error(), "gohere service stop") {
 		t.Fatalf("error should recommend gohere service stop: %q", err.Error())
 	}
-	if !strings.Contains(err.Error(), "Windows and WSL") {
-		t.Fatalf("error should mention Windows/WSL split: %q", err.Error())
+	if !strings.Contains(err.Error(), "gohere setup") {
+		t.Fatalf("error should recommend setup in the same shell: %q", err.Error())
 	}
 	if strings.Contains(err.Error(), "systemctl") {
 		t.Fatalf("error should not lead with systemd internals: %q", err.Error())
@@ -1487,6 +1500,163 @@ func TestRegisterRouteCleanupLogsDeleteError(t *testing.T) {
 	if !strings.Contains(stderr.String(), "Could not remove route app.localhost") ||
 		!strings.Contains(stderr.String(), "delete failed") {
 		t.Fatalf("stderr = %q, want route cleanup warning", stderr.String())
+	}
+}
+
+func TestRegisterRoutePersistsWSLNamespaceIdentityAndBothTargets(t *testing.T) {
+	admin := &recordingAdminClient{}
+	plan := RunPlan{
+		Host:            "app.localhost",
+		Name:            "app",
+		CWD:             t.TempDir(),
+		RouteTargetHost: "172.20.10.2",
+		ListenHost:      "0.0.0.0",
+		RouteSource:     "wsl",
+		OwnerEnv:        "wsl",
+		OwnerInstance:   "owner-1",
+		Distro:          "Ubuntu",
+		LinuxUser:       "alice",
+		RunnerID:        "runner-1",
+	}
+	cleanup, err := registerRoute(t.Context(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 5173, os.Getpid(), io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	route := admin.route
+	if route.Target != "http://172.20.10.2:5173" || route.ListenTarget != "http://0.0.0.0:5173" ||
+		route.OwnerEnv != "wsl" || route.OwnerInstance != "owner-1" || route.Distro != "Ubuntu" ||
+		route.LinuxUser != "alice" || route.RunnerID != "runner-1" || route.LeaseExpiresAt.IsZero() {
+		t.Fatalf("route = %#v", route)
+	}
+}
+
+func TestRegisterRouteRefusesUnreachableWindowsToWSLTarget(t *testing.T) {
+	oldTimeout := wslTargetProbeTimeout
+	wslTargetProbeTimeout = 0
+	defer func() { wslTargetProbeTimeout = oldTimeout }()
+	target := "http://172.20.10.2:5173"
+	admin := &recordingAdminClient{probeReachable: map[string]bool{target: false}}
+	plan := RunPlan{
+		Host:            "app.localhost",
+		CWD:             t.TempDir(),
+		RouteTargetHost: "172.20.10.2",
+		OwnerEnv:        "wsl",
+		OwnerInstance:   "owner-1",
+		Distro:          "Ubuntu",
+		LinuxUser:       "alice",
+		RunnerID:        "runner-1",
+	}
+
+	_, err := registerRoute(t.Context(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 5173, os.Getpid(), io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "Windows cannot reach WSL target") {
+		t.Fatalf("error = %v", err)
+	}
+	if admin.route.Host != "" {
+		t.Fatalf("unreachable route was registered: %#v", admin.route)
+	}
+	if admin.probeCalls != 1 {
+		t.Fatalf("probe calls = %d, want 1", admin.probeCalls)
+	}
+}
+
+func TestRegisterRouteWaitsForWindowsToReachStartingWSLTarget(t *testing.T) {
+	oldTimeout := wslTargetProbeTimeout
+	oldInterval := wslTargetProbeInterval
+	wslTargetProbeTimeout = 100 * time.Millisecond
+	wslTargetProbeInterval = time.Millisecond
+	defer func() {
+		wslTargetProbeTimeout = oldTimeout
+		wslTargetProbeInterval = oldInterval
+	}()
+
+	admin := &recordingAdminClient{probeReachableAfter: 3}
+	plan := RunPlan{
+		Host:            "app.localhost",
+		CWD:             t.TempDir(),
+		RouteTargetHost: "127.0.0.1",
+		OwnerEnv:        "wsl",
+		OwnerInstance:   "owner-1",
+		RunnerID:        "runner-1",
+	}
+	cleanup, err := registerRoute(t.Context(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 5173, os.Getpid(), io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if admin.probeCalls != 3 {
+		t.Fatalf("probe calls = %d, want 3", admin.probeCalls)
+	}
+}
+
+func TestWaitForWSLTargetStopsOnProbeError(t *testing.T) {
+	want := errors.New("probe failed")
+	admin := &recordingAdminClient{probeErr: want}
+	reachable, err := waitForWSLTarget(t.Context(), admin, "http://127.0.0.1:5173")
+	if reachable || !errors.Is(err, want) {
+		t.Fatalf("reachable = %v, error = %v", reachable, err)
+	}
+	if admin.probeCalls != 1 {
+		t.Fatalf("probe calls = %d, want 1", admin.probeCalls)
+	}
+}
+
+func TestWaitForWSLTargetStopsWhenContextIsCanceled(t *testing.T) {
+	oldInterval := wslTargetProbeInterval
+	wslTargetProbeInterval = time.Hour
+	defer func() { wslTargetProbeInterval = oldInterval }()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	admin := &recordingAdminClient{probeReachable: map[string]bool{}}
+	reachable, err := waitForWSLTarget(ctx, admin, "http://127.0.0.1:5173")
+	if reachable || !errors.Is(err, context.Canceled) {
+		t.Fatalf("reachable = %v, error = %v", reachable, err)
+	}
+}
+
+func TestRouteLeaseRenewsUntilRunnerCleanup(t *testing.T) {
+	oldInterval := routeLeaseInterval
+	oldDuration := routeLeaseDuration
+	defer func() {
+		routeLeaseInterval = oldInterval
+		routeLeaseDuration = oldDuration
+	}()
+	routeLeaseInterval = 5 * time.Millisecond
+	routeLeaseDuration = time.Minute
+	client := &recordingAdminClient{}
+	originalExpiry := time.Now().Add(time.Second)
+	stop := startRouteLease(t.Context(), client, router.Route{
+		Host:           "app.localhost",
+		OwnerEnv:       "wsl",
+		RunnerID:       "runner-1",
+		LeaseExpiresAt: originalExpiry,
+	}, io.Discard)
+	client.waitForUpsert(t)
+	stop()
+	client.mu.Lock()
+	renewed := client.route.LeaseExpiresAt
+	client.mu.Unlock()
+	if !renewed.After(originalExpiry) {
+		t.Fatalf("renewed expiry = %s, want after %s", renewed, originalExpiry)
+	}
+}
+
+func TestRouteCleanupDoesNotDeleteReplacementOwnedByAnotherRunner(t *testing.T) {
+	client := &recordingAdminClient{routes: []router.Route{{
+		Host:          "app.localhost",
+		OwnerInstance: "owner-1",
+		RunnerID:      "runner-new",
+	}}}
+	err := deleteOwnedRouteRegistration(t.Context(), client, router.Route{
+		Host:          "app.localhost",
+		OwnerInstance: "owner-1",
+		RunnerID:      "runner-old",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.deleted != "" {
+		t.Fatalf("deleted = %q, want replacement preserved", client.deleted)
 	}
 }
 
@@ -3060,21 +3230,18 @@ func TestRunUsesWindowsRouterBridgeFromWSL(t *testing.T) {
 	}
 }
 
-func TestResolveRunRouterFallsBackWhenWindowsRouterAbsent(t *testing.T) {
+func TestResolveRunRouterDoesNotFallBackWhenWindowsRouterIsUnavailable(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:      true,
 		healthErr:  errors.New("connection refused"),
-		tokenErr:   bridge.ErrWindowsTokenNotFound,
 		localAdmin: fakeAdminClient{},
 	})
 	defer restore()
 
-	runRouter, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
-		t.Fatalf("runRouter = %#v", runRouter)
+	_, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
+	if err == nil || !strings.Contains(err.Error(), "No WSL router was started") ||
+		!strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -3097,162 +3264,9 @@ func TestResolveRunRouterReportsWindowsStartFailureWhenInstalled(t *testing.T) {
 	if startCalls != 1 {
 		t.Fatalf("start calls = %d, want 1", startCalls)
 	}
-	if !strings.Contains(err.Error(), "Windows gohere is installed, but WSL could not start its service") ||
+	if !strings.Contains(err.Error(), "could not use the Windows authority from WSL") ||
+		!strings.Contains(err.Error(), "No WSL router was started") ||
 		!strings.Contains(err.Error(), "start failed") {
-		t.Fatalf("error = %q", err.Error())
-	}
-}
-
-func TestStartWindowsServiceReportsMissingStableBinaryPath(t *testing.T) {
-	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "token")
-	if err := os.WriteFile(tokenPath, []byte("token"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	err := startWindowsService(context.Background(), tokenPath)
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("error = %v, want os.ErrNotExist", err)
-	}
-	if !strings.Contains(err.Error(), filepath.Join(dir, "bin", "gohere.exe")) {
-		t.Fatalf("error = %q, want missing binary path", err.Error())
-	}
-}
-
-func TestStartWindowsServiceUsesTimeout(t *testing.T) {
-	oldExecCommandContext := execCommandContext
-	oldTimeout := windowsServiceStartTimeout
-	defer func() {
-		execCommandContext = oldExecCommandContext
-		windowsServiceStartTimeout = oldTimeout
-	}()
-
-	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "token")
-	stableBinary := filepath.Join(dir, "bin", "gohere.exe")
-	if err := os.MkdirAll(filepath.Dir(stableBinary), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(tokenPath, []byte("token"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(stableBinary, []byte("binary"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	windowsServiceStartTimeout = 50 * time.Millisecond
-	execCommandContext = func(ctx context.Context, command string, args ...string) *exec.Cmd {
-		helperArgs := []string{"-test.run=TestAppCommandHelper", "--", command}
-		helperArgs = append(helperArgs, args...)
-		cmd := exec.CommandContext(ctx, os.Args[0], helperArgs...)
-		cmd.Env = append(os.Environ(), "GOHERE_APP_HELPER_PROCESS=1")
-		return cmd
-	}
-
-	started := time.Now()
-	err := startWindowsService(context.Background(), tokenPath)
-	if err == nil {
-		t.Fatal("expected timed out powershell command")
-	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("startWindowsService elapsed = %s, want bounded by timeout", elapsed)
-	}
-}
-
-func TestStartWindowsServiceStartsHiddenPowerShellWindow(t *testing.T) {
-	oldExecCommandContext := execCommandContext
-	defer func() {
-		execCommandContext = oldExecCommandContext
-	}()
-
-	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "token")
-	stableBinary := filepath.Join(dir, "bin", "gohere.exe")
-	if err := os.MkdirAll(filepath.Dir(stableBinary), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(tokenPath, []byte("token"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(stableBinary, []byte("binary"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	var commands []string
-	execCommandContext = func(ctx context.Context, command string, args ...string) *exec.Cmd {
-		commands = append(commands, command+" "+strings.Join(args, " "))
-		helperArgs := []string{"-test.run=TestAppCommandHelper", "--", command}
-		helperArgs = append(helperArgs, args...)
-		cmd := exec.CommandContext(ctx, os.Args[0], helperArgs...)
-		cmd.Env = append(os.Environ(), "GOHERE_APP_HELPER_PROCESS=1", "GOHERE_APP_HELPER_POWERSHELL_SUCCESS=1")
-		return cmd
-	}
-
-	if err := startWindowsService(context.Background(), tokenPath); err != nil {
-		t.Fatal(err)
-	}
-	if len(commands) != 2 {
-		t.Fatalf("commands = %#v, want wslpath and powershell.exe", commands)
-	}
-	powerShellCommand := commands[1]
-	if !strings.Contains(powerShellCommand, "Start-Process -WindowStyle Hidden") {
-		t.Fatalf("powershell command = %q, want hidden Start-Process window", powerShellCommand)
-	}
-}
-
-func TestStartWindowsServiceIncludesWSLPathOutputOnFailure(t *testing.T) {
-	oldExecCommandContext := execCommandContext
-	defer func() {
-		execCommandContext = oldExecCommandContext
-	}()
-
-	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "token")
-	stableBinary := filepath.Join(dir, "bin", "gohere.exe")
-	if err := os.MkdirAll(filepath.Dir(stableBinary), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(tokenPath, []byte("token"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(stableBinary, []byte("binary"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	execCommandContext = appHelperExecCommand("GOHERE_APP_HELPER_FAIL_WSLPATH")
-
-	err := startWindowsService(context.Background(), tokenPath)
-	if err == nil {
-		t.Fatal("expected wslpath error")
-	}
-	if !strings.Contains(err.Error(), "wslpath failed") || !strings.Contains(err.Error(), "wslpath exploded") {
-		t.Fatalf("error = %q", err.Error())
-	}
-}
-
-func TestStartWindowsServiceIncludesPowerShellOutputOnFailure(t *testing.T) {
-	oldExecCommandContext := execCommandContext
-	defer func() {
-		execCommandContext = oldExecCommandContext
-	}()
-
-	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "token")
-	stableBinary := filepath.Join(dir, "bin", "gohere.exe")
-	if err := os.MkdirAll(filepath.Dir(stableBinary), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(tokenPath, []byte("token"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(stableBinary, []byte("binary"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	execCommandContext = appHelperExecCommand("GOHERE_APP_HELPER_FAIL_POWERSHELL")
-
-	err := startWindowsService(context.Background(), tokenPath)
-	if err == nil {
-		t.Fatal("expected powershell error")
-	}
-	if !strings.Contains(err.Error(), "powershell.exe failed") || !strings.Contains(err.Error(), "powershell exploded") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
@@ -3283,7 +3297,7 @@ func TestResolveRunRouterStartsWindowsServiceFromWSLWhenInstalledButStopped(t *t
 	}
 }
 
-func TestResolveRunRouterFallsBackWhenOnlyWindowsTokenRemains(t *testing.T) {
+func TestResolveRunRouterDoesNotUseLocalRouterWhenCompanionHealthFails(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:      true,
 		token:      "windows-token",
@@ -3292,20 +3306,19 @@ func TestResolveRunRouterFallsBackWhenOnlyWindowsTokenRemains(t *testing.T) {
 	})
 	defer restore()
 
-	runRouter, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
-		t.Fatalf("runRouter = %#v", runRouter)
+	_, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
+	if err == nil || !strings.Contains(err.Error(), "No WSL router was started") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
-func TestResolveRunRouterFallsBackWhenStaleWindowsTokenSeesWSLLocalRouter(t *testing.T) {
+func TestResolveRunRouterIgnoresStaleTokenAndLocalRouterWhenCompanionWorks(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:      true,
 		token:      "windows-token",
 		healthErr:  nil,
+		wslIP:      "172.20.10.2",
+		reachable:  true,
 		localAdmin: fakeAdminClient{},
 	})
 	defer restore()
@@ -3314,7 +3327,7 @@ func TestResolveRunRouterFallsBackWhenStaleWindowsTokenSeesWSLLocalRouter(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
+	if runRouter.RouterLabel != "Windows" || !runRouter.Bridge {
 		t.Fatalf("runRouter = %#v", runRouter)
 	}
 }
@@ -3422,20 +3435,20 @@ func TestResolveRunRouterHandlesTypedNilAdminClientAfterHealth(t *testing.T) {
 	}
 }
 
-func TestLocalRouterControlErrorExplainsWindowsWSLRouterConflict(t *testing.T) {
+func TestLocalRouterControlErrorRejectsNonWindowsPortOwner(t *testing.T) {
 	stateDir := t.TempDir()
 
 	err := localRouterControlError("windows", stateDir)
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "A WSL gohere service is using .localhost URLs") ||
-		!strings.Contains(err.Error(), "gohere service stop") {
+	if !strings.Contains(err.Error(), "A non-Windows process is occupying gohere's .localhost service ports") ||
+		!strings.Contains(err.Error(), "gohere doctor") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
 
-func TestLocalRouterControlErrorKeepsGenericMessageWhenWindowsStateExists(t *testing.T) {
+func TestLocalRouterControlErrorReportsStaleCredentialWhenWindowsStateExists(t *testing.T) {
 	stateDir := t.TempDir()
 	binDir := filepath.Join(stateDir, "bin")
 	if err := os.MkdirAll(binDir, 0755); err != nil {
@@ -3452,34 +3465,37 @@ func TestLocalRouterControlErrorKeepsGenericMessageWhenWindowsStateExists(t *tes
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "A gohere service is already using .localhost URLs") {
+	if !strings.Contains(err.Error(), "router rejected its local control credential") ||
+		!strings.Contains(err.Error(), "gohere setup") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
 
-func TestResolveRunRouterStopsWhenWindowsRouterExistsButTokenNotFound(t *testing.T) {
+func TestResolveRunRouterDoesNotReadWindowsTokenWhenCompanionExists(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:         true,
-		tokenErr:      bridge.ErrWindowsTokenNotFound,
 		healthErr:     nil,
 		windowsBinary: true,
+		wslIP:         "172.20.10.2",
+		reachable:     true,
 	})
 	defer restore()
 
-	_, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
-	if err == nil {
-		t.Fatal("expected windows token error")
+	runRouter, err := resolveRunRouter(context.Background(), io.Discard, cli.Command{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "Windows gohere service is available, but WSL could not use it") {
-		t.Fatalf("error = %q", err.Error())
+	if runRouter.RouterLabel != "Windows" || !runRouter.Bridge {
+		t.Fatalf("runRouter = %#v", runRouter)
 	}
 }
 
-func TestResolveRunRouterFallsBackWhenOnlyWSLLocalRouterLooksHealthy(t *testing.T) {
+func TestResolveRunRouterUsesCompanionEvenWhenLocalWSLRouterLooksHealthy(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:      true,
-		tokenErr:   bridge.ErrWindowsTokenNotFound,
 		healthErr:  nil,
+		wslIP:      "172.20.10.2",
+		reachable:  true,
 		localAdmin: fakeAdminClient{},
 	})
 	defer restore()
@@ -3488,7 +3504,7 @@ func TestResolveRunRouterFallsBackWhenOnlyWSLLocalRouterLooksHealthy(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runRouter.RouterLabel != "running" || runRouter.ChildHost != "127.0.0.1" || runRouter.RouteTargetHost != "127.0.0.1" {
+	if runRouter.RouterLabel != "Windows" || !runRouter.Bridge {
 		t.Fatalf("runRouter = %#v", runRouter)
 	}
 }
@@ -3508,9 +3524,8 @@ func TestResolveRunRouterStopsWhenWindowsRouterCannotReachWSL(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected bridge reachability error")
 	}
-	if !strings.Contains(err.Error(), "Windows gohere service is running, but cannot reach WSL dev servers") ||
-		!strings.Contains(err.Error(), "networkingMode=mirrored") ||
-		!strings.Contains(err.Error(), "Windows Firewall") ||
+	if !strings.Contains(err.Error(), "Windows gohere authority could not reach the WSL dev-server listener") ||
+		!strings.Contains(err.Error(), "gohere doctor") ||
 		!strings.Contains(err.Error(), "Tried: 127.0.0.1, localhost, 172.20.10.2") {
 		t.Fatalf("error = %q", err.Error())
 	}
@@ -3532,7 +3547,7 @@ func TestResolveRunRouterIncludesBridgeProbeError(t *testing.T) {
 		t.Fatal("expected bridge probe error")
 	}
 	if !strings.Contains(err.Error(), "probe endpoint failed") ||
-		!strings.Contains(err.Error(), "Windows Firewall") {
+		!strings.Contains(err.Error(), "gohere doctor") {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
@@ -3908,16 +3923,22 @@ func TestListJSONOutput(t *testing.T) {
 	ownerEnv := foreignTestOwnerEnv()
 	store := router.NewMemoryStore()
 	store.Save([]router.Route{{
-		Host:        "vibe-oke.localhost",
-		Target:      "://bad-url",
-		CWD:         "/tmp/vibe-oke",
-		PID:         123,
-		Mode:        "static",
-		Source:      "wsl",
-		OwnerEnv:    ownerEnv,
-		ProjectName: "vibe",
-		Name:        "vibe-oke",
-		StartedAt:   time.Date(2026, 5, 28, 1, 2, 3, 0, time.UTC),
+		Host:           "vibe-oke.localhost",
+		Target:         "://bad-url",
+		CWD:            "/tmp/vibe-oke",
+		PID:            123,
+		Mode:           "static",
+		Source:         "wsl",
+		OwnerEnv:       ownerEnv,
+		OwnerInstance:  "owner-1",
+		Distro:         "Ubuntu",
+		LinuxUser:      "alice",
+		RunnerID:       "runner-1",
+		ListenTarget:   "http://0.0.0.0:3000",
+		LeaseExpiresAt: time.Date(2026, 5, 28, 1, 3, 33, 0, time.UTC),
+		ProjectName:    "vibe",
+		Name:           "vibe-oke",
+		StartedAt:      time.Date(2026, 5, 28, 1, 2, 3, 0, time.UTC),
 	}})
 	var out strings.Builder
 
@@ -3940,6 +3961,12 @@ func TestListJSONOutput(t *testing.T) {
 		route.Mode != "static" ||
 		route.Source != "wsl" ||
 		route.OwnerEnv != ownerEnv ||
+		route.OwnerInstance != "owner-1" ||
+		route.Distro != "Ubuntu" ||
+		route.LinuxUser != "alice" ||
+		route.RunnerID != "runner-1" ||
+		route.ListenTarget != "http://0.0.0.0:3000" ||
+		route.LeaseExpiresAt != "2026-05-28T01:03:33Z" ||
 		route.ProjectName != "vibe" ||
 		route.Name != "vibe-oke" ||
 		route.StartedAt != "2026-05-28T01:02:03Z" {
@@ -3948,7 +3975,8 @@ func TestListJSONOutput(t *testing.T) {
 	if route.CanStop {
 		t.Fatalf("route canStop = true, want false for foreign route: %#v", route)
 	}
-	if !strings.Contains(route.StopReason, "another environment") {
+	if !strings.Contains(route.StopReason, "Ubuntu/alice") ||
+		!strings.Contains(route.StopReason, "that WSL owner") {
 		t.Fatalf("stopReason = %q", route.StopReason)
 	}
 }
@@ -4084,18 +4112,24 @@ func TestListUsesServiceComputedRouteStatusFromWSL(t *testing.T) {
 }
 
 func TestListRefinesUnknownServiceStatusForWSLOwnedRouteFromWSL(t *testing.T) {
+	restoreMetadata := stubCurrentWSLMetadata(t)
+	defer restoreMetadata()
 	oldDetectWSL := detectWSLFunc
 	defer func() {
 		detectWSLFunc = oldDetectWSL
 	}()
 	detectWSLFunc = func() bool { return true }
 	route := router.Route{
-		Host:     "old-wsl.localhost",
-		Target:   "http://127.0.0.1:1",
-		PID:      999999,
-		CWD:      "/home/roie/dev/old-wsl",
-		Source:   "wsl",
-		OwnerEnv: "wsl",
+		Host:           "old-wsl.localhost",
+		Target:         "http://127.0.0.1:1",
+		PID:            999999,
+		CWD:            "/home/roie/dev/old-wsl",
+		Source:         "wsl",
+		OwnerEnv:       "wsl",
+		OwnerInstance:  "test-owner",
+		Distro:         "Ubuntu",
+		LinuxUser:      "alice",
+		LeaseExpiresAt: time.Now().Add(-time.Minute),
 	}
 	admin := &recordingAdminClient{
 		routes:   []router.Route{route},
@@ -4185,18 +4219,23 @@ func TestListFallbackWithoutProbeKeepsStatusUnknown(t *testing.T) {
 }
 
 func TestListFallbackWithoutProbeClassifiesWSLOwnedRoutesFromWSL(t *testing.T) {
+	restoreMetadata := stubCurrentWSLMetadata(t)
+	defer restoreMetadata()
 	oldDetectWSL := detectWSLFunc
 	defer func() {
 		detectWSLFunc = oldDetectWSL
 	}()
 	detectWSLFunc = func() bool { return true }
 	route := router.Route{
-		Host:     "old-wsl.localhost",
-		Target:   "http://127.0.0.1:1",
-		PID:      999999,
-		CWD:      "/home/roie/dev/old-wsl",
-		Source:   "wsl",
-		OwnerEnv: "wsl",
+		Host:          "old-wsl.localhost",
+		Target:        "http://127.0.0.1:1",
+		PID:           999999,
+		CWD:           "/home/roie/dev/old-wsl",
+		Source:        "wsl",
+		OwnerEnv:      "wsl",
+		OwnerInstance: "test-owner",
+		Distro:        "Ubuntu",
+		LinuxUser:     "alice",
 	}
 	client := routeStatusesUnsupportedClient{routes: []router.Route{route}}
 
@@ -4327,18 +4366,24 @@ func TestPruneFallbackProbeKeepsUnreachableRouteUnknown(t *testing.T) {
 }
 
 func TestPruneFallbackProbeRemovesDeadWSLOwnedRouteFromWSL(t *testing.T) {
+	restoreMetadata := stubCurrentWSLMetadata(t)
+	defer restoreMetadata()
 	oldDetectWSL := detectWSLFunc
 	defer func() {
 		detectWSLFunc = oldDetectWSL
 	}()
 	detectWSLFunc = func() bool { return true }
 	route := router.Route{
-		Host:     "old-wsl.localhost",
-		Target:   "http://127.0.0.1:1",
-		PID:      999999,
-		CWD:      "/home/roie/dev/old-wsl",
-		Source:   "wsl",
-		OwnerEnv: "wsl",
+		Host:           "old-wsl.localhost",
+		Target:         "http://127.0.0.1:1",
+		PID:            999999,
+		CWD:            "/home/roie/dev/old-wsl",
+		Source:         "wsl",
+		OwnerEnv:       "wsl",
+		OwnerInstance:  "test-owner",
+		Distro:         "Ubuntu",
+		LinuxUser:      "alice",
+		LeaseExpiresAt: time.Now().Add(-time.Minute),
 	}
 	admin := &recordingAdminClient{
 		routes:         []router.Route{route},
@@ -4395,28 +4440,28 @@ func TestPruneAdminRoutesReportsPartialDeletion(t *testing.T) {
 	}
 }
 
-func TestRouteManagerStopsWhenWindowsRouterExistsButTokenNotFound(t *testing.T) {
+func TestRouteManagerDoesNotReadWindowsTokenWhenCompanionIsAvailable(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:         true,
-		tokenErr:      bridge.ErrWindowsTokenNotFound,
 		windowsBinary: true,
 	})
 	defer restore()
 
-	_, err := resolveRouteManager(context.Background())
-	if err == nil {
-		t.Fatal("expected windows token error")
+	manager, err := resolveRouteManager(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "Windows gohere service is available, but WSL could not use it") {
-		t.Fatalf("error = %q", err.Error())
+	if manager.Client == nil || !manager.RouterReady {
+		t.Fatalf("manager = %#v", manager)
 	}
 }
 
-func TestRouteManagerFallsBackWhenOnlyWSLLocalRouterLooksHealthy(t *testing.T) {
+func TestRouteManagerUsesCompanionWhenLocalWSLRouterLooksHealthy(t *testing.T) {
+	companionAdmin := &recordingAdminClient{routes: []router.Route{{Host: "windows.localhost"}}}
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:      true,
-		tokenErr:   bridge.ErrWindowsTokenNotFound,
 		healthErr:  nil,
+		admin:      companionAdmin,
 		localAdmin: fakeAdminClient{},
 	})
 	defer restore()
@@ -4426,7 +4471,11 @@ func TestRouteManagerFallsBackWhenOnlyWSLLocalRouterLooksHealthy(t *testing.T) {
 		t.Fatal(err)
 	}
 	if manager.Client == nil || !manager.RouterReady {
-		t.Fatalf("manager = %#v, want local ready router manager", manager)
+		t.Fatalf("manager = %#v", manager)
+	}
+	routes, err := manager.Client.Routes(t.Context())
+	if err != nil || len(routes) != 1 || routes[0].Host != "windows.localhost" {
+		t.Fatalf("routes = %#v, err = %v", routes, err)
 	}
 }
 
@@ -4449,7 +4498,8 @@ func TestRouteManagerReportsWindowsStartFailureWhenInstalled(t *testing.T) {
 	if startCalls != 1 {
 		t.Fatalf("start calls = %d, want 1", startCalls)
 	}
-	if !strings.Contains(err.Error(), "Windows gohere is installed, but WSL could not start its service") ||
+	if !strings.Contains(err.Error(), "could not use the Windows authority from WSL") ||
+		!strings.Contains(err.Error(), "No WSL router was started") ||
 		!strings.Contains(err.Error(), "start failed") {
 		t.Fatalf("error = %q", err.Error())
 	}
@@ -4480,7 +4530,7 @@ func TestRouteManagerStartsWindowsServiceFromWSLWhenInstalledButStopped(t *testi
 	}
 }
 
-func TestRouteManagerFallsBackWhenOnlyWindowsTokenRemains(t *testing.T) {
+func TestRouteManagerDoesNotFallBackToLocalRouterWhenWindowsAuthorityIsUnavailable(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:      true,
 		token:      "windows-token",
@@ -4489,20 +4539,20 @@ func TestRouteManagerFallsBackWhenOnlyWindowsTokenRemains(t *testing.T) {
 	})
 	defer restore()
 
-	manager, err := resolveRouteManager(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manager.Client == nil || !manager.RouterReady {
-		t.Fatalf("manager = %#v, want local ready router manager", manager)
+	_, err := resolveRouteManager(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "No WSL router was started") ||
+		!strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
-func TestRouteManagerFallsBackWhenStaleWindowsTokenSeesWSLLocalRouter(t *testing.T) {
+func TestRouteManagerIgnoresStaleTokenAndLocalRouterWhenCompanionWorks(t *testing.T) {
+	companionAdmin := &recordingAdminClient{routes: []router.Route{{Host: "windows.localhost"}}}
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:      true,
 		token:      "windows-token",
 		healthErr:  nil,
+		admin:      companionAdmin,
 		localAdmin: fakeAdminClient{},
 	})
 	defer restore()
@@ -4512,18 +4562,25 @@ func TestRouteManagerFallsBackWhenStaleWindowsTokenSeesWSLLocalRouter(t *testing
 		t.Fatal(err)
 	}
 	if manager.Client == nil || !manager.RouterReady {
-		t.Fatalf("manager = %#v, want local ready router manager", manager)
+		t.Fatalf("manager = %#v", manager)
+	}
+	routes, err := manager.Client.Routes(t.Context())
+	if err != nil || len(routes) != 1 || routes[0].Host != "windows.localhost" {
+		t.Fatalf("routes = %#v, err = %v", routes, err)
 	}
 }
 
 func TestStopUsesWindowsRouterFromWSL(t *testing.T) {
 	cwd := "/home/roie/dev/web"
 	admin := &recordingAdminClient{routes: []router.Route{{
-		Host:     "web.localhost",
-		Target:   "http://172.20.10.2:5173",
-		CWD:      cwd,
-		OwnerCWD: cwd,
-		OwnerEnv: "wsl",
+		Host:          "web.localhost",
+		Target:        "http://172.20.10.2:5173",
+		CWD:           cwd,
+		OwnerCWD:      cwd,
+		OwnerEnv:      "wsl",
+		OwnerInstance: "test-owner",
+		Distro:        "Ubuntu",
+		LinuxUser:     "alice",
 	}}}
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:         true,
@@ -5092,7 +5149,7 @@ func TestDoctorSuppressesLocalWSLServiceChecksWhenWindowsBridgeAvailable(t *test
 	}
 }
 
-func TestDoctorReportsMissingWindowsServiceInstallFromWSL(t *testing.T) {
+func TestDoctorUsesCompanionInsteadOfProfileInstallHeuristicsFromWSL(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL: true,
 	})
@@ -5105,7 +5162,7 @@ func TestDoctorReportsMissingWindowsServiceInstallFromWSL(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "ok environment WSL") ||
-		!strings.Contains(out.String(), "fail windows service install missing") {
+		!strings.Contains(out.String(), "ok windows service available") {
 		t.Fatalf("doctor output = %q", out.String())
 	}
 }
@@ -5124,17 +5181,17 @@ func TestDoctorReportsWindowsServiceNotReachableFromWSL(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "fail windows service health unavailable") ||
-		!strings.Contains(out.String(), "Run gohere from Windows first") {
+	if !strings.Contains(out.String(), "fail windows service") ||
+		!strings.Contains(out.String(), "connection refused") ||
+		!strings.Contains(out.String(), "Run gohere setup from this WSL shell") {
 		t.Fatalf("doctor output = %q", out.String())
 	}
 }
 
-func TestDoctorReportsWindowsTokenMissingFromWSL(t *testing.T) {
+func TestDoctorDoesNotReadWindowsTokenFromWSL(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:         true,
 		windowsBinary: true,
-		tokenErr:      bridge.ErrWindowsTokenNotFound,
 	})
 	defer restore()
 
@@ -5144,8 +5201,8 @@ func TestDoctorReportsWindowsTokenMissingFromWSL(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "fail windows service token missing") ||
-		!strings.Contains(out.String(), "Run gohere from Windows first") {
+	if !strings.Contains(out.String(), "ok windows service available") ||
+		strings.Contains(out.String(), "windows service token") {
 		t.Fatalf("doctor output = %q", out.String())
 	}
 }
@@ -5165,8 +5222,8 @@ func TestDoctorReportsWindowsServiceAuthFailureFromWSL(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "fail windows service auth failed") ||
-		!strings.Contains(out.String(), "gohere service stop") {
+	if !strings.Contains(out.String(), "fail windows service unavailable") ||
+		!strings.Contains(out.String(), "unauthorized") {
 		t.Fatalf("doctor output = %q", out.String())
 	}
 }
@@ -5195,7 +5252,7 @@ func TestDoctorReportsWindowsServiceRouteErrorFromWSL(t *testing.T) {
 	}
 }
 
-func TestDoctorReportsMissingWindowsInstallEvenWhenStaleTokenExists(t *testing.T) {
+func TestDoctorIgnoresStaleProfileTokenWhenCompanionWorks(t *testing.T) {
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:     true,
 		token:     "windows-token",
@@ -5211,7 +5268,7 @@ func TestDoctorReportsMissingWindowsInstallEvenWhenStaleTokenExists(t *testing.T
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "ok environment WSL") ||
-		!strings.Contains(out.String(), "fail windows service install missing") {
+		!strings.Contains(out.String(), "ok windows service available") {
 		t.Fatalf("doctor output = %q", out.String())
 	}
 }
@@ -5516,16 +5573,19 @@ func (routesErrorAdminClient) ProbeTarget(context.Context, string) (bool, error)
 }
 
 type recordingAdminClient struct {
-	mu             sync.Mutex
-	upserted       chan struct{}
-	upsertedClosed bool
-	route          router.Route
-	routes         []router.Route
-	statuses       []router.RouteStatus
-	statusErr      error
-	probeReachable map[string]bool
-	deleted        string
-	deleteErr      error
+	mu                  sync.Mutex
+	upserted            chan struct{}
+	upsertedClosed      bool
+	route               router.Route
+	routes              []router.Route
+	statuses            []router.RouteStatus
+	statusErr           error
+	probeReachable      map[string]bool
+	probeCalls          int
+	probeReachableAfter int
+	probeErr            error
+	deleted             string
+	deleteErr           error
 }
 
 type routeStatusesUnsupportedClient struct {
@@ -5697,6 +5757,13 @@ func (c *recordingAdminClient) DeleteRoute(ctx context.Context, host string) err
 func (c *recordingAdminClient) ProbeTarget(_ context.Context, target string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.probeCalls++
+	if c.probeErr != nil {
+		return false, c.probeErr
+	}
+	if c.probeReachableAfter > 0 {
+		return c.probeCalls >= c.probeReachableAfter, nil
+	}
 	if c.probeReachable != nil {
 		return c.probeReachable[target], nil
 	}
@@ -5748,42 +5815,25 @@ type bridgeStub struct {
 func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 	t.Helper()
 	oldDetectWSL := detectWSLFunc
-	oldWindowsHealth := windowsRouterHealthFunc
-	oldDiscoverToken := discoverWindowsTokenFunc
-	oldWindowsStableBinaryExists := windowsStableBinaryExists
-	oldNewWindowsAdminClient := newWindowsAdminClientFunc
+	oldDetectWSL2 := detectWSL2Func
 	oldCurrentWSLIP := currentWSLIPFunc
 	oldProbeBridge := probeBridgeFunc
 	oldDefaultAdminClient := defaultAdminClientFunc
-	oldStartWindowsService := startWindowsServiceFunc
+	oldNewWindowsCompanionControl := newWindowsCompanionControlFunc
+	oldEnsureWSLRunIdentity := ensureWSLRunIdentityFunc
+	oldCurrentWSLMetadata := currentWSLMetadataFunc
+	oldEnsureWSLPublicTransport := ensureWSLPublicTransportFunc
 	windowsStarted := false
 
 	detectWSLFunc = func() bool {
 		return stub.isWSL
 	}
-	windowsRouterHealthFunc = func(ctx context.Context) error {
+	detectWSL2Func = func() bool { return true }
+	health := func(context.Context) error {
 		if windowsStarted && stub.startWindowsMakesHealthy {
 			return nil
 		}
 		return stub.healthErr
-	}
-	discoverWindowsTokenFunc = func(string) (string, string, error) {
-		if stub.tokenErr != nil {
-			return "", "", stub.tokenErr
-		}
-		if stub.token == "" {
-			return "", "", errors.New("no token")
-		}
-		return stub.token, "/mnt/c/Users/Jessa/.gohere/token", nil
-	}
-	windowsStableBinaryExists = func(string) bool {
-		return stub.windowsBinary
-	}
-	newWindowsAdminClientFunc = func(string) bridgeAdminClient {
-		if stub.admin == nil {
-			return fakeAdminClient{}
-		}
-		return stub.admin
 	}
 	currentWSLIPFunc = func(context.Context) (string, error) {
 		if stub.wslIP == "" {
@@ -5809,7 +5859,7 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 		}
 		return stub.localAdmin, nil
 	}
-	startWindowsServiceFunc = func(context.Context, string) error {
+	ensure := func(context.Context) error {
 		if stub.startWindowsCalls != nil {
 			(*stub.startWindowsCalls)++
 		}
@@ -5819,18 +5869,198 @@ func stubBridgeDetection(t *testing.T, stub bridgeStub) func() {
 		windowsStarted = true
 		return nil
 	}
+	companionAdmin := adminClient(fakeAdminClient{})
+	if stub.admin != nil {
+		companionAdmin = stub.admin
+	}
+	newWindowsCompanionControlFunc = func(context.Context) (windowsCompanionControl, error) {
+		return &testWindowsCompanionControl{
+			admin:     companionAdmin,
+			installed: true,
+			health:    health,
+			ensure:    ensure,
+		}, nil
+	}
+	ensureWSLRunIdentityFunc = func(context.Context, companion.Info, io.Writer) (wslRunIdentity, error) {
+		return wslRunIdentity{
+			OwnerInstance: "test-owner",
+			Distro:        "Ubuntu",
+			LinuxUser:     "alice",
+			RunnerID:      "test-runner",
+		}, nil
+	}
+	currentWSLMetadataFunc = func() (wslIntegrationMetadata, error) {
+		return wslIntegrationMetadata{
+			OwnerInstance: "test-owner",
+			Distro:        "Ubuntu",
+			LinuxUser:     "alice",
+		}, nil
+	}
+	ensureWSLPublicTransportFunc = func(context.Context, companion.Info, string) (wslPublicTransport, error) {
+		return wslTransportDirect, nil
+	}
 
 	return func() {
 		detectWSLFunc = oldDetectWSL
-		windowsRouterHealthFunc = oldWindowsHealth
-		discoverWindowsTokenFunc = oldDiscoverToken
-		windowsStableBinaryExists = oldWindowsStableBinaryExists
-		newWindowsAdminClientFunc = oldNewWindowsAdminClient
+		detectWSL2Func = oldDetectWSL2
 		currentWSLIPFunc = oldCurrentWSLIP
 		probeBridgeFunc = oldProbeBridge
 		defaultAdminClientFunc = oldDefaultAdminClient
-		startWindowsServiceFunc = oldStartWindowsService
+		newWindowsCompanionControlFunc = oldNewWindowsCompanionControl
+		ensureWSLRunIdentityFunc = oldEnsureWSLRunIdentity
+		currentWSLMetadataFunc = oldCurrentWSLMetadata
+		ensureWSLPublicTransportFunc = oldEnsureWSLPublicTransport
 	}
+}
+
+func stubCurrentWSLMetadata(t *testing.T) func() {
+	t.Helper()
+	old := currentWSLMetadataFunc
+	currentWSLMetadataFunc = func() (wslIntegrationMetadata, error) {
+		return wslIntegrationMetadata{
+			OwnerInstance: "test-owner",
+			Distro:        "Ubuntu",
+			LinuxUser:     "alice",
+		}, nil
+	}
+	return func() { currentWSLMetadataFunc = old }
+}
+
+type testWindowsCompanionControl struct {
+	admin     adminClient
+	installed bool
+	health    func(context.Context) error
+	ensure    func(context.Context) error
+}
+
+func (*testWindowsCompanionControl) Executable() string { return `C:\Temp\gohere.exe` }
+
+func (c *testWindowsCompanionControl) Info(ctx context.Context) (companion.Info, error) {
+	routerReady := c.health == nil || c.health(ctx) == nil
+	routerInstanceID := ""
+	if routerReady {
+		routerInstanceID = "test-router"
+	}
+	return companion.Info{
+		CompanionVersion: "test",
+		Platform:         "windows",
+		Architecture:     "amd64",
+		User:             `DESKTOP\Alice`,
+		UserProfile:      `C:\Users\Alice`,
+		StateDir:         `C:\Users\Alice\.gohere`,
+		CAFingerprint:    "test-ca",
+		RouterReady:      routerReady,
+		RouterInstalled:  c.installed,
+		RouterInstanceID: routerInstanceID,
+		Capabilities: []string{
+			"control.bootstrap",
+			"control.ca-certificate",
+			"control.delete-route",
+			"control.doctor",
+			"control.ensure-router",
+			"control.health",
+			"control.info",
+			"control.ready-info",
+			"control.probe-target",
+			"control.route-statuses",
+			"control.routes",
+			"control.upsert-route",
+			"control.uninstall",
+			"control.stop-router",
+		},
+	}, nil
+}
+
+func (c *testWindowsCompanionControl) ReadyInfo(ctx context.Context) (companion.Info, error) {
+	info, err := c.Info(ctx)
+	if err != nil || !info.RouterInstalled || info.RouterReady {
+		return info, err
+	}
+	if err := c.EnsureRouter(ctx); err != nil {
+		return companion.Info{}, err
+	}
+	info, err = c.Info(ctx)
+	if err != nil {
+		return companion.Info{}, err
+	}
+	if !info.RouterReady {
+		if c.health != nil {
+			if err := c.health(ctx); err != nil {
+				return companion.Info{}, err
+			}
+		}
+		return companion.Info{}, errors.New("Windows router is not ready")
+	}
+	return info, nil
+}
+
+func (*testWindowsCompanionControl) Bootstrap(context.Context, bool) (string, error) {
+	return "", nil
+}
+
+func (*testWindowsCompanionControl) CACertificate(context.Context) (string, error) {
+	return "test certificate", nil
+}
+
+func (c *testWindowsCompanionControl) EnsureRouter(ctx context.Context) error {
+	if c.ensure == nil {
+		return nil
+	}
+	return c.ensure(ctx)
+}
+
+func (c *testWindowsCompanionControl) Health(ctx context.Context) error {
+	if c.health != nil {
+		return c.health(ctx)
+	}
+	return c.admin.Health(ctx)
+}
+
+func (c *testWindowsCompanionControl) Routes(ctx context.Context) ([]router.Route, error) {
+	return c.admin.Routes(ctx)
+}
+
+func (c *testWindowsCompanionControl) RouteStatuses(ctx context.Context) ([]router.RouteStatus, error) {
+	statuses, err := adminRouteStatuses(ctx, c.admin)
+	if err != nil {
+		return nil, err
+	}
+	converted := make([]router.RouteStatus, 0, len(statuses))
+	for _, status := range statuses {
+		converted = append(converted, router.RouteStatus{
+			Route:  status.Route,
+			Status: string(status.Status),
+		})
+	}
+	return converted, nil
+}
+
+func (*testWindowsCompanionControl) Doctor(context.Context) (string, error) {
+	return "ok Windows companion\n", nil
+}
+
+func (*testWindowsCompanionControl) Uninstall(context.Context, bool) (string, error) {
+	return "", nil
+}
+
+func (*testWindowsCompanionControl) StopRouter(context.Context) (string, error) {
+	return "gohere service stopped.\n", nil
+}
+
+func (c *testWindowsCompanionControl) UpsertRoute(ctx context.Context, route router.Route) error {
+	return c.admin.UpsertRoute(ctx, route)
+}
+
+func (c *testWindowsCompanionControl) DeleteRoute(ctx context.Context, host string) error {
+	return c.admin.DeleteRoute(ctx, host)
+}
+
+func (c *testWindowsCompanionControl) ProbeTarget(ctx context.Context, target string) (bool, error) {
+	probe, ok := c.admin.(bridgeProbeClient)
+	if !ok {
+		return false, errors.New("test companion does not support target probes")
+	}
+	return probe.ProbeTarget(ctx, target)
 }
 
 func stubLocalhostHTTPStatus(t *testing.T, status LocalhostHTTPStatus) func() {
@@ -6083,38 +6313,10 @@ func TestAppCommandHelper(t *testing.T) {
 	case "print-port-sleep":
 		printAppHelperLocalURL()
 		time.Sleep(10 * time.Second)
-	case "wslpath":
-		if os.Getenv("GOHERE_APP_HELPER_FAIL_WSLPATH") == "1" {
-			fmt.Fprintln(os.Stderr, "wslpath exploded")
-			os.Exit(1)
-		}
-		fmt.Fprintln(os.Stdout, `C:\Users\Jessa\.gohere\bin\gohere.exe`)
-	case "powershell.exe":
-		if os.Getenv("GOHERE_APP_HELPER_FAIL_POWERSHELL") == "1" {
-			fmt.Fprintln(os.Stderr, "powershell exploded")
-			os.Exit(1)
-		}
-		if os.Getenv("GOHERE_APP_HELPER_POWERSHELL_SUCCESS") == "1" {
-			return
-		}
-		time.Sleep(10 * time.Second)
 	default:
 		os.Exit(2)
 	}
 	os.Exit(0)
-}
-
-func appHelperExecCommand(extraEnv ...string) func(context.Context, string, ...string) *exec.Cmd {
-	return func(ctx context.Context, command string, args ...string) *exec.Cmd {
-		helperArgs := []string{"-test.run=TestAppCommandHelper", "--", command}
-		helperArgs = append(helperArgs, args...)
-		cmd := exec.CommandContext(ctx, os.Args[0], helperArgs...)
-		cmd.Env = append(os.Environ(), "GOHERE_APP_HELPER_PROCESS=1")
-		for _, env := range extraEnv {
-			cmd.Env = append(cmd.Env, env+"=1")
-		}
-		return cmd
-	}
 }
 
 func printAppHelperLocalURL() {

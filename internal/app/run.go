@@ -27,6 +27,7 @@ import (
 	localcert "github.com/roie/gohere/internal/cert"
 	"github.com/roie/gohere/internal/certtrust"
 	"github.com/roie/gohere/internal/cli"
+	"github.com/roie/gohere/internal/companion"
 	appconfig "github.com/roie/gohere/internal/config"
 	"github.com/roie/gohere/internal/lifecycle"
 	"github.com/roie/gohere/internal/opener"
@@ -39,10 +40,8 @@ import (
 )
 
 var (
-	promptInput = io.Reader(os.Stdin)
-	setupFunc   = func(ctx context.Context) error {
-		return setupForGOOS(ctx, runtime.GOOS)
-	}
+	promptInput                                          = io.Reader(os.Stdin)
+	setupFunc                                            = setupCurrentEnvironment
 	setupLinuxFunc                                       = setup.Linux
 	setupWindowsFunc                                     = setup.Windows
 	setupDarwinFunc                                      = setup.Darwin
@@ -52,15 +51,10 @@ var (
 	}
 	startRunnerFunc             = runner.Start
 	detectWSLFunc               = bridge.DetectWSL
+	detectWSL2Func              = bridge.DetectWSL2
 	routerHealthFunc            = func(ctx context.Context) error { return admin.NewClient("http://127.0.0.1:39399", "").Health(ctx) }
-	windowsRouterHealthFunc     = func(ctx context.Context) error { return admin.NewClient(windowsAdminBaseURL, "").Health(ctx) }
-	discoverWindowsTokenFunc    = bridge.DiscoverWindowsToken
-	windowsStableBinaryExists   = bridge.WindowsStableBinaryExists
-	startWindowsServiceFunc     = startWindowsService
 	serviceStopFunc             = func(ctx context.Context) error { return ServiceStopWithConfig(ctx, io.Discard, ServiceStopConfig{}) }
 	execCommandContext          = exec.CommandContext
-	windowsServiceStartTimeout  = routerStartTimeout
-	newWindowsAdminClientFunc   = func(token string) bridgeAdminClient { return admin.NewClient(windowsAdminBaseURL, token) }
 	windowsHTTPSCATrustedFunc   = windowsHTTPSCATrusted
 	repairWindowsHTTPSTrustFunc = repairWindowsHTTPSTrust
 	currentWSLIPFunc            = bridge.CurrentWSLIP
@@ -76,6 +70,11 @@ var (
 
 const routerStartTimeout = 10 * time.Second
 const AutoURLScheme = "auto"
+
+var (
+	routeLeaseDuration = 90 * time.Second
+	routeLeaseInterval = 30 * time.Second
+)
 
 const (
 	doctorLocalhostProbeURL     = "http://gohere-doctor.localhost/"
@@ -102,18 +101,19 @@ type bridgeAdminClient interface {
 	bridgeProbeClient
 }
 
-const (
-	windowsAdminBaseURL = "http://127.0.0.1:39399"
-	windowsUsersRoot    = "/mnt/c/Users"
-)
-
 type runRouter struct {
 	Client          adminClient
 	RouteTargetHost string
 	ChildHost       string
 	RouteSource     string
 	OwnerEnv        string
+	OwnerInstance   string
+	Distro          string
+	LinuxUser       string
+	RunnerID        string
+	PublicTransport wslPublicTransport
 	RouterLabel     string
+	PublicURLScheme string
 	Bridge          bool
 }
 
@@ -133,12 +133,23 @@ type RunPlan struct {
 	RouteTargetHost     string
 	RouteSource         string
 	OwnerEnv            string
+	OwnerInstance       string
+	Distro              string
+	LinuxUser           string
+	RunnerID            string
+	ListenHost          string
 	RouterLabel         string
 	StaticBindHost      string
 	ManagedPort         bool
 	Mode                string
 	URLScheme           string
+	AuthorityURLScheme  string
 }
+
+var (
+	wslTargetProbeTimeout  = 5 * time.Second
+	wslTargetProbeInterval = 100 * time.Millisecond
+)
 
 func PrepareRun(cmd cli.Command, cwd string) (RunPlan, error) {
 	return prepareRunWithHost(cmd, cwd, "127.0.0.1")
@@ -883,6 +894,10 @@ func reusableExistingRoute(plan RunPlan, statuses []lifecycle.RouteStatus) (rout
 		if !strings.EqualFold(status.Route.Host, plan.Host) {
 			continue
 		}
+		if status.Route.OwnerEnv == "wsl" &&
+			(status.Route.LeaseExpiresAt.IsZero() || router.RouteLeaseExpired(status.Route, time.Now())) {
+			continue
+		}
 		if lifecycle.RouteMatchesAnyCWD(status.Route, absCWDs) {
 			return status.Route, true
 		}
@@ -1050,8 +1065,29 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		Source:          plan.RouteSource,
 		OwnerCWD:        plan.CWD,
 		OwnerEnv:        ownerEnv,
+		OwnerInstance:   plan.OwnerInstance,
+		Distro:          plan.Distro,
+		LinuxUser:       plan.LinuxUser,
+		RunnerID:        plan.RunnerID,
+		ListenTarget:    routeTarget(plan.ListenHost, port),
 		StartedAt:       time.Now().UTC(),
 		ProcessIdentity: processIdentity,
+	}
+	if ownerEnv == "wsl" && route.RunnerID != "" {
+		route.LeaseExpiresAt = time.Now().UTC().Add(routeLeaseDuration)
+	}
+	if ownerEnv == "wsl" {
+		probeClient, ok := adminClient.(bridgeProbeClient)
+		if !ok {
+			return nil, errors.New("Windows authority does not support WSL target probes")
+		}
+		reachable, err := waitForWSLTarget(ctx, probeClient, route.Target)
+		if err != nil {
+			return nil, fmt.Errorf("Windows could not probe WSL target %s: %w", route.Target, err)
+		}
+		if !reachable {
+			return nil, fmt.Errorf("Windows cannot reach WSL target %s; the dev server may not support the selected bind address", route.Target)
+		}
 	}
 	if err := adminClient.UpsertRoute(ctx, route); err != nil {
 		if errors.Is(err, admin.ErrUnauthorized) {
@@ -1059,6 +1095,7 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		}
 		return nil, err
 	}
+	stopLease := startRouteLease(ctx, adminClient, route, stderr)
 
 	publicURL := publicRouteURLForScheme(plan.URLScheme, route.Host, plan.URLPath)
 	fmt.Fprint(stdout, runSuccessOutputForScheme(cmd, plan.URLScheme, route.Host, plan.URLPath))
@@ -1080,15 +1117,98 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		fmt.Fprintf(stdout, "service: %s\n", routerLabel)
 	}
 	return func() {
+		stopLease()
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		if err := adminClient.DeleteRoute(cleanupCtx, route.Host); err != nil && stderr != nil {
+		if err := deleteOwnedRouteRegistration(cleanupCtx, adminClient, route); err != nil && stderr != nil {
 			if routeCleanupTimedOut(err) && !routeStillRegistered(adminClient, route.Host) {
 				return
 			}
 			fmt.Fprintln(stderr, routeCleanupWarning(route.Host, err))
 		}
 	}, nil
+}
+
+func waitForWSLTarget(ctx context.Context, client bridgeProbeClient, target string) (bool, error) {
+	deadline := time.Now().Add(wslTargetProbeTimeout)
+	for {
+		reachable, err := client.ProbeTarget(ctx, target)
+		if err != nil || reachable {
+			return reachable, err
+		}
+		if !time.Now().Before(deadline) {
+			return false, nil
+		}
+		timer := time.NewTimer(wslTargetProbeInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func deleteOwnedRouteRegistration(ctx context.Context, client adminClient, expected router.Route) error {
+	if expected.RunnerID != "" {
+		routes, err := client.Routes(ctx)
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, current := range routes {
+			if !strings.EqualFold(current.Host, expected.Host) {
+				continue
+			}
+			found = true
+			if current.OwnerInstance != expected.OwnerInstance || current.RunnerID != expected.RunnerID {
+				return nil
+			}
+			break
+		}
+		if !found {
+			return nil
+		}
+	}
+	return client.DeleteRoute(ctx, expected.Host)
+}
+
+func startRouteLease(ctx context.Context, client adminClient, route router.Route, stderr io.Writer) func() {
+	if route.OwnerEnv != "wsl" || route.RunnerID == "" {
+		return func() {}
+	}
+	leaseCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(routeLeaseInterval)
+		defer ticker.Stop()
+		warned := false
+		for {
+			select {
+			case <-leaseCtx.Done():
+				return
+			case <-ticker.C:
+				route.LeaseExpiresAt = time.Now().UTC().Add(routeLeaseDuration)
+				renewCtx, renewCancel := context.WithTimeout(leaseCtx, 5*time.Second)
+				err := client.UpsertRoute(renewCtx, route)
+				renewCancel()
+				if err != nil && !warned && stderr != nil {
+					fmt.Fprintf(stderr, "gohere could not renew the Windows route lease for %s: %v\n", route.Host, err)
+					warned = true
+				} else if err == nil {
+					warned = false
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
 }
 
 func reuseReadySingleRoute(ctx context.Context, client adminClient, cmd cli.Command, plan RunPlan, stdout io.Writer) (bool, error) {
@@ -1213,37 +1333,37 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer, cmd cli.Command) (r
 		return local()
 	}
 
-	token, tokenPath, err := discoverWindowsTokenFunc(windowsUsersRoot)
+	requiredCapabilities := []string{
+		"control.bootstrap",
+		"control.ca-certificate",
+		"control.delete-route",
+		"control.probe-target",
+		"control.routes",
+		"control.upsert-route",
+	}
+	opened, err := openWindowsCompanion(ctx, requiredCapabilities...)
 	if err != nil {
-		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
-			if !windowsStableBinaryExists(windowsUsersRoot) {
-				return local()
-			}
-			if healthErr := windowsRouterHealthFunc(ctx); healthErr != nil {
-				return local()
-			}
-		}
-		return runRouter{}, windowsTokenError(err)
+		return runRouter{}, err
 	}
-	if !windowsStableBinaryExists(windowsUsersRoot) {
-		return local()
-	}
-	if err := windowsRouterHealthFunc(ctx); err != nil {
-		if !windowsStableBinaryExists(windowsUsersRoot) {
-			return local()
-		}
-		if err := startWindowsServiceFunc(ctx, tokenPath); err != nil {
-			return runRouter{}, windowsRouterUnavailableError(err)
-		}
-		if err := waitForRouterHealth(ctx, windowsRouterHealthFunc, routerStartTimeout); err != nil {
-			return runRouter{}, windowsRouterUnavailableError(err)
+	if !opened.Info.RouterInstalled || strings.TrimSpace(opened.Info.CAFingerprint) == "" {
+		if err := promptAndSetupWSLAuthority(ctx, stderr); err != nil {
+			return runRouter{}, err
 		}
 	}
-	client := newWindowsAdminClientFunc(token)
-	if _, err := client.Routes(ctx); err != nil {
-		if errors.Is(err, admin.ErrUnauthorized) {
-			return runRouter{}, windowsTokenError(err)
-		}
+	resolved, err := resolveWindowsCompanion(ctx, requiredCapabilities...)
+	if err != nil {
+		return runRouter{}, err
+	}
+	identity, err := ensureWSLRunIdentityFunc(ctx, resolved.Info, stderr)
+	if err != nil {
+		return runRouter{}, err
+	}
+	publicTransport, err := ensureWSLPublicTransportFunc(ctx, resolved.Info, resolved.Executable)
+	if err != nil {
+		return runRouter{}, err
+	}
+	client := resolved.Control
+	if err := ensureSingleActiveWSLOwner(ctx, client, identity); err != nil {
 		return runRouter{}, err
 	}
 	wslIP, err := currentWSLIPFunc(ctx)
@@ -1260,9 +1380,42 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer, cmd cli.Command) (r
 		ChildHost:       bridgeChildHost(targetHost),
 		RouteSource:     "wsl",
 		OwnerEnv:        "wsl",
+		OwnerInstance:   identity.OwnerInstance,
+		Distro:          identity.Distro,
+		LinuxUser:       identity.LinuxUser,
+		RunnerID:        identity.RunnerID,
+		PublicTransport: publicTransport,
 		RouterLabel:     "Windows",
+		PublicURLScheme: companionPublicURLScheme(resolved.Info),
 		Bridge:          true,
 	}, nil
+}
+
+func companionPublicURLScheme(info companion.Info) string {
+	for _, listener := range info.Listeners {
+		if strings.EqualFold(listener.Name, "https") {
+			return "https"
+		}
+	}
+	return "http"
+}
+
+func ensureSingleActiveWSLOwner(ctx context.Context, client adminClient, identity wslRunIdentity) error {
+	routes, err := client.Routes(ctx)
+	if err != nil {
+		return err
+	}
+	for _, route := range routes {
+		if route.OwnerEnv != "wsl" || route.OwnerInstance == "" || route.OwnerInstance == identity.OwnerInstance {
+			continue
+		}
+		owner := route.OwnerInstance
+		if route.Distro != "" || route.LinuxUser != "" {
+			owner = strings.Trim(route.Distro+"/"+route.LinuxUser, "/")
+		}
+		return fmt.Errorf("another WSL owner (%s) is already using the Windows gohere authority; concurrent WSL distributions or Linux users are not supported in this release", owner)
+	}
+	return nil
 }
 
 func bridgeTargetHost(ctx context.Context, client bridgeProbeClient, wslIP string) (string, error) {
@@ -1304,8 +1457,26 @@ func applyRunRouter(plan *RunPlan, rr runRouter) {
 	if rr.OwnerEnv != "" {
 		plan.OwnerEnv = rr.OwnerEnv
 	}
+	if rr.OwnerInstance != "" {
+		plan.OwnerInstance = rr.OwnerInstance
+	}
+	if rr.Distro != "" {
+		plan.Distro = rr.Distro
+	}
+	if rr.LinuxUser != "" {
+		plan.LinuxUser = rr.LinuxUser
+	}
+	if rr.RunnerID != "" {
+		plan.RunnerID = rr.RunnerID
+	}
+	if rr.ChildHost != "" {
+		plan.ListenHost = rr.ChildHost
+	}
 	if rr.RouterLabel != "" {
 		plan.RouterLabel = rr.RouterLabel
+	}
+	if rr.PublicURLScheme != "" {
+		plan.AuthorityURLScheme = rr.PublicURLScheme
 	}
 	if rr.ChildHost != "" && plan.Static {
 		plan.StaticBindHost = rr.ChildHost
@@ -1313,6 +1484,9 @@ func applyRunRouter(plan *RunPlan, rr runRouter) {
 	if rr.ChildHost != "" && !plan.Static {
 		plan.Env = runner.ChildEnvForHost(plan.Env, plan.Port, rr.ChildHost)
 		plan.Command = withHost(plan.Command, rr.ChildHost)
+	}
+	if rr.OwnerEnv == "wsl" {
+		plan.Env = applyWSLTrustEnvironment(plan.Env, router.DefaultStateDir())
 	}
 }
 
@@ -1375,38 +1549,6 @@ func routeTarget(host string, port int) string {
 	return "http://" + net.JoinHostPort(host, fmt.Sprint(port))
 }
 
-func windowsTokenError(err error) error {
-	msg := "Windows gohere service is available, but WSL could not use it.\n\nWhen Windows and WSL are both installed, WSL projects should use the Windows service.\n\nRun:\n  gohere doctor"
-	if err != nil {
-		return fmt.Errorf("%s\n\nDetails: %w", msg, err)
-	}
-	return errors.New(msg)
-}
-
-func startWindowsService(ctx context.Context, tokenPath string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(ctx, windowsServiceStartTimeout)
-	defer cancel()
-
-	stableBinary := filepath.Join(filepath.Dir(tokenPath), "bin", "gohere.exe")
-	if !exists(stableBinary) {
-		return fmt.Errorf("%s: %w", stableBinary, os.ErrNotExist)
-	}
-	output, err := execCommandContext(ctx, "wslpath", "-w", stableBinary).CombinedOutput()
-	if err != nil {
-		return commandOutputError("wslpath", output, err)
-	}
-	windowsBinary := strings.TrimSpace(string(output))
-	command := "Start-Process -WindowStyle Hidden -FilePath " + powerShellQuote(windowsBinary) + " -ArgumentList @('service','run')"
-	output, err = execCommandContext(ctx, "powershell.exe", "-NoProfile", "-Command", command).CombinedOutput()
-	if err != nil {
-		return commandOutputError("powershell.exe", output, err)
-	}
-	return nil
-}
-
 func commandOutputError(command string, output []byte, err error) error {
 	detail := strings.TrimSpace(string(output))
 	if detail == "" {
@@ -1415,20 +1557,8 @@ func commandOutputError(command string, output []byte, err error) error {
 	return fmt.Errorf("%s failed: %w: %s", command, err, detail)
 }
 
-func powerShellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
-}
-
-func windowsRouterUnavailableError(cause error) error {
-	msg := "Windows gohere is installed, but WSL could not start its service.\n\nRun this from Windows:\n  gohere\n\nThen run gohere again from WSL."
-	if cause != nil {
-		return fmt.Errorf("%s\n\nDetails: %w", msg, cause)
-	}
-	return errors.New(msg)
-}
-
 func windowsRouterCannotReachWSLError(cause error) error {
-	msg := "Windows gohere service is running, but cannot reach WSL dev servers.\n\nThis can happen if WSL networking is not mirrored, Windows Firewall blocks the probe, or WSL networking is still starting.\n\nTry enabling mirrored networking in %USERPROFILE%\\.wslconfig:\n  [wsl2]\n  networkingMode=mirrored\nThen run:\n  wsl --shutdown"
+	msg := "The Windows gohere authority could not reach the WSL dev-server listener.\n\nGohere tried Windows-visible loopback and the current WSL2 address. The dev server may not support the required bind address.\n\nRun:\n  gohere doctor"
 	if cause != nil {
 		return fmt.Errorf("%s\n\nDetails: %w", msg, cause)
 	}
@@ -1436,7 +1566,7 @@ func windowsRouterCannotReachWSLError(cause error) error {
 }
 
 func staleRouterTokenError() error {
-	return errors.New("A gohere service is already using .localhost URLs, but this install cannot control it.\n\nWhen using Windows and WSL together, the Windows service should own .localhost URLs.\nWSL projects will register with the Windows service.\n\nIn the other environment, run:\n  gohere service stop\n\nThen run gohere again.")
+	return errors.New("The gohere router rejected its local control credential.\n\nRun from this shell:\n  gohere service stop\n  gohere setup")
 }
 
 func localRouterControlError(goos, stateDir string) error {
@@ -1444,7 +1574,7 @@ func localRouterControlError(goos, stateDir string) error {
 		stableBinary := filepath.Join(stateDir, "bin", stableBinaryName(goos))
 		tokenPath := filepath.Join(stateDir, "token")
 		if !exists(stableBinary) || !exists(tokenPath) {
-			return errors.New("A WSL gohere service is using .localhost URLs.\n\nWhen using Windows and WSL together, the Windows service should own .localhost URLs.\nWSL projects will register with the Windows service.\n\nIn WSL, run:\n  gohere service stop\n\nThen run gohere again from Windows.")
+			return errors.New("A non-Windows process is occupying gohere's .localhost service ports.\n\nRun:\n  gohere doctor\n\nGohere will not start a second router or take over the existing process.")
 		}
 	}
 	return staleRouterTokenError()
@@ -1498,11 +1628,11 @@ func publicRouteURLForScheme(scheme, host, urlPath string) string {
 
 func applyPublicURLScheme(plan *RunPlan, cmd cli.Command) {
 	if plan.URLScheme == "" {
-		plan.URLScheme = publicURLScheme(cmd)
+		plan.URLScheme = publicURLScheme(cmd, plan.AuthorityURLScheme)
 	}
 }
 
-func publicURLScheme(cmd cli.Command) string {
+func publicURLScheme(cmd cli.Command, authorityScheme string) string {
 	if cmd.HTTP {
 		return "http"
 	}
@@ -1510,6 +1640,9 @@ func publicURLScheme(cmd cli.Command) string {
 		return "https"
 	}
 	if cmd.URLScheme == AutoURLScheme {
+		if authorityScheme != "" {
+			return normalizedURLScheme(authorityScheme)
+		}
 		cfg, err := appconfig.Load(router.DefaultStateDir())
 		if err == nil && cfg.HTTPS {
 			return "https"
@@ -2009,20 +2142,26 @@ type ListOptions struct {
 }
 
 type listRoute struct {
-	Host        string `json:"host"`
-	Target      string `json:"target"`
-	Status      string `json:"status"`
-	PID         int    `json:"pid"`
-	CWD         string `json:"cwd"`
-	Name        string `json:"name,omitempty"`
-	Mode        string `json:"mode"`
-	Source      string `json:"source"`
-	OwnerEnv    string `json:"ownerEnv"`
-	ProjectRoot string `json:"projectRoot,omitempty"`
-	ProjectName string `json:"projectName,omitempty"`
-	StartedAt   string `json:"startedAt,omitempty"`
-	CanStop     bool   `json:"canStop"`
-	StopReason  string `json:"stopReason,omitempty"`
+	Host           string `json:"host"`
+	Target         string `json:"target"`
+	Status         string `json:"status"`
+	PID            int    `json:"pid"`
+	CWD            string `json:"cwd"`
+	Name           string `json:"name,omitempty"`
+	Mode           string `json:"mode"`
+	Source         string `json:"source"`
+	OwnerEnv       string `json:"ownerEnv"`
+	OwnerInstance  string `json:"ownerInstance,omitempty"`
+	Distro         string `json:"distro,omitempty"`
+	LinuxUser      string `json:"linuxUser,omitempty"`
+	RunnerID       string `json:"runnerId,omitempty"`
+	ListenTarget   string `json:"listenTarget,omitempty"`
+	LeaseExpiresAt string `json:"leaseExpiresAt,omitempty"`
+	ProjectRoot    string `json:"projectRoot,omitempty"`
+	ProjectName    string `json:"projectName,omitempty"`
+	StartedAt      string `json:"startedAt,omitempty"`
+	CanStop        bool   `json:"canStop"`
+	StopReason     string `json:"stopReason,omitempty"`
 }
 
 func List(ctx context.Context, stdout io.Writer, verbose bool) error {
@@ -2030,6 +2169,17 @@ func List(ctx context.Context, stdout io.Writer, verbose bool) error {
 }
 
 func ListWithOptions(ctx context.Context, stdout io.Writer, opts ListOptions) error {
+	if detectWSLFunc() {
+		resolved, err := resolveWindowsCompanion(ctx, "control.route-statuses")
+		if err != nil {
+			return err
+		}
+		statuses, err := resolved.Control.RouteStatuses(ctx)
+		if err != nil {
+			return windowsCompanionUnavailableError(err)
+		}
+		return printRouteStatuses(stdout, convertAdminStatuses(statuses), opts)
+	}
 	manager, err := resolveRouteManager(ctx)
 	if err != nil {
 		return err
@@ -2089,21 +2239,31 @@ func printRouteStatusesJSON(stdout io.Writer, statuses []lifecycle.RouteStatus) 
 	for _, status := range statuses {
 		canStop, stopReason := lifecycle.RouteStopInfo(status)
 		route := status.Route
+		if (route.OwnerEnv != "" || route.Source == "wsl") && !routeOwnedByCurrentEnv(route) {
+			canStop = false
+			stopReason = foreignRouteStopReason(route)
+		}
 		routes = append(routes, listRoute{
-			Host:        route.Host,
-			Target:      route.Target,
-			Status:      string(status.Status),
-			PID:         route.PID,
-			CWD:         route.CWD,
-			Name:        route.Name,
-			Mode:        lifecycle.RouteMode(route),
-			Source:      lifecycle.RouteSource(route),
-			OwnerEnv:    lifecycle.RouteOwner(route),
-			ProjectRoot: route.ProjectRoot,
-			ProjectName: route.ProjectName,
-			StartedAt:   startedAtJSON(route),
-			CanStop:     canStop,
-			StopReason:  stopReason,
+			Host:           route.Host,
+			Target:         route.Target,
+			Status:         string(status.Status),
+			PID:            route.PID,
+			CWD:            route.CWD,
+			Name:           route.Name,
+			Mode:           lifecycle.RouteMode(route),
+			Source:         lifecycle.RouteSource(route),
+			OwnerEnv:       lifecycle.RouteOwner(route),
+			OwnerInstance:  route.OwnerInstance,
+			Distro:         route.Distro,
+			LinuxUser:      route.LinuxUser,
+			RunnerID:       route.RunnerID,
+			ListenTarget:   route.ListenTarget,
+			LeaseExpiresAt: timeJSON(route.LeaseExpiresAt),
+			ProjectRoot:    route.ProjectRoot,
+			ProjectName:    route.ProjectName,
+			StartedAt:      startedAtJSON(route),
+			CanStop:        canStop,
+			StopReason:     stopReason,
 		})
 	}
 	encoder := json.NewEncoder(stdout)
@@ -2112,10 +2272,14 @@ func printRouteStatusesJSON(stdout io.Writer, statuses []lifecycle.RouteStatus) 
 }
 
 func startedAtJSON(route router.Route) string {
-	if route.StartedAt.IsZero() {
+	return timeJSON(route.StartedAt)
+}
+
+func timeJSON(value time.Time) string {
+	if value.IsZero() {
 		return ""
 	}
-	return route.StartedAt.UTC().Format(time.RFC3339)
+	return value.UTC().Format(time.RFC3339)
 }
 
 func Prune(ctx context.Context, stdout io.Writer) error {
@@ -2267,40 +2431,16 @@ func resolveRouteManager(ctx context.Context) (routeManager, error) {
 	if !detectWSLFunc() {
 		return local(), nil
 	}
-	token, tokenPath, err := discoverWindowsTokenFunc(windowsUsersRoot)
+	resolved, err := resolveWindowsCompanion(
+		ctx,
+		"control.delete-route",
+		"control.route-statuses",
+		"control.routes",
+	)
 	if err != nil {
-		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
-			if !windowsStableBinaryExists(windowsUsersRoot) {
-				return local(), nil
-			}
-			if healthErr := windowsRouterHealthFunc(ctx); healthErr != nil {
-				return local(), nil
-			}
-		}
-		return routeManager{}, windowsTokenError(err)
-	}
-	if !windowsStableBinaryExists(windowsUsersRoot) {
-		return local(), nil
-	}
-	if err := windowsRouterHealthFunc(ctx); err != nil {
-		if !windowsStableBinaryExists(windowsUsersRoot) {
-			return local(), nil
-		}
-		if err := startWindowsServiceFunc(ctx, tokenPath); err != nil {
-			return routeManager{}, windowsRouterUnavailableError(err)
-		}
-		if err := waitForRouterHealth(ctx, windowsRouterHealthFunc, routerStartTimeout); err != nil {
-			return routeManager{}, windowsRouterUnavailableError(err)
-		}
-	}
-	client := newWindowsAdminClientFunc(token)
-	if _, err := client.Routes(ctx); err != nil {
-		if errors.Is(err, admin.ErrUnauthorized) {
-			return routeManager{}, windowsTokenError(err)
-		}
 		return routeManager{}, err
 	}
-	return routeManager{Client: client, RouterReady: true}, nil
+	return routeManager{Client: resolved.Control, RouterReady: true}, nil
 }
 
 func resolveStopTarget(routes []router.Route, target string) ([]router.Route, error) {
@@ -2425,6 +2565,9 @@ func pruneAdminRoutes(ctx context.Context, client adminClient) (int, error) {
 		if status.Status != lifecycle.RouteStatusDead {
 			continue
 		}
+		if status.Route.OwnerEnv == "wsl" && !router.RouteLeaseExpired(status.Route, time.Now()) {
+			continue
+		}
 		if err := client.DeleteRoute(ctx, status.Route.Host); err != nil {
 			if removed > 0 {
 				return removed, fmt.Errorf("removed %d dead route%s before failing to delete %s: %w", removed, pluralS(removed), status.Route.Host, err)
@@ -2491,10 +2634,22 @@ func routeOwnedByCurrentEnv(route router.Route) bool {
 	if owner == "" && route.Source == "wsl" {
 		owner = "wsl"
 	}
-	if owner != "" {
-		return owner == runOwnerEnv()
+	if owner == "" || owner != runOwnerEnv() {
+		return false
 	}
-	return false
+	if owner != "wsl" {
+		return true
+	}
+	if route.OwnerInstance == "" || route.Distro == "" || route.LinuxUser == "" {
+		return false
+	}
+	metadata, err := currentWSLMetadataFunc()
+	if err != nil {
+		return false
+	}
+	return route.OwnerInstance == metadata.OwnerInstance &&
+		route.Distro == metadata.Distro &&
+		route.LinuxUser == metadata.LinuxUser
 }
 
 func fallbackOwnedRouteStatus(route router.Route) lifecycle.RouteStatusKind {
@@ -2637,8 +2792,8 @@ const (
 )
 
 func stopAction(route router.Route) (routeStopAction, string) {
-	if route.OwnerEnv != "" && route.OwnerEnv != runOwnerEnv() {
-		return "", "route belongs to another environment."
+	if (route.OwnerEnv != "" || route.Source == "wsl") && !routeOwnedByCurrentEnv(route) {
+		return "", foreignRouteStopReason(route)
 	}
 	if !lifecycle.PIDAlive(route.PID) || lifecycle.RouteStatuses([]router.Route{route})[0].Status == lifecycle.RouteStatusDead {
 		return stopActionDelete, ""
@@ -2647,6 +2802,17 @@ func stopAction(route router.Route) (routeStopAction, string) {
 		return stopActionTerminate, ""
 	}
 	return "", "could not verify the original gohere process."
+}
+
+func foreignRouteStopReason(route router.Route) string {
+	if route.OwnerEnv == "wsl" || route.Source == "wsl" {
+		owner := strings.Trim(route.Distro+"/"+route.LinuxUser, "/")
+		if owner == "" {
+			owner = "another WSL owner"
+		}
+		return fmt.Sprintf("route belongs to %s; run gohere stop in that WSL owner.", owner)
+	}
+	return "route belongs to another environment."
 }
 
 func stopAdminCurrent(ctx context.Context, client adminClient, cwd string) (string, bool, string, error) {
@@ -2671,7 +2837,7 @@ func stopAdminCWDs(ctx context.Context, client adminClient, cwds []string) (life
 		if !lifecycle.RouteMatchesAnyCWD(route, absCWDs) {
 			continue
 		}
-		if route.OwnerEnv != "" && route.OwnerEnv != runOwnerEnv() {
+		if (route.OwnerEnv != "" || route.Source == "wsl") && !routeOwnedByCurrentEnv(route) {
 			continue
 		}
 		result.MatchedHost = route.Host
@@ -2734,6 +2900,34 @@ func printStopResults(stdout io.Writer, result lifecycle.StopResult) {
 }
 
 func Doctor(ctx context.Context, stdout io.Writer) error {
+	if detectWSLFunc() {
+		resolved, err := resolveWindowsCompanion(ctx, "control.doctor")
+		if err != nil {
+			return err
+		}
+		output, err := resolved.Control.Doctor(ctx)
+		if err != nil {
+			return windowsCompanionUnavailableError(err)
+		}
+		fmt.Fprintln(stdout, "ok environment WSL")
+		fmt.Fprintf(stdout, "ok router authority Windows companion %s\n", resolved.Info.CompanionVersion)
+		fmt.Fprintf(stdout, "ok companion protocol %d\n", companion.ProtocolVersion)
+		fmt.Fprintf(stdout, "ok router instance %s\n", resolved.Info.RouterInstanceID)
+		transport, detail := inspectWSLPublicTransport(ctx, resolved.Info)
+		if transport != "" {
+			fmt.Fprintf(stdout, "ok public transport %s\n", transport)
+		} else {
+			fmt.Fprintf(stdout, "fail public transport unavailable: %s\n", detail)
+		}
+		if metadata, metadataErr := currentWSLMetadataFunc(); metadataErr == nil &&
+			strings.EqualFold(metadata.CAFingerprint, resolved.Info.CAFingerprint) {
+			fmt.Fprintf(stdout, "ok WSL CA fingerprint %s\n", metadata.CAFingerprint)
+		} else if resolved.Info.CAFingerprint != "" {
+			fmt.Fprintf(stdout, "fail WSL CA fingerprint does not match Windows %s\n", resolved.Info.CAFingerprint)
+		}
+		fmt.Fprint(stdout, output)
+		return nil
+	}
 	stateDir := router.DefaultStateDir()
 	client, err := defaultAdminClientFunc()
 	if err != nil {
@@ -2914,18 +3108,10 @@ func httpsDoctorChecks(ctx context.Context, stateDir string) []lifecycle.DoctorC
 }
 
 func wslWindowsServiceAvailable(ctx context.Context) bool {
-	if !detectWSLFunc() || !windowsStableBinaryExists(windowsUsersRoot) {
+	if !detectWSLFunc() {
 		return false
 	}
-	if err := windowsRouterHealthFunc(ctx); err != nil {
-		return false
-	}
-	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
-	if err != nil {
-		return false
-	}
-	client := newWindowsAdminClientFunc(token)
-	_, err = client.Routes(ctx)
+	_, err := resolveWindowsCompanion(ctx, "control.routes")
 	return err == nil
 }
 
@@ -2950,41 +3136,24 @@ func bridgeDoctorChecks(ctx context.Context) []lifecycle.DoctorCheck {
 		return nil
 	}
 	checks := []lifecycle.DoctorCheck{{Name: "environment", OK: true, Detail: "WSL"}}
-	if !windowsStableBinaryExists(windowsUsersRoot) {
-		return append(checks, lifecycle.DoctorCheck{
-			Name:   "windows service install",
-			OK:     false,
-			Detail: "missing",
-			Hint:   "Run gohere from Windows first so WSL can use the Windows service.",
-		})
-	}
-	if err := windowsRouterHealthFunc(ctx); err != nil {
-		return append(checks, lifecycle.DoctorCheck{
-			Name:   "windows service health",
-			OK:     false,
-			Detail: "unavailable",
-			Hint:   "Run gohere from Windows first so WSL can use the Windows service.",
-		})
-	}
-	token, _, err := discoverWindowsTokenFunc(windowsUsersRoot)
+	opened, err := openWindowsCompanion(ctx, "control.routes")
 	if err != nil {
-		detail := "unavailable"
-		if errors.Is(err, bridge.ErrWindowsTokenNotFound) {
-			detail = "missing"
-		}
 		return append(checks, lifecycle.DoctorCheck{
-			Name:   "windows service token",
+			Name:   "windows authority",
 			OK:     false,
-			Detail: detail,
-			Hint:   "Run gohere from Windows first so WSL can use the Windows service.",
+			Detail: compactDoctorDetail(err.Error()),
+			Hint:   "Run gohere setup from this WSL shell.",
 		})
 	}
-	client := newWindowsAdminClientFunc(token)
-	if _, err := client.Routes(ctx); err != nil {
-		if errors.Is(err, admin.ErrUnauthorized) {
-			return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: false, Detail: "auth failed", Hint: "Try: gohere service stop in the side where the old service is running."})
-		}
-		return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: false, Detail: "unavailable: " + err.Error(), Hint: "Run gohere doctor from Windows for more details."})
+	if !opened.Info.RouterInstalled {
+		return append(checks, lifecycle.DoctorCheck{Name: "windows service install", OK: false, Detail: "missing", Hint: "Run gohere setup from this WSL shell."})
+	}
+	resolved, err := resolveWindowsCompanion(ctx, "control.routes")
+	if err != nil {
+		return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: false, Detail: compactDoctorDetail(err.Error()), Hint: "Run gohere setup from this WSL shell."})
+	}
+	if _, err := resolved.Control.Routes(ctx); err != nil {
+		return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: false, Detail: "unavailable: " + err.Error(), Hint: "Run gohere doctor again from this WSL shell."})
 	}
 	return append(checks, lifecycle.DoctorCheck{Name: "windows service", OK: true, Detail: "available"})
 }

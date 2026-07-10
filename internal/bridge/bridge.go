@@ -5,21 +5,17 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 )
 
 var (
-	ErrWindowsTokenNotFound  = errors.New("windows gohere token not found")
-	ErrMultipleWindowsTokens = errors.New("multiple windows gohere tokens found")
-	ErrWSLIPNotFound         = errors.New("wsl ipv4 address not found")
+	ErrWSLIPNotFound = errors.New("wsl ipv4 address not found")
 )
 
 type ProbeClient interface {
@@ -58,28 +54,14 @@ func DetectWSL() bool {
 	return IsWSLEnvironment(runtime.GOOS, os.Getenv("WSL_DISTRO_NAME"), os.Getenv("WSL_INTEROP"), version)
 }
 
-func DiscoverWindowsToken(usersRoot string) (string, string, error) {
-	matches, err := filepath.Glob(filepath.Join(usersRoot, "*", ".gohere", "token"))
-	if err != nil {
-		return "", "", err
-	}
-	switch len(matches) {
-	case 0:
-		return "", "", ErrWindowsTokenNotFound
-	case 1:
-		data, err := os.ReadFile(matches[0])
-		if err != nil {
-			return "", "", err
-		}
-		return strings.TrimSpace(string(data)), matches[0], nil
-	default:
-		return "", "", fmt.Errorf("%w: %s", ErrMultipleWindowsTokens, strings.Join(matches, ", "))
-	}
+func IsWSL2KernelRelease(release string) bool {
+	release = strings.ToLower(strings.TrimSpace(release))
+	return strings.Contains(release, "wsl2") || strings.Contains(release, "microsoft-standard")
 }
 
-func WindowsStableBinaryExists(usersRoot string) bool {
-	matches, err := filepath.Glob(filepath.Join(usersRoot, "*", ".gohere", "bin", "gohere.exe"))
-	return err == nil && len(matches) > 0
+func DetectWSL2() bool {
+	data, err := os.ReadFile("/proc/sys/kernel/osrelease")
+	return err == nil && IsWSL2KernelRelease(string(data))
 }
 
 func FirstIPv4(output string) (string, error) {

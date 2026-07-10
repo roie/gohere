@@ -11,8 +11,11 @@ import (
 	"github.com/roie/gohere/internal/app"
 	localcert "github.com/roie/gohere/internal/cert"
 	"github.com/roie/gohere/internal/cli"
+	"github.com/roie/gohere/internal/companion"
 	appconfig "github.com/roie/gohere/internal/config"
 	"github.com/roie/gohere/internal/router"
+	"github.com/roie/gohere/internal/tunnel"
+	"github.com/roie/gohere/internal/wsledge"
 )
 
 var version = "dev"
@@ -20,6 +23,39 @@ var version = "dev"
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if len(os.Args) > 1 && os.Args[1] == wsledge.InternalCommand {
+		if len(os.Args) != 3 {
+			fmt.Fprintln(os.Stderr, "gohere edge requires exactly one Windows companion path")
+			os.Exit(2)
+		}
+		if err := app.ServeWSLEdge(ctx, os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == tunnel.InternalCommand {
+		if len(os.Args) != 2 {
+			fmt.Fprintln(os.Stderr, "gohere tunnel does not accept command-line arguments")
+			os.Exit(2)
+		}
+		if err := app.ServeWindowsTunnel(ctx, os.Stdin, os.Stdout, app.WindowsTunnelConfig{LogOutput: os.Stderr}); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == companion.InternalCommand {
+		if len(os.Args) != 2 {
+			fmt.Fprintln(os.Stderr, "gohere companion does not accept command-line arguments")
+			os.Exit(2)
+		}
+		if err := app.ServeCompanion(ctx, os.Stdin, os.Stdout, app.CompanionConfig{Version: version}); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	cmd, err := cli.Parse(os.Args)
 	if err != nil {

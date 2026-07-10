@@ -5,8 +5,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -43,50 +41,19 @@ func TestIsWSLEnvironmentOnlyAllowsLinux(t *testing.T) {
 	}
 }
 
-func TestDiscoverWindowsTokenFindsSingleToken(t *testing.T) {
-	root := t.TempDir()
-	tokenPath := filepath.Join(root, "Jessa", ".gohere", "token")
-	writeFile(t, tokenPath, "abc123\n")
-
-	token, path, err := DiscoverWindowsToken(root)
-	if err != nil {
-		t.Fatal(err)
+func TestIsWSL2KernelRelease(t *testing.T) {
+	for _, release := range []string{
+		"6.6.87.2-microsoft-standard-WSL2",
+		"4.19.128-microsoft-standard",
+	} {
+		if !IsWSL2KernelRelease(release) {
+			t.Fatalf("release %q was not recognized as WSL2", release)
+		}
 	}
-	if token != "abc123" || path != tokenPath {
-		t.Fatalf("token=%q path=%q", token, path)
-	}
-}
-
-func TestDiscoverWindowsTokenReportsNoToken(t *testing.T) {
-	_, _, err := DiscoverWindowsToken(t.TempDir())
-	if !errors.Is(err, ErrWindowsTokenNotFound) {
-		t.Fatalf("err = %v, want ErrWindowsTokenNotFound", err)
-	}
-}
-
-func TestDiscoverWindowsTokenReportsMultipleTokens(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "Jessa", ".gohere", "token"), "one\n")
-	writeFile(t, filepath.Join(root, "Roie", ".gohere", "token"), "two\n")
-
-	_, _, err := DiscoverWindowsToken(root)
-	if !errors.Is(err, ErrMultipleWindowsTokens) {
-		t.Fatalf("err = %v, want ErrMultipleWindowsTokens", err)
-	}
-}
-
-func TestWindowsStableBinaryExists(t *testing.T) {
-	root := t.TempDir()
-	if WindowsStableBinaryExists(root) {
-		t.Fatal("stable binary should not exist")
-	}
-	writeFile(t, filepath.Join(root, "Jessa", ".gohere", "token"), "token\n")
-	if WindowsStableBinaryExists(root) {
-		t.Fatal("token alone should not count as installed binary")
-	}
-	writeFile(t, filepath.Join(root, "Jessa", ".gohere", "bin", "gohere.exe"), "binary")
-	if !WindowsStableBinaryExists(root) {
-		t.Fatal("stable binary should be detected")
+	for _, release := range []string{"4.4.0-19041-Microsoft", "6.8.0-generic"} {
+		if IsWSL2KernelRelease(release) {
+			t.Fatalf("release %q was incorrectly recognized as WSL2", release)
+		}
 	}
 }
 
@@ -202,14 +169,4 @@ type fakeProbeClient struct {
 func (c *fakeProbeClient) ProbeTarget(ctx context.Context, target string) (bool, error) {
 	c.target = target
 	return c.reachable, nil
-}
-
-func writeFile(t *testing.T, path, contents string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
-		t.Fatal(err)
-	}
 }

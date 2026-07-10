@@ -24,6 +24,16 @@ Or install the Go CLI directly:
 go install github.com/roie/gohere/cmd/gohere@latest
 ```
 
+### Windows with WSL2
+
+Install the npm package in WSL and run `gohere` normally. You do not need to install the npm package again in PowerShell. The WSL package includes a version-matched Windows companion that installs or reuses one Windows router for the current Windows user.
+
+Initial WSL setup stays in the same WSL shell. It may request `sudo` once to allow the loopback edge to use ports 80/443 and to trust the Windows router's public CA certificate in Linux. It does not add a Windows firewall rule, copy the Windows admin token into WSL, or start a second WSL router.
+
+Mirrored networking uses the verified Windows loopback router directly. Separate-loopback/NAT networking uses a loopback-only WSL edge over a persistent Windows stdio helper. Windows still owns the router, routes, admin token, and CA private key; WSL owns only its Linux project processes and edge.
+
+A WSL binary installed with `go install` can reuse a compatible `gohere.exe` already available on the Windows `PATH`, but it cannot bootstrap Windows by downloading another binary. Use the npm distribution for WSL-first installation.
+
 ## Quick start
 
 `gohere` supports package projects, workspace roots, and static files.
@@ -186,7 +196,7 @@ State is stored in:
 
 Linux may ask for one-time permission to bind local ports and trust the local certificate authority.
 
-When used from WSL, `gohere` reuses a running Windows service automatically.
+When used from WSL2, `gohere` installs or reuses the current user's Windows authority automatically. Normal setup and recovery do not require switching to PowerShell.
 
 ## Platform support
 
@@ -205,6 +215,8 @@ The npm package includes x64 and arm64 binaries for these platforms.
 - no custom TLDs
 - no project config files
 - no browser auto-open by default
+- WSL1 is not supported
+- the first WSL2 release permits one active integrated distribution/Linux user per Windows authority
 
 ## License
 

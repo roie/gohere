@@ -30,6 +30,9 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      - name: Verify mux import boundary
+        run: go test ./internal/muxtransport -run TestNoDirectMuxImports
+
       - name: Test
         run: go test ./...
 
@@ -57,6 +60,15 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+
+      - name: Prepare third-party source
+        run: |
+          go mod download github.com/libp2p/go-yamux/v5@v5.1.0
+          module_dir="$(go env GOMODCACHE)/github.com/libp2p/go-yamux/v5@v5.1.0"
+          test -f "$module_dir/LICENSE"
+          mkdir -p third_party
+          tar -C "$(dirname "$module_dir")" -czf third_party/go-yamux-v5.1.0-source.tar.gz "$(basename "$module_dir")"
+          sha256sum third_party/go-yamux-v5.1.0-source.tar.gz > third_party/go-yamux-v5.1.0-source.tar.gz.sha256
 
       - name: Build package binaries
         env:
@@ -87,7 +99,10 @@ jobs:
             },
             "files": [
               "bin/",
-              "vendor/"
+              "vendor/",
+              "third_party/",
+              "LICENSE",
+              "THIRD_PARTY_NOTICES"
             ],
             "license": "Apache-2.0",
             "repository": {
@@ -153,6 +168,13 @@ jobs:
           npm install --prefix "$install_dir" "$tarball"
           gohere_bin="$install_dir/node_modules/.bin/gohere"
           test "$("$gohere_bin" --version)" = "gohere ${version}"
+          test -f "$install_dir/node_modules/gohere/vendor/win32-x64/gohere.exe"
+          test -f "$install_dir/node_modules/gohere/vendor/win32-arm64/gohere.exe"
+          test -f "$install_dir/node_modules/gohere/LICENSE"
+          test -f "$install_dir/node_modules/gohere/THIRD_PARTY_NOTICES"
+          test -f "$install_dir/node_modules/gohere/third_party/go-yamux-v5.1.0-source.tar.gz"
+          test -f "$install_dir/node_modules/gohere/third_party/go-yamux-v5.1.0-source.tar.gz.sha256"
+          grep -q 'go-yamux v5.1.0' "$install_dir/node_modules/gohere/THIRD_PARTY_NOTICES"
 
           smoke_dir="$(mktemp -d)"
           mkdir -p "$smoke_dir/live" "$smoke_dir/dist" "$smoke_dir/pages"
@@ -214,4 +236,9 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --generate-notes
+        run: >-
+          gh release create "${{ github.ref_name }}"
+          third_party/go-yamux-v5.1.0-source.tar.gz
+          third_party/go-yamux-v5.1.0-source.tar.gz.sha256
+          --title "${{ github.ref_name }}"
+          --generate-notes

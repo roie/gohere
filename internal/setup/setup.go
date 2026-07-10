@@ -30,12 +30,16 @@ type Config struct {
 	ConfigDir        string
 	CurrentBinary    string
 	CommandRunner    CommandRunner
+	CommandStdout    io.Writer
+	CommandStderr    io.Writer
+	CommandStdin     io.Reader
 	RouterHealth     func(context.Context) error
 	Stderr           io.Writer
 	Progress         io.Writer
 	SystemdAvailable bool
 	HTTPS            bool
 	TrustCA          func(context.Context, string) error
+	EnsureUserPath   func(context.Context, string) error
 }
 
 var stopDetachedProcess = func(pid int) {
@@ -67,7 +71,7 @@ func Linux(ctx context.Context, cfg Config) error {
 		cfg.CurrentBinary = exe
 	}
 	if cfg.CommandRunner == nil {
-		cfg.CommandRunner = realRunner{}
+		cfg.CommandRunner = newRealRunner(cfg)
 	}
 	if cfg.Stderr == nil {
 		cfg.Stderr = io.Discard
@@ -129,7 +133,7 @@ func Windows(ctx context.Context, cfg Config) error {
 		cfg.CurrentBinary = exe
 	}
 	if cfg.CommandRunner == nil {
-		cfg.CommandRunner = realRunner{}
+		cfg.CommandRunner = newRealRunner(cfg)
 	}
 	if err := enableHTTPSIfRequested(ctx, cfg, "windows"); err != nil {
 		return err
@@ -142,6 +146,13 @@ func Windows(ctx context.Context, cfg Config) error {
 	}
 	stableBinary := filepath.Join(binDir, "gohere.exe")
 	if err := copyFile(cfg.CurrentBinary, stableBinary, 0755); err != nil {
+		return err
+	}
+	ensureUserPath := cfg.EnsureUserPath
+	if ensureUserPath == nil {
+		ensureUserPath = ensureWindowsUserPath
+	}
+	if err := ensureUserPath(ctx, binDir); err != nil {
 		return err
 	}
 	if _, err := router.EnsureToken(cfg.StateDir); err != nil {
@@ -173,7 +184,7 @@ func Darwin(ctx context.Context, cfg Config) error {
 		cfg.CurrentBinary = exe
 	}
 	if cfg.CommandRunner == nil {
-		cfg.CommandRunner = realRunner{}
+		cfg.CommandRunner = newRealRunner(cfg)
 	}
 	if err := enableHTTPSIfRequested(ctx, cfg, "darwin"); err != nil {
 		return err
@@ -395,12 +406,32 @@ func replaceInstalledFileForGOOS(goos, tmpPath, dst string, rename func(string, 
 	return rename(tmpPath, dst)
 }
 
-type realRunner struct{}
+type realRunner struct {
+	stdout io.Writer
+	stderr io.Writer
+	stdin  io.Reader
+}
 
-func (realRunner) Run(ctx context.Context, command string, args ...string) error {
+func newRealRunner(cfg Config) realRunner {
+	stdout := cfg.CommandStdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	stderr := cfg.CommandStderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	stdin := cfg.CommandStdin
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	return realRunner{stdout: stdout, stderr: stderr, stdin: stdin}
+}
+
+func (r realRunner) Run(ctx context.Context, command string, args ...string) error {
 	cmd := exec.CommandContext(ctx, command, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
+	cmd.Stdout = r.stdout
+	cmd.Stderr = r.stderr
+	cmd.Stdin = r.stdin
 	return cmd.Run()
 }

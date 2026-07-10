@@ -30,6 +30,8 @@ const maxLogSize = 1024 * 1024
 const tokenLength = 64
 const maxAdminBodyBytes = 1024 * 1024
 const RoutesFilename = "routes.json"
+const RouterInstanceFilename = "router.instance"
+const RouterIdentityPath = "/.well-known/gohere/router"
 const gohereRouteHeader = "X-Gohere-Route"
 const proxyResponseHeaderTimeout = 30 * time.Second
 const routeStoreLockTimeout = 10 * time.Second
@@ -39,6 +41,7 @@ const tokenLockPoll = 10 * time.Millisecond
 
 var rotateOpenFile = os.OpenFile
 var errInvalidRouteHost = errors.New("invalid route host")
+var errRouteConflict = errors.New("route host is owned by another runner")
 
 type Route struct {
 	Host            string    `json:"host"`
@@ -52,6 +55,12 @@ type Route struct {
 	Source          string    `json:"source,omitempty"`
 	OwnerCWD        string    `json:"ownerCwd,omitempty"`
 	OwnerEnv        string    `json:"ownerEnv,omitempty"`
+	OwnerInstance   string    `json:"ownerInstance,omitempty"`
+	Distro          string    `json:"distro,omitempty"`
+	LinuxUser       string    `json:"linuxUser,omitempty"`
+	RunnerID        string    `json:"runnerId,omitempty"`
+	ListenTarget    string    `json:"listenTarget,omitempty"`
+	LeaseExpiresAt  time.Time `json:"leaseExpiresAt,omitempty"`
 	StartedAt       time.Time `json:"startedAt"`
 	ProcessIdentity string    `json:"processIdentity,omitempty"`
 }
@@ -86,13 +95,15 @@ func UpdateStore(store Store, update func([]Route) ([]Route, error)) error {
 }
 
 type Config struct {
-	Token    string
-	Store    Store
-	Shutdown func()
+	Token      string
+	Store      Store
+	Shutdown   func()
+	InstanceID string
 }
 
 type Server struct {
 	token          string
+	instanceID     string
 	store          Store
 	shutdown       func()
 	shutdownOnce   sync.Once
@@ -101,7 +112,7 @@ type Server struct {
 }
 
 func NewServer(cfg Config) *Server {
-	return &Server{token: cfg.Token, store: cfg.Store, shutdown: cfg.Shutdown, proxyTransport: newProxyTransport()}
+	return &Server{token: cfg.Token, instanceID: cfg.InstanceID, store: cfg.Store, shutdown: cfg.Shutdown, proxyTransport: newProxyTransport()}
 }
 
 func newProxyTransport() *http.Transport {
@@ -476,6 +487,10 @@ func (s *Server) AdminHandler() http.Handler {
 
 func (s *Server) HTTPHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == RouterIdentityPath {
+			s.handleRouterIdentity(w, r)
+			return
+		}
 		route, ok, err := s.routeForHost(r.Host)
 		if err != nil {
 			if errors.Is(err, errInvalidRouteHost) {
@@ -491,6 +506,15 @@ func (s *Server) HTTPHandler() http.Handler {
 				return
 			}
 			missingRouteResponse(w, r)
+			return
+		}
+		if RouteLeaseExpired(route, time.Now()) {
+			writeProxyError(w, r, http.StatusServiceUnavailable, proxyErrorPayload{
+				Error:   "route_owner_offline",
+				Message: "gohere route owner is offline",
+				Host:    route.Host,
+				Target:  route.Target,
+			})
 			return
 		}
 		if routeLoopDetected(r, route.Host) {
@@ -539,6 +563,26 @@ func (s *Server) HTTPHandler() http.Handler {
 		}
 		proxy.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) handleRouterIdentity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.instanceID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(struct {
+		RouterInstanceID string `json:"routerInstanceId"`
+	}{RouterInstanceID: s.instanceID})
 }
 
 func setForwardedHeaders(out, in *http.Request) {
@@ -666,8 +710,12 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 		s.storeMu.Lock()
 		defer s.storeMu.Unlock()
 		if err := UpdateStore(s.store, func(routes []Route) ([]Route, error) {
-			return upsertRoute(routes, route), nil
+			return upsertRoute(routes, route)
 		}); err != nil {
+			if errors.Is(err, errRouteConflict) {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -694,13 +742,21 @@ func (s *Server) handleRouteStatuses(w http.ResponseWriter, r *http.Request) {
 	}
 	statuses := make([]RouteStatus, 0, len(routes))
 	for _, route := range routes {
+		status := targetStatus(route.Target)
+		if route.OwnerEnv == "wsl" && RouteLeaseExpired(route, time.Now()) && status != "dead" {
+			status = "unknown"
+		}
 		statuses = append(statuses, RouteStatus{
 			Route:  route,
-			Status: targetStatus(route.Target),
+			Status: status,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(statuses)
+}
+
+func RouteLeaseExpired(route Route, now time.Time) bool {
+	return route.OwnerEnv == "wsl" && !route.LeaseExpiresAt.IsZero() && !now.Before(route.LeaseExpiresAt)
 }
 
 func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
@@ -776,16 +832,28 @@ func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := probe.Head(target.String(), probe.DefaultTimeout)
-	reachable := err == nil
-	if resp != nil && resp.Body != nil {
-		resp.Body.Close()
-	}
+	reachable := probeTargetReachable(target)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(struct {
 		Reachable bool `json:"reachable"`
 	}{Reachable: reachable})
+}
+
+func probeTargetReachable(target *url.URL) bool {
+	if target.EscapedPath() == "" && target.RawQuery == "" {
+		connection, err := net.DialTimeout("tcp", target.Host, probe.DefaultTimeout)
+		if err != nil {
+			return false
+		}
+		_ = connection.Close()
+		return true
+	}
+	resp, err := probe.Head(target.String(), probe.DefaultTimeout)
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
+	}
+	return err == nil
 }
 
 func allowedProbeTarget(target *url.URL) bool {
@@ -999,14 +1067,54 @@ func normalizeRouteHost(host string) (string, error) {
 	return strings.ToLower(host), nil
 }
 
-func upsertRoute(routes []Route, route Route) []Route {
+func upsertRoute(routes []Route, route Route) ([]Route, error) {
 	for i := range routes {
 		if strings.EqualFold(routes[i].Host, route.Host) {
+			if !sameRouteOwner(routes[i], route) {
+				return nil, fmt.Errorf("%w: %s", errRouteConflict, route.Host)
+			}
 			routes[i] = route
-			return routes
+			return routes, nil
 		}
 	}
-	return append(routes, route)
+	return append(routes, route), nil
+}
+
+func sameRouteOwner(existing, replacement Route) bool {
+	if existing.OwnerEnv == "" && replacement.OwnerEnv == "" &&
+		existing.OwnerInstance == "" && replacement.OwnerInstance == "" &&
+		existing.OwnerCWD == "" && replacement.OwnerCWD == "" &&
+		existing.CWD == "" && replacement.CWD == "" {
+		return true
+	}
+	if existing.OwnerInstance != "" || replacement.OwnerInstance != "" {
+		sameOwner := existing.OwnerEnv == replacement.OwnerEnv &&
+			existing.OwnerInstance != "" &&
+			existing.OwnerInstance == replacement.OwnerInstance &&
+			existing.Distro == replacement.Distro &&
+			existing.LinuxUser == replacement.LinuxUser &&
+			sameOwnerCWD(existing, replacement)
+		if !sameOwner {
+			return false
+		}
+		if existing.OwnerEnv == "wsl" && existing.RunnerID != replacement.RunnerID {
+			return RouteLeaseExpired(existing, time.Now())
+		}
+		return true
+	}
+	return existing.OwnerEnv == replacement.OwnerEnv && sameOwnerCWD(existing, replacement)
+}
+
+func sameOwnerCWD(left, right Route) bool {
+	leftCWD := left.OwnerCWD
+	if leftCWD == "" {
+		leftCWD = left.CWD
+	}
+	rightCWD := right.OwnerCWD
+	if rightCWD == "" {
+		rightCWD = right.CWD
+	}
+	return leftCWD != "" && leftCWD == rightCWD
 }
 
 func sortRoutes(routes []Route) {

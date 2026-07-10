@@ -14,6 +14,19 @@ import (
 	appconfig "github.com/roie/gohere/internal/config"
 )
 
+func TestServiceStopUsesWindowsAuthorityFromWSL(t *testing.T) {
+	restore := stubBridgeDetection(t, bridgeStub{isWSL: true})
+	defer restore()
+	var output strings.Builder
+
+	if err := ServiceStop(t.Context(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "gohere service stopped.\n" {
+		t.Fatalf("output = %q", output.String())
+	}
+}
+
 func TestUninstallRemovesRouterInstallButKeepsStateByDefault(t *testing.T) {
 	stateDir := t.TempDir()
 	configDir := t.TempDir()
@@ -395,10 +408,10 @@ func TestProcessMatchesInstalledBinaryUsesWindowsExecutablePath(t *testing.T) {
 		if pid != 12345 {
 			return "", false
 		}
-		return `C:\Users\Jessa\.gohere\bin\gohere.exe`, true
+		return `C:\Users\Alice\.gohere\bin\gohere.exe`, true
 	}
 
-	if !processMatchesInstalledBinaryForGOOS("windows", 12345, `C:\Users\Jessa\.gohere\bin\gohere.exe`) {
+	if !processMatchesInstalledBinaryForGOOS("windows", 12345, `C:\Users\Alice\.gohere\bin\gohere.exe`) {
 		t.Fatal("expected Windows process executable to match stable binary")
 	}
 	if processMatchesInstalledBinaryForGOOS("windows", 12345, `C:\Other\gohere.exe`) {

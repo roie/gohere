@@ -497,17 +497,25 @@ func TestWindowsSetupCopiesExeEnsuresTokenAndStartsDetachedRouter(t *testing.T) 
 		t.Fatal(err)
 	}
 	runner := &detachingRunner{pid: 4242}
+	var userPathDir string
 
 	err := Windows(context.Background(), Config{
 		StateDir:      filepath.Join(dir, "state"),
 		CurrentBinary: source,
 		CommandRunner: runner,
+		EnsureUserPath: func(_ context.Context, binDir string) error {
+			userPathDir = binDir
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	stable := filepath.Join(dir, "state", "bin", "gohere.exe")
+	if userPathDir != filepath.Dir(stable) {
+		t.Fatalf("user PATH dir = %q, want %q", userPathDir, filepath.Dir(stable))
+	}
 	data, err := os.ReadFile(stable)
 	if err != nil {
 		t.Fatal(err)
