@@ -31,6 +31,7 @@ type UninstallConfig struct {
 	ProcessSignal  func(int) error
 	ProcessMatches func(int, string) bool
 	UntrustCA      func(context.Context, string) error
+	RemoveUserPath func(context.Context, string) error
 	RemoveState    *bool
 }
 
@@ -152,6 +153,14 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 			return certtrust.UntrustCA(ctx, runtime.GOOS, cfg.CommandRunner, fingerprint)
 		}
 	}
+	if cfg.RemoveUserPath == nil {
+		cfg.RemoveUserPath = func(ctx context.Context, binDir string) error {
+			if runtime.GOOS != "windows" {
+				return nil
+			}
+			return setup.RemoveWindowsUserPath(ctx, binDir)
+		}
+	}
 
 	_ = shutdownInstalledService(ctx, cfg.StateDir)
 	servicePath := filepath.Join(cfg.ConfigDir, "systemd", "user", "gohere-router.service")
@@ -170,8 +179,12 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 			_ = cfg.ProcessSignal(pid)
 		}
 	}
+	binDir := filepath.Join(cfg.StateDir, "bin")
+	if err := cfg.RemoveUserPath(ctx, binDir); err != nil {
+		return err
+	}
 	for _, binary := range []string{"gohere", "gohere.exe"} {
-		if err := removeInstalledFile(filepath.Join(cfg.StateDir, "bin", binary)); err != nil {
+		if err := removeInstalledFile(filepath.Join(binDir, binary)); err != nil {
 			return err
 		}
 	}

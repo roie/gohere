@@ -27,6 +27,7 @@ const (
 
 func (ExecRunner) Run(ctx context.Context, binary string, args []string, stdin []byte) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, binary, args...)
+	configureProcess(cmd)
 	cmd.Stdin = bytes.NewReader(stdin)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

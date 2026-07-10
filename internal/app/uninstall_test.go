@@ -372,16 +372,24 @@ func TestUninstallRemovesWindowsStableBinary(t *testing.T) {
 	}()
 	promptInput = strings.NewReader("\n")
 
+	var removedPath string
 	var out strings.Builder
 	if err := UninstallWithConfig(context.Background(), &out, UninstallConfig{
 		StateDir:  stateDir,
 		ConfigDir: configDir,
+		RemoveUserPath: func(_ context.Context, binDir string) error {
+			removedPath = binDir
+			return nil
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	if exists(filepath.Join(stateDir, "bin", "gohere.exe")) {
 		t.Fatal("windows stable binary still exists")
+	}
+	if removedPath != filepath.Join(stateDir, "bin") {
+		t.Fatalf("removed PATH entry = %q, want %q", removedPath, filepath.Join(stateDir, "bin"))
 	}
 }
 

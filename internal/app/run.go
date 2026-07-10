@@ -1116,16 +1116,24 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 		}
 		fmt.Fprintf(stdout, "service: %s\n", routerLabel)
 	}
-	return func() {
-		stopLease()
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := deleteOwnedRouteRegistration(cleanupCtx, adminClient, route); err != nil && stderr != nil {
-			if routeCleanupTimedOut(err) && !routeStillRegistered(adminClient, route.Host) {
-				return
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			stopLease()
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := deleteOwnedRouteRegistration(cleanupCtx, adminClient, route); err != nil && stderr != nil {
+				if routeCleanupTimedOut(err) && !routeStillRegistered(adminClient, route.Host) {
+					return
+				}
+				fmt.Fprintln(stderr, routeCleanupWarning(route.Host, err))
 			}
-			fmt.Fprintln(stderr, routeCleanupWarning(route.Host, err))
-		}
+		})
+	}
+	stopContextCleanup := context.AfterFunc(ctx, cleanup)
+	return func() {
+		stopContextCleanup()
+		cleanup()
 	}, nil
 }
 
@@ -2108,7 +2116,7 @@ func trustCAForWSL(ctx context.Context, caPath string) error {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, "Trusting certificate authority in Windows...")
-	return runner.Run(ctx, "certutil.exe", "-user", "-addstore", "Root", windowsPath)
+	return runner.Run(ctx, "certutil.exe", "-f", "-user", "-addstore", "Root", windowsPath)
 }
 
 func repairWindowsHTTPSTrust(ctx context.Context, stateDir string) error {
@@ -2117,7 +2125,7 @@ func repairWindowsHTTPSTrust(ctx context.Context, stateDir string) error {
 	if err != nil {
 		return err
 	}
-	return appCommandRunner{}.Run(ctx, "certutil.exe", "-user", "-addstore", "Root", windowsPath)
+	return appCommandRunner{}.Run(ctx, "certutil.exe", "-f", "-user", "-addstore", "Root", windowsPath)
 }
 
 func untrustCAForWSL(ctx context.Context, fingerprint string) error {
@@ -2125,7 +2133,7 @@ func untrustCAForWSL(ctx context.Context, fingerprint string) error {
 	if err := certtrust.UntrustCA(ctx, "linux", runner, fingerprint); err != nil {
 		return err
 	}
-	return runner.Run(ctx, "certutil.exe", "-user", "-delstore", "Root", fingerprint)
+	return runner.Run(ctx, "certutil.exe", "-f", "-user", "-delstore", "Root", fingerprint)
 }
 
 func wslWindowsPath(ctx context.Context, path string) (string, error) {

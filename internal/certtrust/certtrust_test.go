@@ -36,7 +36,7 @@ func TestTrustCAWindowsCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner.want(t, []string{"certutil", "-user", "-addstore", "Root", `C:\Temp\ca.pem`})
+	runner.want(t, []string{"certutil", "-f", "-user", "-addstore", "Root", `C:\Temp\ca.pem`})
 }
 
 func TestUntrustCALinuxCommands(t *testing.T) {
@@ -69,7 +69,7 @@ func TestUntrustCAWindowsUsesFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner.want(t, []string{"certutil", "-user", "-delstore", "Root", "abc123"})
+	runner.want(t, []string{"certutil", "-f", "-user", "-delstore", "Root", "abc123"})
 }
 
 type recordingRunner struct {

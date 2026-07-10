@@ -1531,6 +1531,41 @@ func TestRegisterRoutePersistsWSLNamespaceIdentityAndBothTargets(t *testing.T) {
 	}
 }
 
+func TestRegisterRouteStartsCleanupWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	admin := &recordingAdminClient{}
+	plan := RunPlan{
+		Host:          "app.localhost",
+		CWD:           t.TempDir(),
+		OwnerEnv:      "wsl",
+		OwnerInstance: "owner-1",
+		RunnerID:      "runner-1",
+	}
+	cleanup, err := registerRoute(ctx, admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 5173, os.Getpid(), io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	admin.mu.Lock()
+	admin.routes = []router.Route{admin.route}
+	admin.mu.Unlock()
+
+	cancel()
+	deadline := time.Now().Add(time.Second)
+	for {
+		admin.mu.Lock()
+		deleted := admin.deleted
+		admin.mu.Unlock()
+		if deleted == "app.localhost" {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("deleted route = %q, want app.localhost", deleted)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestRegisterRouteRefusesUnreachableWindowsToWSLTarget(t *testing.T) {
 	oldTimeout := wslTargetProbeTimeout
 	wslTargetProbeTimeout = 0

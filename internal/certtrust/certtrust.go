@@ -30,7 +30,7 @@ func UntrustCA(ctx context.Context, goos string, runner CommandRunner, fingerpri
 		if fingerprint == "" {
 			return fmt.Errorf("certificate fingerprint is required")
 		}
-		return runner.Run(ctx, "certutil", "-user", "-delstore", "Root", fingerprint)
+		return runner.Run(ctx, "certutil", "-f", "-user", "-delstore", "Root", fingerprint)
 	default:
 		return fmt.Errorf("gohere HTTPS uninstall is not supported on %s yet", goos)
 	}
@@ -52,7 +52,7 @@ func TrustCA(ctx context.Context, goos string, runner CommandRunner, caPath stri
 	case "darwin":
 		return runner.Run(ctx, "sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", "/Library/Keychains/System.keychain", caPath)
 	case "windows":
-		return runner.Run(ctx, "certutil", "-user", "-addstore", "Root", caPath)
+		return runner.Run(ctx, "certutil", "-f", "-user", "-addstore", "Root", caPath)
 	default:
 		return fmt.Errorf("gohere HTTPS setup is not supported on %s yet", goos)
 	}

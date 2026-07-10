@@ -28,7 +28,7 @@ go install github.com/roie/gohere/cmd/gohere@latest
 
 Install the npm package in WSL and run `gohere` normally. You do not need to install the npm package again in PowerShell. The WSL package includes a version-matched Windows companion that installs or reuses one Windows router for the current Windows user.
 
-Initial WSL setup stays in the same WSL shell. It may request `sudo` once to allow the loopback edge to use ports 80/443 and to trust the Windows router's public CA certificate in Linux. It does not add a Windows firewall rule, copy the Windows admin token into WSL, or start a second WSL router.
+Initial WSL setup stays in the same WSL shell. It may request `sudo` once to allow the loopback edge to use ports 80/443 and to trust the Windows router's public CA certificate in Linux. Windows also shows its standard one-time security confirmation before trusting `gohere local development CA`; approve only that certificate. It does not add a Windows firewall rule, copy the Windows admin token into WSL, or start a second WSL router.
 
 Mirrored networking uses the verified Windows loopback router directly. Separate-loopback/NAT networking uses a loopback-only WSL edge over a persistent Windows stdio helper. Windows still owns the router, routes, admin token, and CA private key; WSL owns only its Linux project processes and edge.
 

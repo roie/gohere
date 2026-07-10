@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"syscall"
 
 	"github.com/roie/gohere/internal/app"
 	localcert "github.com/roie/gohere/internal/cert"
@@ -21,7 +20,7 @@ import (
 var version = "dev"
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
 	if len(os.Args) > 1 && os.Args[1] == wsledge.InternalCommand {
 		if len(os.Args) != 3 {

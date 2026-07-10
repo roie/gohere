@@ -31,8 +31,11 @@ func uninstallWSLIntegration(ctx context.Context, stdout io.Writer) error {
 	metadata, metadataErr := loadWSLIntegrationMetadata(stateDir)
 
 	removedWindows := false
+	attemptedWindowsRemoval := false
+	var windowsRemovalErr error
 	resolved, companionErr := openWindowsCompanion(ctx, "control.routes", "control.uninstall")
 	if companionErr == nil && confirmPrompt(stdout, "Remove the shared Windows gohere router too? [y/N] ") {
+		attemptedWindowsRemoval = true
 		routes, err := resolved.Control.Routes(ctx)
 		if err != nil {
 			return err
@@ -43,10 +46,11 @@ func uninstallWSLIntegration(ctx context.Context, stdout io.Writer) error {
 		removeState := confirmPrompt(stdout, "Remove Windows routes, token, and logs too? [y/N] ")
 		output, err := resolved.Control.Uninstall(ctx, removeState)
 		if err != nil {
-			return windowsCompanionUnavailableError(err)
+			windowsRemovalErr = windowsCompanionUnavailableError(err)
+		} else {
+			fmt.Fprint(stdout, output)
+			removedWindows = true
 		}
-		fmt.Fprint(stdout, output)
-		removedWindows = true
 	}
 
 	if err := wslStopEdgeFunc(integrationDir); err != nil {
@@ -71,8 +75,16 @@ func uninstallWSLIntegration(ctx context.Context, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, "gohere WSL edge and certificate trust removed.")
+	if windowsRemovalErr != nil {
+		fmt.Fprintln(stdout, "Windows authority removal failed; WSL cleanup completed.")
+		return windowsRemovalErr
+	}
 	if !removedWindows {
-		fmt.Fprintln(stdout, "Windows gohere authority kept.")
+		if attemptedWindowsRemoval {
+			fmt.Fprintln(stdout, "Windows gohere authority may require cleanup.")
+		} else {
+			fmt.Fprintln(stdout, "Windows gohere authority kept.")
+		}
 	}
 	if companionErr != nil {
 		fmt.Fprintf(stdout, "Windows authority could not be inspected: %v\n", companionErr)

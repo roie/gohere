@@ -487,7 +487,21 @@ func compareReleaseVersions(left, right releaseVersion) int {
 }
 
 func uninstallWindowsAuthority(ctx context.Context, removeState bool, output io.Writer) error {
-	return UninstallWithConfig(ctx, output, UninstallConfig{RemoveState: &removeState})
+	return UninstallWithConfig(ctx, output, UninstallConfig{
+		CommandRunner: capturedCommandRunner{output: output},
+		RemoveState:   &removeState,
+	})
+}
+
+type capturedCommandRunner struct {
+	output io.Writer
+}
+
+func (r capturedCommandRunner) Run(ctx context.Context, command string, args ...string) error {
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Stdout = r.output
+	cmd.Stderr = r.output
+	return cmd.Run()
 }
 
 var _ companion.Authority = (*companionAuthority)(nil)

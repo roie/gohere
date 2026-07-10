@@ -60,7 +60,7 @@ type wslIntegrationSetupConfig struct {
 
 var (
 	wslSetupExecutableFunc                       = os.Executable
-	wslSetupRunner           setup.CommandRunner = appCommandRunner{}
+	wslSetupRunner           setup.CommandRunner = quietWSLSetupRunner{}
 	ensureWSLRunIdentityFunc                     = ensureWSLRunIdentity
 	currentWSLMetadataFunc                       = func() (wslIntegrationMetadata, error) {
 		return loadWSLIntegrationMetadata(router.DefaultStateDir())
@@ -83,10 +83,7 @@ func setupWSLAuthority(ctx context.Context) error {
 	}
 	if !resolved.Info.RouterInstalled || strings.TrimSpace(resolved.Info.CAFingerprint) == "" ||
 		strings.HasPrefix(resolved.Info.RouterInstanceID, "legacy-pid:") {
-		output, err := resolved.Control.Bootstrap(ctx, true)
-		if strings.TrimSpace(output) != "" {
-			fmt.Fprint(os.Stderr, output)
-		}
+		_, err := resolved.Control.Bootstrap(ctx, true)
 		if err != nil {
 			return windowsCompanionUnavailableError(fmt.Errorf("Windows setup failed: %w", err))
 		}
@@ -125,15 +122,15 @@ func promptAndSetupWSLAuthority(ctx context.Context, output io.Writer) error {
 	if output == nil {
 		output = io.Discard
 	}
-	fmt.Fprint(output, "gohere needs one-time WSL integration to use the Windows .localhost router and trust its HTTPS certificate. sudo access may be requested inside WSL.\n\nContinue? [Y/n] ")
+	fmt.Fprint(output, "gohere needs one-time setup for HTTPS .localhost URLs. sudo access may be requested.\n\nContinue? [Y/n] ")
 	answer, readErr := bufio.NewReader(promptInput).ReadString('\n')
 	if readErr != nil && strings.TrimSpace(answer) == "" {
-		fmt.Fprintln(output, "gohere WSL integration was not enabled. Run gohere setup when you are ready.")
-		return errors.New("gohere WSL integration was not enabled")
+		fmt.Fprintln(output, "gohere setup was not enabled. Run gohere setup when you are ready.")
+		return errors.New("gohere setup was not enabled")
 	}
 	if !shouldRunSetupFromAnswer(answer) {
-		fmt.Fprintln(output, "gohere WSL integration was not enabled. Run gohere setup when you are ready.")
-		return errors.New("gohere WSL integration was not enabled")
+		fmt.Fprintln(output, "gohere setup was not enabled. Run gohere setup when you are ready.")
+		return errors.New("gohere setup was not enabled")
 	}
 	return setupWSLAuthority(ctx)
 }
@@ -240,11 +237,10 @@ func installWSLIntegration(ctx context.Context, info companion.Info, certificate
 	if err := copyAtomicFile(cfg.CurrentExecutable, edgeBinary, 0755); err != nil {
 		return err
 	}
-	fmt.Fprintln(cfg.Output, "Allowing the WSL loopback edge to use local HTTP/HTTPS ports...")
+	fmt.Fprintln(cfg.Output, "Setting up gohere...")
 	if err := cfg.Runner.Run(ctx, "sudo", "setcap", "cap_net_bind_service=+ep", edgeBinary); err != nil {
 		return err
 	}
-	fmt.Fprintln(cfg.Output, "Trusting the Windows certificate authority in WSL...")
 	if err := certtrust.TrustCA(ctx, "linux", cfg.Runner, caPath); err != nil {
 		return err
 	}
@@ -270,6 +266,16 @@ func installWSLIntegration(ctx context.Context, info companion.Info, certificate
 	}
 	data = append(data, '\n')
 	return writeAtomicFile(filepath.Join(integrationDir, "metadata.json"), data, 0600)
+}
+
+type quietWSLSetupRunner struct{}
+
+func (quietWSLSetupRunner) Run(ctx context.Context, command string, args ...string) error {
+	cmd := execCommandContext(ctx, command, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = io.Discard
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func certificateFingerprint(certificate string) (string, error) {

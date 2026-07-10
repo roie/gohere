@@ -16,3 +16,13 @@ func TestWindowsUserPathScriptQuotesPathAndAvoidsSetx(t *testing.T) {
 		t.Fatalf("script uses truncating setx: %q", script)
 	}
 }
+
+func TestWindowsUserPathRemovalScriptRemovesOnlyExactDirectory(t *testing.T) {
+	script := windowsUserPathRemovalScript(`C:\Users\O'Brien\.gohere\bin`)
+	if !strings.Contains(script, `O''Brien`) || !strings.Contains(script, "-ine $dir.TrimEnd") {
+		t.Fatalf("script = %q", script)
+	}
+	if !strings.Contains(script, "SetEnvironmentVariable('Path'") {
+		t.Fatalf("script does not persist the filtered PATH: %q", script)
+	}
+}

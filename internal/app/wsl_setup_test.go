@@ -183,6 +183,31 @@ func TestApplyWSLTrustEnvironmentAddsCompatibilityWithoutOverwritingUserPolicy(t
 	assertEnv(t, environment, "NODE_EXTRA_CA_CERTS", filepath.Join(stateDir, wslIntegrationDirname, "windows-ca.pem"))
 }
 
+func TestPromptAndSetupWSLAuthorityUsesEnvironmentNeutralCopy(t *testing.T) {
+	oldInput := promptInput
+	oldSetup := newWindowsCompanionControlFunc
+	defer func() {
+		promptInput = oldInput
+		newWindowsCompanionControlFunc = oldSetup
+	}()
+	promptInput = strings.NewReader("n\n")
+	var output strings.Builder
+
+	err := promptAndSetupWSLAuthority(t.Context(), &output)
+	if err == nil || !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("error = %v", err)
+	}
+	want := "gohere needs one-time setup for HTTPS .localhost URLs. sudo access may be requested.\n\nContinue? [Y/n] "
+	if !strings.HasPrefix(output.String(), want) {
+		t.Fatalf("output = %q, want prefix %q", output.String(), want)
+	}
+	for _, leaked := range []string{"Windows", "companion", "router", "WSL integration"} {
+		if strings.Contains(output.String(), leaked) {
+			t.Fatalf("normal setup output leaks %q: %q", leaked, output.String())
+		}
+	}
+}
+
 func TestSetupWSLAuthorityBootstrapsWindowsFirstWithoutLocalRouterState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
