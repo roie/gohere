@@ -3,6 +3,7 @@ package router
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -188,12 +190,74 @@ func TestEnsureTokenConcurrentCreateReturnsSingleToken(t *testing.T) {
 	}
 }
 
-func TestTokenLockHeldErrorTreatsWindowsPermissionAsHeldLock(t *testing.T) {
-	if !tokenLockHeldErrorForGOOS("windows", os.ErrPermission) {
-		t.Fatal("windows permission error should be treated as an existing token lock")
+func TestStateLockContentionTimesOutAndKeepsLockFile(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "state.lock")
+	unlock, err := acquireStateLock(lockPath, time.Second)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if tokenLockHeldErrorForGOOS("linux", os.ErrPermission) {
-		t.Fatal("linux permission error should remain a real lock error")
+	defer unlock()
+
+	started := time.Now()
+	_, err = acquireStateLock(lockPath, 50*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second lock error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("bounded lock attempt took %v", elapsed)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("permanent lock file missing: %v", err)
+	}
+}
+
+func TestStateLockRecoversAfterOwnerIsKilled(t *testing.T) {
+	if os.Getenv("GOHERE_STATE_LOCK_HELPER") == "1" {
+		unlock, err := acquireStateLock(os.Getenv("GOHERE_STATE_LOCK_PATH"), time.Second)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		defer unlock()
+		fmt.Fprintln(os.Stdout, "locked")
+		_ = os.Stdout.Sync()
+		for {
+			time.Sleep(time.Hour)
+		}
+	}
+
+	lockPath := filepath.Join(t.TempDir(), "state.lock")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStateLockRecoversAfterOwnerIsKilled$")
+	cmd.Env = append(os.Environ(),
+		"GOHERE_STATE_LOCK_HELPER=1",
+		"GOHERE_STATE_LOCK_PATH="+lockPath,
+	)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || scanner.Text() != "locked" {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("helper did not acquire lock: output=%q err=%v", scanner.Text(), scanner.Err())
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+
+	unlock, err := acquireStateLock(lockPath, 2*time.Second)
+	if err != nil {
+		t.Fatalf("lock did not recover after owner was killed: %v", err)
+	}
+	unlock()
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("permanent lock file missing after recovery: %v", err)
 	}
 }
 

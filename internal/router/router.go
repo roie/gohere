@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -23,6 +24,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gofrs/flock"
+
 	"github.com/roie/gohere/internal/probe"
 )
 
@@ -35,9 +38,8 @@ const RouterIdentityPath = "/.well-known/gohere/router"
 const gohereRouteHeader = "X-Gohere-Route"
 const proxyResponseHeaderTimeout = 30 * time.Second
 const routeStoreLockTimeout = 10 * time.Second
-const routeStoreLockPoll = 10 * time.Millisecond
 const tokenLockTimeout = 10 * time.Second
-const tokenLockPoll = 10 * time.Millisecond
+const stateLockPoll = 10 * time.Millisecond
 
 var rotateOpenFile = os.OpenFile
 var errInvalidRouteHost = errors.New("invalid route host")
@@ -223,35 +225,32 @@ func writeToken(path string) (string, error) {
 	return token, nil
 }
 
+func acquireStateLock(lockPath string, timeout time.Duration) (func(), error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	fileLock := flock.New(lockPath, flock.SetPermissions(0600))
+	locked, err := fileLock.TryLockContext(ctx, stateLockPoll)
+	if err != nil {
+		return nil, err
+	}
+	if !locked {
+		return nil, context.DeadlineExceeded
+	}
+	if err := os.Chmod(lockPath, 0600); err != nil {
+		_ = fileLock.Unlock()
+		return nil, err
+	}
+	return func() { _ = fileLock.Unlock() }, nil
+}
+
 func lockTokenFile(path string) (func(), error) {
 	lockPath := path + ".lock"
-	deadline := time.Now().Add(tokenLockTimeout)
-	for {
-		file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if err == nil {
-			fmt.Fprintf(file, "%d\n", os.Getpid())
-			_ = file.Close()
-			return func() { _ = os.Remove(lockPath) }, nil
-		}
-		if !tokenLockHeldError(err) {
-			return nil, err
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("timed out waiting for token lock: %s", lockPath)
-		}
-		time.Sleep(tokenLockPoll)
+	unlock, err := acquireStateLock(lockPath, tokenLockTimeout)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, fmt.Errorf("timed out waiting for token lock: %s", lockPath)
 	}
-}
-
-func tokenLockHeldError(err error) bool {
-	return tokenLockHeldErrorForGOOS(runtime.GOOS, err)
-}
-
-func tokenLockHeldErrorForGOOS(goos string, err error) bool {
-	if errors.Is(err, os.ErrExist) {
-		return true
-	}
-	return goos == "windows" && errors.Is(err, os.ErrPermission)
+	return unlock, err
 }
 
 func replaceFile(tmpPath, path string) error {
@@ -352,22 +351,11 @@ func (s *RouteStore) lock() (func(), error) {
 		return nil, err
 	}
 	lockPath := s.path + ".lock"
-	deadline := time.Now().Add(routeStoreLockTimeout)
-	for {
-		file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if err == nil {
-			fmt.Fprintf(file, "%d\n", os.Getpid())
-			_ = file.Close()
-			return func() { _ = os.Remove(lockPath) }, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("timed out waiting for route store lock: %s", lockPath)
-		}
-		time.Sleep(routeStoreLockPoll)
+	unlock, err := acquireStateLock(lockPath, routeStoreLockTimeout)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, fmt.Errorf("timed out waiting for route store lock: %s", lockPath)
 	}
+	return unlock, err
 }
 
 func (s *RouteStore) load() ([]Route, error) {
