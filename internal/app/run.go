@@ -92,6 +92,11 @@ type routeStatusClient interface {
 	RouteStatuses(context.Context) ([]router.RouteStatus, error)
 }
 
+type wslOwnerClient interface {
+	adminClient
+	routeStatusClient
+}
+
 type bridgeProbeClient interface {
 	ProbeTarget(context.Context, string) (bool, error)
 }
@@ -1347,6 +1352,7 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer, cmd cli.Command) (r
 		"control.delete-route",
 		"control.probe-target",
 		"control.routes",
+		"control.route-statuses",
 		"control.upsert-route",
 	}
 	opened, err := openWindowsCompanion(ctx, requiredCapabilities...)
@@ -1408,12 +1414,13 @@ func companionPublicURLScheme(info companion.Info) string {
 	return "http"
 }
 
-func ensureSingleActiveWSLOwner(ctx context.Context, client adminClient, identity wslRunIdentity) error {
-	routes, err := client.Routes(ctx)
+func ensureSingleActiveWSLOwner(ctx context.Context, client wslOwnerClient, identity wslRunIdentity) error {
+	statuses, err := client.RouteStatuses(ctx)
 	if err != nil {
 		return err
 	}
-	for _, route := range routes {
+	for _, status := range statuses {
+		route := status.Route
 		if route.OwnerEnv != "wsl" || route.OwnerInstance == "" || route.OwnerInstance == identity.OwnerInstance {
 			continue
 		}
@@ -1421,7 +1428,17 @@ func ensureSingleActiveWSLOwner(ctx context.Context, client adminClient, identit
 		if route.Distro != "" || route.LinuxUser != "" {
 			owner = strings.Trim(route.Distro+"/"+route.LinuxUser, "/")
 		}
-		return fmt.Errorf("another WSL owner (%s) is already using the Windows gohere authority; concurrent WSL distributions or Linux users are not supported in this release", owner)
+		if !router.RouteLeaseExpired(route, time.Now()) {
+			return fmt.Errorf("another WSL owner (%s) is already using the Windows gohere authority; concurrent WSL distributions or Linux users are not supported in this release", owner)
+		}
+		if status.Status == "dead" {
+			return fmt.Errorf("foreign WSL route %s from %s has an expired lease and a dead target; run gohere prune, then retry", route.Host, owner)
+		}
+		targetStatus := strings.TrimSpace(status.Status)
+		if targetStatus == "" {
+			targetStatus = "unknown"
+		}
+		return fmt.Errorf("foreign WSL route %s from %s has an expired lease but its target is %s; refusing automatic ownership transfer", route.Host, owner, targetStatus)
 	}
 	return nil
 }

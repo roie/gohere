@@ -1262,6 +1262,82 @@ func TestSetupForGOOSUsesWSLTrustHookOnLinux(t *testing.T) {
 	}
 }
 
+func TestEnsureSingleActiveWSLOwnerRejectsActiveForeignOwner(t *testing.T) {
+	route := router.Route{
+		Host:            "foreign.localhost",
+		OwnerEnv:        "wsl",
+		OwnerInstance:   "owner-1",
+		Distro:          "Debian",
+		LinuxUser:       "bob",
+		LeaseExpiresAt:  time.Now().Add(time.Minute),
+		ProcessIdentity: "linux:123",
+	}
+	client := &recordingAdminClient{
+		routes:   []router.Route{route},
+		statuses: []router.RouteStatus{{Route: route, Status: "ready"}},
+	}
+
+	err := ensureSingleActiveWSLOwner(t.Context(), client, wslRunIdentity{OwnerInstance: "owner-2"})
+	if err == nil || !strings.Contains(err.Error(), "another WSL owner (Debian/bob) is already using") {
+		t.Fatalf("error = %v", err)
+	}
+	if client.deleted != "" {
+		t.Fatalf("foreign route was deleted: %q", client.deleted)
+	}
+}
+
+func TestEnsureSingleActiveWSLOwnerMarksExpiredDeadRoutePruneEligible(t *testing.T) {
+	route := router.Route{
+		Host:            "foreign.localhost",
+		OwnerEnv:        "wsl",
+		OwnerInstance:   "owner-1",
+		Distro:          "Debian",
+		LinuxUser:       "bob",
+		LeaseExpiresAt:  time.Now().Add(-time.Minute),
+		ProcessIdentity: "linux:123",
+	}
+	client := &recordingAdminClient{
+		routes:   []router.Route{route},
+		statuses: []router.RouteStatus{{Route: route, Status: "dead"}},
+	}
+
+	err := ensureSingleActiveWSLOwner(t.Context(), client, wslRunIdentity{OwnerInstance: "owner-2"})
+	if err == nil || !strings.Contains(err.Error(), "foreign.localhost") || !strings.Contains(err.Error(), "gohere prune") {
+		t.Fatalf("error = %v", err)
+	}
+	if client.deleted != "" {
+		t.Fatalf("foreign route was deleted: %q", client.deleted)
+	}
+}
+
+func TestEnsureSingleActiveWSLOwnerRefusesExpiredUncertainRoute(t *testing.T) {
+	for _, status := range []string{"unknown", "ready"} {
+		t.Run(status, func(t *testing.T) {
+			route := router.Route{
+				Host:            "foreign.localhost",
+				OwnerEnv:        "wsl",
+				OwnerInstance:   "owner-1",
+				Distro:          "Debian",
+				LinuxUser:       "bob",
+				LeaseExpiresAt:  time.Now().Add(-time.Minute),
+				ProcessIdentity: "linux:123",
+			}
+			client := &recordingAdminClient{
+				routes:   []router.Route{route},
+				statuses: []router.RouteStatus{{Route: route, Status: status}},
+			}
+
+			err := ensureSingleActiveWSLOwner(t.Context(), client, wslRunIdentity{OwnerInstance: "owner-2"})
+			if err == nil || !strings.Contains(err.Error(), "refusing automatic ownership transfer") || !strings.Contains(err.Error(), status) {
+				t.Fatalf("error = %v", err)
+			}
+			if client.deleted != "" {
+				t.Fatalf("foreign route was deleted: %q", client.deleted)
+			}
+		})
+	}
+}
+
 func TestRunStartsLocalProjectBeforeServiceRegistration(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
