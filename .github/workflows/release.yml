@@ -22,10 +22,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
           cache: false
@@ -46,16 +48,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
           cache: false
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -175,6 +179,8 @@ jobs:
           test -f "$install_dir/node_modules/gohere/third_party/go-yamux-v5.1.0-source.tar.gz"
           test -f "$install_dir/node_modules/gohere/third_party/go-yamux-v5.1.0-source.tar.gz.sha256"
           grep -q 'go-yamux v5.1.0' "$install_dir/node_modules/gohere/THIRD_PARTY_NOTICES"
+          grep -q 'gofrs/flock v0.13.0' "$install_dir/node_modules/gohere/THIRD_PARTY_NOTICES"
+          grep -q 'golang.org/x/sys v0.37.0' "$install_dir/node_modules/gohere/THIRD_PARTY_NOTICES"
 
           smoke_dir="$(mktemp -d)"
           mkdir -p "$smoke_dir/live" "$smoke_dir/dist" "$smoke_dir/pages"
@@ -231,14 +237,17 @@ jobs:
 
       - name: Publish npm package
         # Auth uses npm Trusted Publishing/OIDC for this workflow, so NODE_AUTH_TOKEN is intentionally not set.
-        run: npm publish "${{ steps.pack.outputs.tarball }}" --access public
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: npm publish "$TARBALL" --access public
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: >-
-          gh release create "${{ github.ref_name }}"
+          gh release create "$RELEASE_TAG"
           third_party/go-yamux-v5.1.0-source.tar.gz
           third_party/go-yamux-v5.1.0-source.tar.gz.sha256
-          --title "${{ github.ref_name }}"
+          --title "$RELEASE_TAG"
           --generate-notes
