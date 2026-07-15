@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -48,7 +51,9 @@ func TestInstallWSLIntegrationKeepsOnlyEdgeAndPublicAuthorityState(t *testing.T)
 	}
 
 	integrationDir := filepath.Join(stateDir, wslIntegrationDirname)
-	edgeBinary := filepath.Join(integrationDir, "bin", wslEdgeBinaryName)
+	edgeSum := sha256.Sum256([]byte("linux-cli"))
+	edgeHash := hex.EncodeToString(edgeSum[:])
+	edgeBinary := filepath.Join(integrationDir, "bin", wslEdgeBinaryName+"-"+edgeHash)
 	data, err := os.ReadFile(edgeBinary)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +79,8 @@ func TestInstallWSLIntegrationKeepsOnlyEdgeAndPublicAuthorityState(t *testing.T)
 	}
 	if metadata.WindowsStateDir != info.StateDir || metadata.RouterInstanceID != info.RouterInstanceID ||
 		metadata.Distro != "Ubuntu" || metadata.LinuxUser != "alice" || metadata.CAFingerprint != fingerprint ||
-		len(metadata.OwnerInstance) != 32 {
+		metadata.CompanionVersion != info.CompanionVersion || metadata.EdgeBinary != edgeBinary ||
+		metadata.EdgeSHA256 != edgeHash || len(metadata.OwnerInstance) != 32 {
 		t.Fatalf("metadata = %#v", metadata)
 	}
 
@@ -97,6 +103,79 @@ func TestInstallWSLIntegrationKeepsOnlyEdgeAndPublicAuthorityState(t *testing.T)
 		if _, err := os.Stat(forbidden); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("forbidden WSL authority file exists: %s", forbidden)
 		}
+	}
+}
+
+func TestInstallWSLIntegrationKeepsPreviousEdgeCandidate(t *testing.T) {
+	certificate, fingerprint := testCA(t)
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	executable := filepath.Join(root, "gohere")
+	if err := os.WriteFile(executable, []byte("first-edge"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := wslIntegrationSetupConfig{
+		StateDir:          stateDir,
+		CurrentExecutable: executable,
+		Runner:            &wslSetupRecordingRunner{},
+		Input:             strings.NewReader(""),
+	}
+	info := companion.Info{CompanionVersion: "1.2.3", CAFingerprint: fingerprint}
+	if err := installWSLIntegration(t.Context(), info, certificate, cfg); err != nil {
+		t.Fatal(err)
+	}
+	firstSum := sha256.Sum256([]byte("first-edge"))
+	firstPath := filepath.Join(stateDir, wslIntegrationDirname, "bin", wslEdgeBinaryName+"-"+hex.EncodeToString(firstSum[:]))
+
+	if err := os.WriteFile(executable, []byte("second-edge"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Runner = &wslSetupRecordingRunner{}
+	if err := installWSLIntegration(t.Context(), info, certificate, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(firstPath); err != nil || string(data) != "first-edge" {
+		t.Fatalf("previous edge candidate = %q, err = %v", data, err)
+	}
+}
+
+func TestInstallWSLIntegrationRepairsExecutePermissionOnReusedCandidate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix execute bits")
+	}
+	certificate, fingerprint := testCA(t)
+	root := t.TempDir()
+	executable := filepath.Join(root, "gohere")
+	if err := os.WriteFile(executable, []byte("edge"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := wslIntegrationSetupConfig{
+		StateDir:          filepath.Join(root, "state"),
+		CurrentExecutable: executable,
+		Runner:            &wslSetupRecordingRunner{},
+		Input:             strings.NewReader(""),
+	}
+	info := companion.Info{CompanionVersion: "1.2.3", CAFingerprint: fingerprint}
+	if err := installWSLIntegration(t.Context(), info, certificate, cfg); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := loadWSLIntegrationMetadata(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(metadata.EdgeBinary, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Runner = &wslSetupRecordingRunner{}
+	if err := installWSLIntegration(t.Context(), info, certificate, cfg); err != nil {
+		t.Fatal(err)
+	}
+	fileInfo, err := os.Stat(metadata.EdgeBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileInfo.Mode().Perm()&0111 == 0 {
+		t.Fatalf("reused edge mode = %v, want executable", fileInfo.Mode().Perm())
 	}
 }
 

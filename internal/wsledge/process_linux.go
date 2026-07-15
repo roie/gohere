@@ -32,6 +32,33 @@ func stopProcess(pid int) error {
 	return process.Signal(syscall.SIGTERM)
 }
 
+func processArguments(pid int) ([]string, bool) {
+	if pid <= 0 {
+		return nil, false
+	}
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil || len(data) == 0 {
+		return nil, false
+	}
+	parts := strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
+	return parts, len(parts) > 0
+}
+
+func processExecutable(pid int) (string, bool) {
+	if pid <= 0 {
+		return "", false
+	}
+	path, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+	if err != nil {
+		return "", false
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	return path, true
+}
+
 func processIdentity(pid int) (string, bool) {
 	if pid <= 0 {
 		return "", false

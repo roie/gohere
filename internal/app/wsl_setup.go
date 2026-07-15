@@ -32,6 +32,8 @@ const (
 type wslIntegrationMetadata struct {
 	ProtocolVersion  int    `json:"protocolVersion"`
 	CompanionVersion string `json:"companionVersion"`
+	EdgeBinary       string `json:"edgeBinary"`
+	EdgeSHA256       string `json:"edgeSha256"`
 	WindowsUser      string `json:"windowsUser"`
 	WindowsStateDir  string `json:"windowsStateDir"`
 	RouterInstanceID string `json:"routerInstanceId"`
@@ -179,6 +181,9 @@ func loadWSLIntegrationMetadata(stateDir string) (wslIntegrationMetadata, error)
 func metadataMatchesWindowsAuthority(metadata wslIntegrationMetadata, info companion.Info) bool {
 	return metadata.ProtocolVersion == companion.ProtocolVersion &&
 		metadata.OwnerInstance != "" &&
+		metadata.CompanionVersion == info.CompanionVersion &&
+		filepath.IsAbs(metadata.EdgeBinary) &&
+		len(metadata.EdgeSHA256) == sha256.Size*2 &&
 		strings.EqualFold(metadata.CAFingerprint, info.CAFingerprint) &&
 		strings.EqualFold(metadata.WindowsStateDir, info.StateDir) &&
 		metadata.WindowsUser == info.User
@@ -233,8 +238,8 @@ func installWSLIntegration(ctx context.Context, info companion.Info, certificate
 		return err
 	}
 
-	edgeBinary := filepath.Join(integrationDir, "bin", wslEdgeBinaryName)
-	if err := copyAtomicFile(cfg.CurrentExecutable, edgeBinary, 0755); err != nil {
+	edgeBinary, edgeHash, err := stageWSLEdgeBinary(cfg.CurrentExecutable, integrationDir)
+	if err != nil {
 		return err
 	}
 	fmt.Fprintln(cfg.Output, "Setting up gohere...")
@@ -252,6 +257,8 @@ func installWSLIntegration(ctx context.Context, info companion.Info, certificate
 	metadata := wslIntegrationMetadata{
 		ProtocolVersion:  companion.ProtocolVersion,
 		CompanionVersion: info.CompanionVersion,
+		EdgeBinary:       edgeBinary,
+		EdgeSHA256:       edgeHash,
 		WindowsUser:      info.User,
 		WindowsStateDir:  info.StateDir,
 		RouterInstanceID: info.RouterInstanceID,
@@ -330,6 +337,44 @@ func randomIdentifier() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(random), nil
+}
+
+func stageWSLEdgeBinary(source, integrationDir string) (string, string, error) {
+	hash, err := fileSHA256Hex(source)
+	if err != nil {
+		return "", "", err
+	}
+	destination := filepath.Join(integrationDir, "bin", wslEdgeBinaryName+"-"+hash)
+	if existingHash, err := fileSHA256Hex(destination); err == nil && existingHash == hash {
+		if err := os.Chmod(destination, 0755); err != nil {
+			return "", "", err
+		}
+		return destination, hash, nil
+	}
+	if err := copyAtomicFile(source, destination, 0755); err != nil {
+		return "", "", err
+	}
+	stagedHash, err := fileSHA256Hex(destination)
+	if err != nil {
+		return "", "", err
+	}
+	if stagedHash != hash {
+		return "", "", errors.New("staged WSL edge hash does not match the current executable")
+	}
+	return destination, hash, nil
+}
+
+func fileSHA256Hex(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func copyAtomicFile(source, destination string, mode os.FileMode) error {

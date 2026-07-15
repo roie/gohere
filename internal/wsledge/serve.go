@@ -2,6 +2,8 @@ package wsledge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,7 +65,19 @@ func Serve(ctx context.Context, cfg Config) error {
 			return startHelperSession(ctx, cfg.CompanionBinary, cfg.LogOutput)
 		}
 	}
-	lock, err := acquireEdgeLock(filepath.Join(cfg.StateDir, "edge.lock"))
+	edgeBinary, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	edgeBinary, err = filepath.EvalSymlinks(edgeBinary)
+	if err != nil {
+		return err
+	}
+	edgeHash, err := fileSHA256Hex(edgeBinary)
+	if err != nil {
+		return err
+	}
+	lock, err := acquireEdgeLock(filepath.Join(cfg.StateDir, "edge.lock"), edgeBinary, edgeHash, cfg.CompanionBinary)
 	if err != nil {
 		if errors.Is(err, ErrAlreadyRunning) {
 			return nil
@@ -322,12 +337,23 @@ type edgeLock struct {
 	record edgeLockRecord
 }
 
+type RunningInfo struct {
+	PID             int
+	ProcessIdentity string
+	EdgeBinary      string
+	EdgeSHA256      string
+	CompanionBinary string
+}
+
 type edgeLockRecord struct {
 	PID             int    `json:"pid"`
 	ProcessIdentity string `json:"processIdentity"`
+	EdgeBinary      string `json:"edgeBinary,omitempty"`
+	EdgeSHA256      string `json:"edgeSha256,omitempty"`
+	CompanionBinary string `json:"companionBinary,omitempty"`
 }
 
-func acquireEdgeLock(path string) (*edgeLock, error) {
+func acquireEdgeLock(path, edgeBinary, edgeHash, companionBinary string) (*edgeLock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
@@ -341,7 +367,13 @@ func acquireEdgeLock(path string) (*edgeLock, error) {
 				_ = os.Remove(path)
 				return nil, errors.New("could not identify the WSL edge process")
 			}
-			record := edgeLockRecord{PID: pid, ProcessIdentity: identity}
+			record := edgeLockRecord{
+				PID:             pid,
+				ProcessIdentity: identity,
+				EdgeBinary:      edgeBinary,
+				EdgeSHA256:      edgeHash,
+				CompanionBinary: companionBinary,
+			}
 			if writeErr := json.NewEncoder(file).Encode(record); writeErr != nil {
 				_ = file.Close()
 				_ = os.Remove(path)
@@ -365,7 +397,7 @@ func acquireEdgeLock(path string) (*edgeLock, error) {
 		if readErr == nil && record.ProcessIdentity == "" && processAlive(record.PID) {
 			return nil, errors.New("existing WSL edge lock belongs to a live process but has no verifiable identity")
 		}
-		if readErr == nil && edgeProcessMatches(record) {
+		if readErr == nil && edgeProcessOwnerMatches(record) {
 			return nil, ErrAlreadyRunning
 		}
 		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
@@ -387,10 +419,25 @@ func (l *edgeLock) Release() {
 
 func Running(stateDir string) bool {
 	record, err := readEdgeLock(filepath.Join(stateDir, "edge.lock"))
-	if err != nil {
-		return false
+	return err == nil && edgeProcessOwnerMatches(record)
+}
+
+func Inspect(stateDir string) (RunningInfo, bool, error) {
+	record, err := readEdgeLock(filepath.Join(stateDir, "edge.lock"))
+	if errors.Is(err, os.ErrNotExist) {
+		return RunningInfo{}, false, nil
 	}
-	return edgeProcessMatches(record)
+	if err != nil {
+		return RunningInfo{}, false, err
+	}
+	if !edgeProcessOwnerMatches(record) {
+		return RunningInfo{}, false, nil
+	}
+	info, err := verifiedRunningInfo(stateDir, record)
+	if err != nil {
+		return RunningInfo{}, false, err
+	}
+	return info, true, nil
 }
 
 func Stop(stateDir string) error {
@@ -408,8 +455,11 @@ func Stop(stateDir string) error {
 		}
 		return errors.New("refusing to stop a live process from an unverifiable legacy WSL edge lock")
 	}
-	if !edgeProcessMatches(record) {
+	if !edgeProcessOwnerMatches(record) {
 		return os.Remove(lockPath)
+	}
+	if _, err := verifiedRunningInfo(stateDir, record); err != nil {
+		return fmt.Errorf("refusing to stop a live WSL edge whose binary identity cannot be verified: %w", err)
 	}
 	if err := stopProcess(record.PID); err != nil {
 		return err
@@ -441,12 +491,79 @@ func readEdgeLock(path string) (edgeLockRecord, error) {
 	return edgeLockRecord{PID: pid}, nil
 }
 
-func edgeProcessMatches(record edgeLockRecord) bool {
+func edgeProcessOwnerMatches(record edgeLockRecord) bool {
 	if record.PID <= 0 || record.ProcessIdentity == "" || !processAlive(record.PID) {
 		return false
 	}
 	identity, ok := processIdentity(record.PID)
 	return ok && identity == record.ProcessIdentity
+}
+
+func edgeProcessMatches(record edgeLockRecord) bool {
+	if !edgeProcessOwnerMatches(record) {
+		return false
+	}
+	executable, ok := processExecutable(record.PID)
+	if !ok || executable != record.EdgeBinary {
+		return false
+	}
+	hash, err := fileSHA256Hex(executable)
+	return err == nil && hash == record.EdgeSHA256
+}
+
+func verifiedRunningInfo(stateDir string, record edgeLockRecord) (RunningInfo, error) {
+	executable, ok := processExecutable(record.PID)
+	if !ok {
+		return RunningInfo{}, errors.New("running edge executable is unavailable")
+	}
+	edgeBinary := record.EdgeBinary
+	if edgeBinary == "" {
+		edgeBinary = executable
+	}
+	if executable != edgeBinary {
+		return RunningInfo{}, errors.New("running edge executable path does not match its lock record")
+	}
+	binDir, err := filepath.EvalSymlinks(filepath.Join(stateDir, "bin"))
+	if err != nil {
+		return RunningInfo{}, errors.New("WSL edge integration bin directory is unavailable")
+	}
+	relative, err := filepath.Rel(binDir, edgeBinary)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) || !strings.HasPrefix(filepath.Base(edgeBinary), "gohere-edge") {
+		return RunningInfo{}, errors.New("running edge executable is outside the integration bin directory")
+	}
+	hash, err := fileSHA256Hex(edgeBinary)
+	if err != nil {
+		return RunningInfo{}, err
+	}
+	if record.EdgeSHA256 != "" && record.EdgeSHA256 != hash {
+		return RunningInfo{}, errors.New("running edge executable hash does not match its lock record")
+	}
+	companionBinary := record.CompanionBinary
+	if companionBinary == "" {
+		if args, ok := processArguments(record.PID); ok && len(args) == 3 && args[1] == InternalCommand {
+			companionBinary = args[2]
+		}
+	}
+	return RunningInfo{
+		PID:             record.PID,
+		ProcessIdentity: record.ProcessIdentity,
+		EdgeBinary:      edgeBinary,
+		EdgeSHA256:      hash,
+		CompanionBinary: companionBinary,
+	}, nil
+}
+
+func fileSHA256Hex(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func bytesTrimSpace(data []byte) []byte {

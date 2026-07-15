@@ -1,12 +1,15 @@
 package wsledge
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"errors"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -115,17 +118,33 @@ func TestSessionManagerReconnectsAfterHelperCloses(t *testing.T) {
 	}
 }
 
-func TestEdgeLockUsesProcessIdentityAndRejectsPIDReuse(t *testing.T) {
+func TestEdgeLockUsesProcessAndBinaryIdentityAndRejectsPIDReuse(t *testing.T) {
 	stateDir := t.TempDir()
 	lockPath := filepath.Join(stateDir, "edge.lock")
-	lock, err := acquireEdgeLock(lockPath)
+	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !Running(stateDir) {
-		t.Fatal("current edge lock is not reported as running")
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := acquireEdgeLock(lockPath); !errors.Is(err, ErrAlreadyRunning) {
+	edgeHash, err := fileSHA256Hex(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireEdgeLock(lockPath, executable, edgeHash, `C:\\Temp\\gohere.exe`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := readEdgeLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.PID != os.Getpid() || record.EdgeBinary != executable || record.EdgeSHA256 != edgeHash || record.CompanionBinary != `C:\\Temp\\gohere.exe` {
+		t.Fatalf("lock record = %#v", record)
+	}
+	if _, err := acquireEdgeLock(lockPath, executable, edgeHash, `C:\\Temp\\gohere.exe`); !errors.Is(err, ErrAlreadyRunning) {
 		t.Fatalf("second lock error = %v", err)
 	}
 	lock.Release()
@@ -143,6 +162,125 @@ func TestEdgeLockUsesProcessIdentityAndRejectsPIDReuse(t *testing.T) {
 	}
 	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
 		t.Fatalf("stale reused-PID lock remains: %v", err)
+	}
+}
+
+func TestInspectRecoversVerifiedLegacyEdgeIdentity(t *testing.T) {
+	if os.Getenv("GOHERE_LEGACY_EDGE_HELPER") == "1" {
+		fmt.Fprintln(os.Stdout, "ready")
+		_ = os.Stdout.Sync()
+		for {
+			time.Sleep(time.Hour)
+		}
+	}
+
+	root := t.TempDir()
+	actualRoot := filepath.Join(root, "actual")
+	if err := os.MkdirAll(actualRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	linkedRoot := filepath.Join(root, "home")
+	if err := os.Symlink(actualRoot, linkedRoot); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(linkedRoot, "wsl")
+	edgeBinary := filepath.Join(stateDir, "bin", "gohere-edge")
+	if err := os.MkdirAll(filepath.Dir(edgeBinary), 0700); err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(edgeBinary, data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(edgeBinary, "-test.run=^TestInspectRecoversVerifiedLegacyEdgeIdentity$")
+	cmd.Env = append(os.Environ(), "GOHERE_LEGACY_EDGE_HELPER=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || scanner.Text() != "ready" {
+		t.Fatalf("legacy helper did not start: output=%q err=%v", scanner.Text(), scanner.Err())
+	}
+	identity, ok := processIdentity(cmd.Process.Pid)
+	if !ok {
+		t.Fatal("legacy helper process identity unavailable")
+	}
+	record := edgeLockRecord{PID: cmd.Process.Pid, ProcessIdentity: identity}
+	lockData, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "edge.lock"), lockData, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	info, running, err := Inspect(stateDir)
+	if err != nil || !running {
+		t.Fatalf("inspect running = %v, err = %v", running, err)
+	}
+	wantBinary, err := filepath.EvalSymlinks(edgeBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHash, err := fileSHA256Hex(wantBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.EdgeBinary != wantBinary || info.EdgeSHA256 != wantHash || info.PID != cmd.Process.Pid {
+		t.Fatalf("legacy running info = %#v", info)
+	}
+}
+
+func TestInspectRejectsTamperedLiveEdgeIdentity(t *testing.T) {
+	stateDir := t.TempDir()
+	lockPath := filepath.Join(stateDir, "edge.lock")
+	identity, ok := processIdentity(os.Getpid())
+	if !ok {
+		t.Skip("process identity unavailable")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := edgeLockRecord{
+		PID:               os.Getpid(),
+		ProcessIdentity:   identity,
+		EdgeBinary:       executable,
+		EdgeSHA256:       strings.Repeat("0", 64),
+		CompanionBinary: `C:\\Temp\\gohere.exe`,
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, running, err := Inspect(stateDir); err == nil || running {
+		t.Fatalf("inspect running = %v, err = %v", running, err)
+	}
+	if err := Stop(stateDir); err == nil || !strings.Contains(err.Error(), "refusing to stop") {
+		t.Fatalf("stop error = %v", err)
 	}
 }
 

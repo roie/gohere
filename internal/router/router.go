@@ -461,6 +461,7 @@ func (s *MemoryStore) Update(update func([]Route) ([]Route, error)) error {
 
 func (s *Server) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc(RouterIdentityPath, s.handleRouterIdentity)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		io.WriteString(w, "gohere-router\n")

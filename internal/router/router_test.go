@@ -501,6 +501,34 @@ func TestPublicRouterIdentityUsesOpaqueInstanceID(t *testing.T) {
 	}
 }
 
+func TestAdminRouterIdentityUsesOpaqueInstanceID(t *testing.T) {
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore(), InstanceID: "router-instance-123"})
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:39399"+RouterIdentityPath, nil)
+	rec := httptest.NewRecorder()
+
+	srv.AdminHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status = %d, headers = %#v", rec.Code, rec.Header())
+	}
+	var response struct {
+		RouterInstanceID string `json:"routerInstanceId"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.RouterInstanceID != "router-instance-123" {
+		t.Fatalf("response = %#v", response)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:39399"+RouterIdentityPath, nil)
+	rec = httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST identity status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
 func TestPublicRouterIdentityIsNotAvailableWithoutInstanceID(t *testing.T) {
 	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
 	req := httptest.NewRequest(http.MethodGet, "http://anything.localhost"+RouterIdentityPath, nil)
