@@ -88,7 +88,10 @@ func TestEnsureWSLPublicTransportReusesMatchingVerifiedEdge(t *testing.T) {
 	running := wsledge.RunningInfo{PID: 10, ProcessIdentity: "linux:1", EdgeBinary: candidate.EdgeBinary, EdgeSHA256: candidate.EdgeSHA256, CompanionBinary: `C:\Temp\gohere.exe`}
 	inspectWSLEdgeFunc = func(string) (wsledge.RunningInfo, bool, error) { return running, true, nil }
 	wslStopEdgeFunc = func(string) error { t.Fatal("matching edge should not stop"); return nil }
-	startWSLEdgeFunc = func(context.Context, string, string, string) (int, error) { t.Fatal("matching edge should not restart"); return 0, nil }
+	startWSLEdgeFunc = func(context.Context, string, string, string) (int, error) {
+		t.Fatal("matching edge should not restart")
+		return 0, nil
+	}
 
 	transport, err := ensureWSLPublicTransport(t.Context(), companion.Info{RouterInstanceID: "router-1"}, `C:\Temp\gohere.exe`)
 	if err != nil || transport != wslTransportEdge {

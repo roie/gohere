@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -263,10 +263,10 @@ func TestInspectRejectsTamperedLiveEdgeIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := edgeLockRecord{
-		PID:               os.Getpid(),
-		ProcessIdentity:   identity,
-		EdgeBinary:       executable,
-		EdgeSHA256:       strings.Repeat("0", 64),
+		PID:             os.Getpid(),
+		ProcessIdentity: identity,
+		EdgeBinary:      executable,
+		EdgeSHA256:      strings.Repeat("0", 64),
 		CompanionBinary: `C:\\Temp\\gohere.exe`,
 	}
 	data, err := json.Marshal(record)
