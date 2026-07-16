@@ -629,6 +629,7 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 		ProjectRoot: root,
 		ProjectName: projectName,
 		ManagedPort: managedPort,
+		Mode:        "workspace",
 	}, nil
 }
 
@@ -696,6 +697,7 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 		}
 		plan.Host = multiScriptHost(script, plan.Host)
 		plan.Name = strings.TrimSuffix(plan.Host, ".localhost")
+		plan.Mode = "multi"
 		if detectWSLFunc() {
 			applyRunRouter(&plan, resolvedRouter)
 		}
@@ -784,14 +786,6 @@ func multiScriptHost(script, baseHost string) string {
 	return project.NormalizeHostnameName(label) + "." + base + ".localhost"
 }
 
-type serviceDiscoveryEntry struct {
-	Key     string `json:"key"`
-	URL     string `json:"url"`
-	Port    int    `json:"port,omitempty"`
-	Target  string `json:"target,omitempty"`
-	Managed bool   `json:"managed"`
-}
-
 func applyServiceDiscoveryEnv(items []multiRunItem) error {
 	if len(items) <= 1 {
 		return nil
@@ -808,7 +802,6 @@ func applyServiceDiscoveryEnv(items []multiRunItem) error {
 
 func serviceDiscoveryEnv(items []multiRunItem) (map[string]string, error) {
 	values := map[string]string{}
-	services := map[string]serviceDiscoveryEntry{}
 	seen := map[string]string{}
 
 	for _, item := range items {
@@ -822,29 +815,14 @@ func serviceDiscoveryEnv(items []multiRunItem) (map[string]string, error) {
 		}
 		seen[key] = serviceDiscoverySource(item)
 
-		url := publicRouteURLForScheme(item.plan.URLScheme, item.plan.Host, item.plan.URLPath)
-		entry := serviceDiscoveryEntry{
-			Key:     key,
-			URL:     url,
-			Managed: item.plan.ManagedPort,
-		}
-		values["GOHERE_"+key+"_URL"] = url
+		values["GOHERE_"+key+"_URL"] = publicRouteURLForScheme(item.plan.URLScheme, item.plan.Host, item.plan.URLPath)
 		if item.plan.ManagedPort {
 			portValue := fmt.Sprintf("%d", item.plan.Port)
 			target := fmt.Sprintf("http://127.0.0.1:%d", item.plan.Port)
-			entry.Port = item.plan.Port
-			entry.Target = target
 			values["GOHERE_"+key+"_PORT"] = portValue
 			values["GOHERE_"+key+"_TARGET"] = target
 		}
-		services[strings.ToLower(key)] = entry
 	}
-
-	data, err := json.Marshal(services)
-	if err != nil {
-		return nil, err
-	}
-	values["GOHERE_SERVICES_JSON"] = string(data)
 	return values, nil
 }
 
@@ -1641,10 +1619,6 @@ func runSuccessOutputForScheme(cmd cli.Command, scheme, host, urlPath string) st
 		}
 	}
 	return fmt.Sprintf("%s \u2192 %s://%s%s\n", label, normalizedURLScheme(scheme), host, escapedURLPath(urlPath))
-}
-
-func publicRouteURL(host, urlPath string) string {
-	return publicRouteURLForScheme("http", host, urlPath)
 }
 
 func publicRouteURLForScheme(scheme, host, urlPath string) string {
@@ -2838,11 +2812,6 @@ func foreignRouteStopReason(route router.Route) string {
 		return fmt.Sprintf("route belongs to %s; run gohere stop in that WSL owner.", owner)
 	}
 	return "route belongs to another environment."
-}
-
-func stopAdminCurrent(ctx context.Context, client adminClient, cwd string) (string, bool, string, error) {
-	result, err := stopAdminCWDs(ctx, client, []string{cwd})
-	return result.MatchedHost, result.Stopped, result.Warning, err
 }
 
 func stopAdminCWDs(ctx context.Context, client adminClient, cwds []string) (lifecycle.StopResult, error) {

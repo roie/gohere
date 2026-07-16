@@ -2289,12 +2289,9 @@ func TestRunWorkspaceInjectsServiceDiscoveryEnv(t *testing.T) {
 		assertEnv(t, env, "GOHERE_WEB_TARGET", "http://127.0.0.1:"+webPort)
 		assertEnv(t, env, "GOHERE_WORKER_TARGET", "http://127.0.0.1:"+workerPort)
 
-		services := parseServiceDiscoveryJSON(t, env)
-		assertServiceEntry(t, services, "web", "WEB", "http://web.ctrltube.localhost", webPort, "http://127.0.0.1:"+webPort, true)
-		assertServiceEntry(t, services, "worker", "WORKER", "http://worker.ctrltube.localhost", workerPort, "http://127.0.0.1:"+workerPort, true)
-
-		if services["worker"].URL == "" {
-			t.Fatalf("%s env missing worker service entry: %#v", name, services)
+		assertMissingEnv(t, env, "GOHERE_SERVICES_JSON")
+		if name == "" {
+			t.Fatal("workspace service name is empty")
 		}
 	}
 }
@@ -2346,9 +2343,9 @@ func TestRunWorkspaceServiceDiscoveryEnvUsesResolvedConflictHosts(t *testing.T) 
 		assertEnv(t, env, "GOHERE_WEB_URL", resolvedWebURL)
 		assertEnv(t, env, "GOHERE_WORKER_URL", "http://worker.ctrltube.localhost")
 
-		services := parseServiceDiscoveryJSON(t, env)
-		if services["web"].URL != resolvedWebURL {
-			t.Fatalf("%s web service URL = %q, want %q", name, services["web"].URL, resolvedWebURL)
+		assertMissingEnv(t, env, "GOHERE_SERVICES_JSON")
+		if name == "" {
+			t.Fatal("workspace service name is empty")
 		}
 	}
 }
@@ -2385,10 +2382,7 @@ func TestRunMultiInjectsServiceDiscoveryEnv(t *testing.T) {
 	for _, env := range envs {
 		assertEnv(t, env, "GOHERE_WEB_URL", "http://web."+base+".localhost")
 		assertEnv(t, env, "GOHERE_API_URL", "http://api."+base+".localhost")
-		services := parseServiceDiscoveryJSON(t, env)
-		if services["web"].Key != "WEB" || services["api"].Key != "API" {
-			t.Fatalf("service keys = %#v, want WEB/API", services)
-		}
+		assertMissingEnv(t, env, "GOHERE_SERVICES_JSON")
 	}
 }
 
@@ -2425,14 +2419,7 @@ func TestRunServiceDiscoveryMarksExplicitPortScriptsUnmanaged(t *testing.T) {
 	assertEnv(t, webEnv, "GOHERE_WORKER_URL", "http://worker.ctrltube.localhost")
 	assertMissingEnv(t, webEnv, "GOHERE_WORKER_PORT")
 	assertMissingEnv(t, webEnv, "GOHERE_WORKER_TARGET")
-	services := parseServiceDiscoveryJSON(t, webEnv)
-	worker := services["worker"]
-	if worker.Key != "WORKER" || worker.URL != "http://worker.ctrltube.localhost" || worker.Managed {
-		t.Fatalf("worker service entry = %#v, want unmanaged worker URL/key", worker)
-	}
-	if worker.Port != 0 || worker.Target != "" {
-		t.Fatalf("worker service entry should omit port/target when unmanaged: %#v", worker)
-	}
+	assertMissingEnv(t, webEnv, "GOHERE_SERVICES_JSON")
 }
 
 func TestRunServiceDiscoveryMarksUnknownScriptsUnmanaged(t *testing.T) {
@@ -2468,14 +2455,7 @@ func TestRunServiceDiscoveryMarksUnknownScriptsUnmanaged(t *testing.T) {
 	assertEnv(t, webEnv, "GOHERE_WORKER_URL", "http://worker.ctrltube.localhost")
 	assertMissingEnv(t, webEnv, "GOHERE_WORKER_PORT")
 	assertMissingEnv(t, webEnv, "GOHERE_WORKER_TARGET")
-	services := parseServiceDiscoveryJSON(t, webEnv)
-	worker := services["worker"]
-	if worker.Key != "WORKER" || worker.URL != "http://worker.ctrltube.localhost" || worker.Managed {
-		t.Fatalf("worker service entry = %#v, want unmanaged worker URL/key", worker)
-	}
-	if worker.Port != 0 || worker.Target != "" {
-		t.Fatalf("worker service entry should omit port/target when unmanaged: %#v", worker)
-	}
+	assertMissingEnv(t, webEnv, "GOHERE_SERVICES_JSON")
 }
 
 func TestRunServiceDiscoveryPreservesExistingUserEnv(t *testing.T) {
@@ -6292,37 +6272,6 @@ func envValue(env []string, key string) (string, bool) {
 
 func appHelperCommand(command string) []string {
 	return []string{os.Args[0], "-test.run=TestAppCommandHelper", "--", command}
-}
-
-type serviceDiscoveryTestEntry struct {
-	Key     string `json:"key"`
-	URL     string `json:"url"`
-	Port    int    `json:"port"`
-	Target  string `json:"target"`
-	Managed bool   `json:"managed"`
-}
-
-func parseServiceDiscoveryJSON(t *testing.T, env []string) map[string]serviceDiscoveryTestEntry {
-	t.Helper()
-	var services map[string]serviceDiscoveryTestEntry
-	if err := json.Unmarshal([]byte(mustEnv(t, env, "GOHERE_SERVICES_JSON")), &services); err != nil {
-		t.Fatalf("GOHERE_SERVICES_JSON did not parse: %v", err)
-	}
-	return services
-}
-
-func assertServiceEntry(t *testing.T, services map[string]serviceDiscoveryTestEntry, name, key, url, port, target string, managed bool) {
-	t.Helper()
-	entry, ok := services[name]
-	if !ok {
-		t.Fatalf("missing service %q in %#v", name, services)
-	}
-	if entry.Key != key || entry.URL != url || entry.Target != target || entry.Managed != managed {
-		t.Fatalf("service %q = %#v, want key=%q url=%q target=%q managed=%v", name, entry, key, url, target, managed)
-	}
-	if port != "" && itoa(entry.Port) != port {
-		t.Fatalf("service %q port = %d, want %s", name, entry.Port, port)
-	}
 }
 
 func sameStrings(a, b []string) bool {
