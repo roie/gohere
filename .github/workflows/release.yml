@@ -248,7 +248,5 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: >-
           gh release create "$RELEASE_TAG"
-          third_party/go-yamux-v5.1.0-source.tar.gz
-          third_party/go-yamux-v5.1.0-source.tar.gz.sha256
           --title "$RELEASE_TAG"
           --generate-notes
