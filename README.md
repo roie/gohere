@@ -65,13 +65,23 @@ Run multiple server scripts:
 gohere dev:web dev:api
 ```
 
-When one `gohere` run starts multiple services, each service can discover the others through env vars. For example, a web dev server can proxy API requests to a worker without hardcoding a port:
+Planned external servers receive `HOST`, `PORT`, and `GOHERE_URL` before startup. `GOHERE_URL` is the current service's final collision-safe public URL.
 
-```ts
-target: process.env.GOHERE_WORKER_URL
+When one run starts multiple services, every child receives the same self-inclusive service map:
+
+```text
+GOHERE_WEB_URL=https://web.myrepo.localhost
+GOHERE_WEB_TARGET=http://127.0.0.1:48101
+GOHERE_WEB_PORT=48101
+
+GOHERE_API_URL=https://api.myrepo.localhost
+GOHERE_API_TARGET=http://127.0.0.1:48102
+GOHERE_API_PORT=48102
 ```
 
-Use `GOHERE_<NAME>_URL` for app config. `GOHERE_<NAME>_PORT`, `GOHERE_<NAME>_TARGET`, and `GOHERE_SERVICES_JSON` are also available when multiple managed services start together. `PORT` and `TARGET` are advanced values and are only set when `gohere` controls that service port.
+Use `GOHERE_<NAME>_URL` for application configuration. `TARGET` is the exact direct upstream stored in the route, including the Windows-reachable endpoint in WSL. `PORT` is parsed from that exact target. Each child also receives its own `GOHERE_URL`, `HOST`, and `PORT`.
+
+Static folders and files launch no external child, so they receive no runtime environment. Explicit task-like scripts such as `build`, `lint`, and `test`, plus raw commands without routing options, start lazily without router setup or a guessed `GOHERE_URL`. If a lazy command later exposes a server, gohere registers it and prints the final URL, but the already-running child is not retroactively modified.
 
 Run any current package script exactly as written by naming it explicitly:
 
@@ -155,11 +165,11 @@ gohere uninstall
 
 `gohere list --verbose` shows host, target, status, PID, and working directory.
 
-`gohere list --json` returns the same route information in a stable machine-readable format.
+`gohere list --json` returns the same route snapshot in a stable machine-readable format, including route `id`, `generation`, lifecycle `state`, service, preferred public URL, exact target, and parsed port.
 
 `gohere stop` stops routes for the current folder. `gohere stop <target>` stops a listed route by host, short host label, route name, or project name. `gohere stop --all` stops safely controllable routes and skips unverified live routes.
 
-Route status can be `ready`, `dead`, or `unknown`. `prune` removes only routes that are confidently dead.
+Route status can be `starting`, `ready`, `dead`, or `unknown`. `prune` removes routes that are confidently dead or whose reservation/lease has expired.
 
 ## Service And Uninstall
 

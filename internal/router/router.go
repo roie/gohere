@@ -64,6 +64,7 @@ type Route struct {
 	State                RouteState `json:"state,omitempty"`
 	Service              string     `json:"service,omitempty"`
 	PreferredScheme      string     `json:"preferredScheme,omitempty"`
+	URLPath              string     `json:"urlPath,omitempty"`
 	PendingTarget        string     `json:"pendingTarget,omitempty"`
 	ReservationExpiresAt time.Time  `json:"reservationExpiresAt,omitempty"`
 	Host                 string     `json:"host"`

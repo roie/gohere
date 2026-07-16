@@ -4387,6 +4387,28 @@ func TestListVerboseOutput(t *testing.T) {
 	}
 }
 
+func TestListJSONMatchesResolvedEnvironmentRecord(t *testing.T) {
+	route := router.Route{ID: "route-1", Generation: 4, State: router.RouteStateActive, Service: "web", PreferredScheme: "https", URLPath: "/about.html", Host: "web.localhost", Target: "http://172.20.0.2:48101", CWD: "/work/web"}
+	plan := RunPlan{ListenHost: "0.0.0.0", URLScheme: "https", URLPath: route.URLPath}
+	service := resolvedService{Plan: plan, Route: route, Ref: route.Ref(), ServiceKey: "WEB", PublicURL: resolvedPublicURL(plan, route)}
+	env := envValues(resolveServiceEnvironment(nil, service, []resolvedService{service}))
+	var out strings.Builder
+	if err := printRouteStatusesJSON(&out, lifecycle.RouteStatuses([]router.Route{route})); err != nil {
+		t.Fatal(err)
+	}
+	var listed []listRoute
+	if err := json.Unmarshal([]byte(out.String()), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("listed = %#v", listed)
+	}
+	got := listed[0]
+	if got.ID != route.ID || got.Generation != route.Generation || got.State != string(router.RouteStateActive) || got.Service != "web" || got.PreferredURL != "https://web.localhost/about.html" || got.PreferredURL != env["GOHERE_URL"] || got.Target != route.Target || strconv.Itoa(got.Port) != env["PORT"] {
+		t.Fatalf("list/env disagreement: list=%#v env=%#v", got, env)
+	}
+}
+
 func TestListJSONOutput(t *testing.T) {
 	ownerEnv := foreignTestOwnerEnv()
 	store := router.NewMemoryStore()

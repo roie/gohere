@@ -27,6 +27,7 @@ type RouteReservation struct {
 	DesiredHost     string    `json:"desiredHost"`
 	Service         string    `json:"service,omitempty"`
 	PreferredScheme string    `json:"preferredScheme,omitempty"`
+	URLPath         string    `json:"urlPath,omitempty"`
 	Target          string    `json:"target"`
 	CWD             string    `json:"cwd"`
 	ProjectRoot     string    `json:"projectRoot,omitempty"`
@@ -138,6 +139,7 @@ func ReserveRoutes(store Store, request ReservationRequest, now time.Time) (Rese
 				State:                RouteStatePending,
 				Service:              candidate.Service,
 				PreferredScheme:      candidate.PreferredScheme,
+				URLPath:              candidate.URLPath,
 				PendingTarget:        candidate.Target,
 				ReservationExpiresAt: now.Add(request.TTL),
 				Host:                 finalHost,

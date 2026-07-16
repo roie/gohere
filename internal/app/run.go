@@ -811,6 +811,7 @@ func registerLegacyRoute(ctx context.Context, adminClient adminClient, cmd cli.C
 		CWD:             plan.CWD,
 		Name:            plan.Name,
 		Mode:            runMode(cmd, plan),
+		URLPath:         plan.URLPath,
 		ProjectRoot:     plan.ProjectRoot,
 		ProjectName:     plan.ProjectName,
 		Source:          plan.RouteSource,
@@ -1897,6 +1898,12 @@ type ListOptions struct {
 }
 
 type listRoute struct {
+	ID             string `json:"id,omitempty"`
+	Generation     uint64 `json:"generation,omitempty"`
+	State          string `json:"state"`
+	Service        string `json:"service,omitempty"`
+	PreferredURL   string `json:"preferredUrl"`
+	Port           int    `json:"port,omitempty"`
 	Host           string `json:"host"`
 	Target         string `json:"target"`
 	Status         string `json:"status"`
@@ -1998,9 +2005,20 @@ func printRouteStatusesJSON(stdout io.Writer, statuses []lifecycle.RouteStatus) 
 			canStop = false
 			stopReason = foreignRouteStopReason(route)
 		}
+		target := route.EffectiveTarget()
+		port := 0
+		if value, ok := routeTargetPort(target); ok {
+			port, _ = strconv.Atoi(value)
+		}
 		routes = append(routes, listRoute{
+			ID:             route.ID,
+			Generation:     route.Generation,
+			State:          string(route.EffectiveState()),
+			Service:        route.Service,
+			PreferredURL:   publicRouteURLForScheme(route.PreferredScheme, route.Host, route.URLPath),
+			Port:           port,
 			Host:           route.Host,
-			Target:         route.Target,
+			Target:         target,
 			Status:         string(status.Status),
 			PID:            route.PID,
 			CWD:            route.CWD,

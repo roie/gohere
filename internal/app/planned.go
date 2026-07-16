@@ -143,7 +143,7 @@ func routeReservationForPlan(cmd cli.Command, plan RunPlan) router.RouteReservat
 		ownerEnv = runOwnerEnv()
 	}
 	return router.RouteReservation{
-		DesiredHost: plan.Host, Service: plan.Name, PreferredScheme: plan.URLScheme,
+		DesiredHost: plan.Host, Service: plan.Name, PreferredScheme: plan.URLScheme, URLPath: plan.URLPath,
 		Target: routeTarget(plan.RouteTargetHost, plan.Port), CWD: plan.CWD,
 		ProjectRoot: plan.ProjectRoot, ProjectName: plan.ProjectName, Source: plan.RouteSource,
 		OwnerCWD: plan.CWD, OwnerEnv: ownerEnv, OwnerInstance: plan.OwnerInstance,
