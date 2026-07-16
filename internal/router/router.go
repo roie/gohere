@@ -45,26 +45,53 @@ var rotateOpenFile = os.OpenFile
 var errInvalidRouteHost = errors.New("invalid route host")
 var errRouteConflict = errors.New("route host is owned by another runner")
 
+type RouteState string
+
+const (
+	RouteStatePending RouteState = "pending"
+	RouteStateActive  RouteState = "active"
+)
+
+type RouteRef struct {
+	ID         string `json:"id"`
+	Generation uint64 `json:"generation"`
+}
+
 type Route struct {
-	Host            string    `json:"host"`
-	Target          string    `json:"target"`
-	PID             int       `json:"pid"`
-	CWD             string    `json:"cwd"`
-	Name            string    `json:"name"`
-	Mode            string    `json:"mode,omitempty"`
-	ProjectRoot     string    `json:"projectRoot,omitempty"`
-	ProjectName     string    `json:"projectName,omitempty"`
-	Source          string    `json:"source,omitempty"`
-	OwnerCWD        string    `json:"ownerCwd,omitempty"`
-	OwnerEnv        string    `json:"ownerEnv,omitempty"`
-	OwnerInstance   string    `json:"ownerInstance,omitempty"`
-	Distro          string    `json:"distro,omitempty"`
-	LinuxUser       string    `json:"linuxUser,omitempty"`
-	RunnerID        string    `json:"runnerId,omitempty"`
-	ListenTarget    string    `json:"listenTarget,omitempty"`
-	LeaseExpiresAt  time.Time `json:"leaseExpiresAt,omitempty"`
-	StartedAt       time.Time `json:"startedAt"`
-	ProcessIdentity string    `json:"processIdentity,omitempty"`
+	ID                   string     `json:"id,omitempty"`
+	Generation           uint64     `json:"generation,omitempty"`
+	RunID                string     `json:"runId,omitempty"`
+	State                RouteState `json:"state,omitempty"`
+	Service              string     `json:"service,omitempty"`
+	PreferredScheme      string     `json:"preferredScheme,omitempty"`
+	PendingTarget        string     `json:"pendingTarget,omitempty"`
+	ReservationExpiresAt time.Time  `json:"reservationExpiresAt,omitempty"`
+	Host                 string     `json:"host"`
+	Target               string     `json:"target"`
+	PID                  int        `json:"pid"`
+	CWD                  string     `json:"cwd"`
+	Name                 string     `json:"name"`
+	Mode                 string     `json:"mode,omitempty"`
+	ProjectRoot          string     `json:"projectRoot,omitempty"`
+	ProjectName          string     `json:"projectName,omitempty"`
+	Source               string     `json:"source,omitempty"`
+	OwnerCWD             string     `json:"ownerCwd,omitempty"`
+	OwnerEnv             string     `json:"ownerEnv,omitempty"`
+	OwnerInstance        string     `json:"ownerInstance,omitempty"`
+	Distro               string     `json:"distro,omitempty"`
+	LinuxUser            string     `json:"linuxUser,omitempty"`
+	RunnerID             string     `json:"runnerId,omitempty"`
+	ListenTarget         string     `json:"listenTarget,omitempty"`
+	LeaseExpiresAt       time.Time  `json:"leaseExpiresAt,omitempty"`
+	StartedAt            time.Time  `json:"startedAt"`
+	ProcessIdentity      string     `json:"processIdentity,omitempty"`
+}
+
+func (r Route) EffectiveState() RouteState {
+	if r.State == "" {
+		return RouteStateActive
+	}
+	return r.State
 }
 
 type RouteStatus struct {
