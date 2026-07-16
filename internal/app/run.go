@@ -2439,7 +2439,9 @@ func convertAdminStatuses(statuses []router.RouteStatus) []lifecycle.RouteStatus
 	converted := make([]lifecycle.RouteStatus, 0, len(statuses))
 	for _, status := range statuses {
 		routeStatus := lifecycle.RouteStatusKind(status.Status)
-		if routeStatus == lifecycle.RouteStatusUnknown && routeOwnedByCurrentEnv(status.Route) {
+		expiredActiveLease := status.Route.EffectiveState() == router.RouteStateActive &&
+			!status.Route.LeaseExpiresAt.IsZero() && router.RouteLeaseExpired(status.Route, time.Now())
+		if routeStatus == lifecycle.RouteStatusUnknown && routeOwnedByCurrentEnv(status.Route) && !expiredActiveLease {
 			routeStatus = fallbackOwnedRouteStatus(status.Route)
 		}
 		converted = append(converted, lifecycle.RouteStatus{

@@ -4627,7 +4627,7 @@ func TestListUsesServiceComputedRouteStatusFromWSL(t *testing.T) {
 	}
 }
 
-func TestListRefinesUnknownServiceStatusForWSLOwnedRouteFromWSL(t *testing.T) {
+func TestListPreservesUnknownServiceStatusForExpiredWSLLease(t *testing.T) {
 	restoreMetadata := stubCurrentWSLMetadata(t)
 	defer restoreMetadata()
 	oldDetectWSL := detectWSLFunc
@@ -4656,8 +4656,8 @@ func TestListRefinesUnknownServiceStatusForWSLOwnedRouteFromWSL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(statuses) != 1 || statuses[0].Route.Host != "old-wsl.localhost" || statuses[0].Status != lifecycle.RouteStatusDead {
-		t.Fatalf("statuses = %#v, want refined dead WSL-owned route", statuses)
+	if len(statuses) != 1 || statuses[0].Route.Host != "old-wsl.localhost" || statuses[0].Status != lifecycle.RouteStatusUnknown {
+		t.Fatalf("statuses = %#v, want authoritative unknown expired-lease status", statuses)
 	}
 }
 

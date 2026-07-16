@@ -86,7 +86,7 @@ func ReserveRoutes(store Store, request ReservationRequest, now time.Time) (Rese
 
 	result := ReservationResult{RunID: request.RunID}
 	err := UpdateStore(store, func(stored []Route) ([]Route, error) {
-		routes := removeExpiredReservations(stored, now)
+		routes := removeExpiredRoutes(stored, now)
 		occupiedHosts := make(map[string]string, len(routes)+len(request.Routes))
 		occupiedTargets := make(map[string]bool, len(routes)+len(request.Routes))
 		for _, route := range routes {
@@ -274,10 +274,11 @@ func RouteReservationExpired(route Route, now time.Time) bool {
 	return route.EffectiveState() == RouteStatePending && !route.ReservationExpiresAt.IsZero() && !route.ReservationExpiresAt.After(now)
 }
 
-func removeExpiredReservations(routes []Route, now time.Time) []Route {
+func removeExpiredRoutes(routes []Route, now time.Time) []Route {
 	result := make([]Route, 0, len(routes))
 	for _, route := range routes {
-		if RouteReservationExpired(route, now) {
+		expiredActiveLease := route.EffectiveState() == RouteStateActive && !route.LeaseExpiresAt.IsZero() && RouteLeaseExpired(route, now)
+		if RouteReservationExpired(route, now) || expiredActiveLease {
 			continue
 		}
 		result = append(result, route)

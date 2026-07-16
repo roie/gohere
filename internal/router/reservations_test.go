@@ -170,6 +170,19 @@ func TestReserveRoutesReclaimsExpiredPendingRoute(t *testing.T) {
 	}
 }
 
+func TestReserveRoutesReclaimsExpiredActiveLease(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Now().UTC()
+	expired := Route{ID: "expired-active", Generation: 2, RunID: "old", State: RouteStateActive, Host: "app.localhost", Target: "http://127.0.0.1:44002", LeaseExpiresAt: now.Add(-time.Second), CWD: "/old"}
+	if err := store.Save([]Route{expired}); err != nil {
+		t.Fatal(err)
+	}
+	result := reserveTestRun(t, store, "new", "app.localhost", "http://127.0.0.1:44002", "/new", now)
+	if result.Routes[0].Route.Host != "app.localhost" || result.Routes[0].Route.PendingTarget != expired.Target {
+		t.Fatalf("reservation did not reclaim expired active route: %#v", result)
+	}
+}
+
 func TestActivateRoutesPromotesWholeRunWithoutChangingIdentity(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Now().UTC()
