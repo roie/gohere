@@ -76,6 +76,7 @@ jobs:
 
       - name: Build package binaries
         env:
+          GOFLAGS: -mod=readonly
           VERSION: ${{ github.ref_name }}
         run: |
           version="${VERSION#v}"
