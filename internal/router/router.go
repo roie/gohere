@@ -94,6 +94,13 @@ func (r Route) EffectiveState() RouteState {
 	return r.State
 }
 
+func (r Route) EffectiveTarget() string {
+	if r.EffectiveState() == RouteStatePending {
+		return r.PendingTarget
+	}
+	return r.Target
+}
+
 type RouteStatus struct {
 	Route  Route  `json:"route"`
 	Status string `json:"status"`
@@ -524,6 +531,15 @@ func (s *Server) HTTPHandler() http.Handler {
 			missingRouteResponse(w, r)
 			return
 		}
+		if route.EffectiveState() == RouteStatePending {
+			writeProxyError(w, r, http.StatusServiceUnavailable, proxyErrorPayload{
+				Error:   "route_starting",
+				Message: "gohere route is starting",
+				Host:    route.Host,
+				Target:  route.PendingTarget,
+			})
+			return
+		}
 		if RouteLeaseExpired(route, time.Now()) {
 			writeProxyError(w, r, http.StatusServiceUnavailable, proxyErrorPayload{
 				Error:   "route_owner_offline",
@@ -758,9 +774,12 @@ func (s *Server) handleRouteStatuses(w http.ResponseWriter, r *http.Request) {
 	}
 	statuses := make([]RouteStatus, 0, len(routes))
 	for _, route := range routes {
-		status := targetStatus(route.Target)
-		if route.OwnerEnv == "wsl" && RouteLeaseExpired(route, time.Now()) && status != "dead" {
-			status = "unknown"
+		status := "starting"
+		if route.EffectiveState() != RouteStatePending {
+			status = targetStatus(route.Target)
+			if RouteLeaseExpired(route, time.Now()) && status != "dead" {
+				status = "unknown"
+			}
 		}
 		statuses = append(statuses, RouteStatus{
 			Route:  route,
@@ -772,7 +791,7 @@ func (s *Server) handleRouteStatuses(w http.ResponseWriter, r *http.Request) {
 }
 
 func RouteLeaseExpired(route Route, now time.Time) bool {
-	return route.OwnerEnv == "wsl" && !route.LeaseExpiresAt.IsZero() && !now.Before(route.LeaseExpiresAt)
+	return route.EffectiveState() == RouteStateActive && !route.LeaseExpiresAt.IsZero() && !now.Before(route.LeaseExpiresAt)
 }
 
 func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {

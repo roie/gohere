@@ -734,6 +734,25 @@ func TestAdminAPIRouteStatusesComputedByRouter(t *testing.T) {
 	}
 }
 
+func TestAdminAPIRouteStatusesReportsPendingAsStarting(t *testing.T) {
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{State: RouteStatePending, Host: "web.localhost", PendingTarget: "http://127.0.0.1:44001"}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Token: "secret", Store: store})
+	req := httptest.NewRequest(http.MethodGet, "/route-statuses", nil)
+	req.Header.Set("X-Gohere-Token", "secret")
+	rec := httptest.NewRecorder()
+	srv.AdminHandler().ServeHTTP(rec, req)
+	var statuses []RouteStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &statuses); err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Status != "starting" {
+		t.Fatalf("statuses = %#v", statuses)
+	}
+}
+
 func TestAdminAPIRouteStatusesMarksReachableExpiredWSLOwnerUnknown(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -805,6 +824,68 @@ func TestAdminAPIRoutesRejectsHugeBody(t *testing.T) {
 	}
 	if body.read > maxAdminBodyBytes {
 		t.Fatalf("read %d bytes, want at most %d", body.read, maxAdminBodyBytes)
+	}
+}
+
+func TestPendingRouteReturnsStartingWithoutProxying(t *testing.T) {
+	hits := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+	}))
+	defer backend.Close()
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{
+		ID:            "route-1",
+		Generation:    1,
+		State:         RouteStatePending,
+		Host:          "web.localhost",
+		PendingTarget: backend.URL,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	for _, websocket := range []bool{false, true} {
+		req := httptest.NewRequest(http.MethodGet, "http://web.localhost/socket", nil)
+		req.Host = "web.localhost"
+		req.Header.Set("Accept", "application/json")
+		if websocket {
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", "websocket")
+		}
+		rec := httptest.NewRecorder()
+		srv.HTTPHandler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("websocket=%v status = %d body %q", websocket, rec.Code, rec.Body.String())
+		}
+		var payload proxyErrorPayload
+		if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Error != "route_starting" || payload.Host != "web.localhost" || payload.Target != backend.URL {
+			t.Fatalf("payload = %#v", payload)
+		}
+	}
+	if hits != 0 {
+		t.Fatalf("pending route proxied %d request(s)", hits)
+	}
+}
+
+func TestProxyRejectsExpiredNativeRoute(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("expired route must not proxy")
+	}))
+	defer backend.Close()
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{State: RouteStateActive, Host: "web.localhost", Target: backend.URL, LeaseExpiresAt: time.Now().Add(-time.Second)}}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://web.localhost/", nil)
+	req.Host = "web.localhost"
+	rec := httptest.NewRecorder()
+	NewServer(Config{Token: "secret", Store: store}).HTTPHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "route owner is offline") {
+		t.Fatalf("status/body = %d/%q", rec.Code, rec.Body.String())
 	}
 }
 

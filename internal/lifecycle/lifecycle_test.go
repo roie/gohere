@@ -79,6 +79,7 @@ func foreignOwnerEnv() string {
 
 func TestFormatRoutesUsesSharedStatusSemantics(t *testing.T) {
 	statuses := []RouteStatus{
+		{Route: router.Route{Host: "starting.localhost", State: router.RouteStatePending, PendingTarget: "http://127.0.0.1:5172"}, Status: RouteStatusStarting},
 		{Route: router.Route{Host: "ready.localhost", Target: "http://127.0.0.1:5173"}, Status: RouteStatusReady},
 		{Route: router.Route{Host: "dead.localhost", Target: "http://127.0.0.1:5174"}, Status: RouteStatusDead},
 		{Route: router.Route{Host: "unknown.localhost", Target: "http://127.0.0.1:5175"}, Status: RouteStatusUnknown},
@@ -86,11 +87,36 @@ func TestFormatRoutesUsesSharedStatusSemantics(t *testing.T) {
 
 	for _, format := range []func([]RouteStatus) string{FormatRoutes, FormatRoutesVerbose} {
 		out := format(statuses)
-		for _, want := range []string{"ready", "dead", "unknown"} {
+		for _, want := range []string{"starting", "ready", "dead", "unknown"} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("output missing %q: %q", want, out)
 			}
 		}
+	}
+}
+
+func TestRouteStatusesReportPendingAsStarting(t *testing.T) {
+	statuses := RouteStatusesWithRouterReady([]router.Route{{
+		State:         router.RouteStatePending,
+		Host:          "web.localhost",
+		PendingTarget: "http://127.0.0.1:5173",
+	}}, true)
+	if len(statuses) != 1 || statuses[0].Status != RouteStatusStarting {
+		t.Fatalf("statuses = %#v, want starting", statuses)
+	}
+}
+
+func TestRouteStatusesMarkReachableExpiredNativeRouteUnknown(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+	statuses := RouteStatusesWithRouterReady([]router.Route{{
+		State:          router.RouteStateActive,
+		Host:           "web.localhost",
+		Target:         backend.URL,
+		LeaseExpiresAt: time.Now().Add(-time.Second),
+	}}, true)
+	if len(statuses) != 1 || statuses[0].Status != RouteStatusUnknown {
+		t.Fatalf("statuses = %#v, want unknown", statuses)
 	}
 }
 

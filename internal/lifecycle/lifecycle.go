@@ -29,9 +29,10 @@ const processCommandTimeout = 2 * time.Second
 type RouteStatusKind string
 
 const (
-	RouteStatusReady   RouteStatusKind = "ready"
-	RouteStatusDead    RouteStatusKind = "dead"
-	RouteStatusUnknown RouteStatusKind = "unknown"
+	RouteStatusStarting RouteStatusKind = "starting"
+	RouteStatusReady    RouteStatusKind = "ready"
+	RouteStatusDead     RouteStatusKind = "dead"
+	RouteStatusUnknown  RouteStatusKind = "unknown"
 )
 
 type RouteStatus struct {
@@ -60,7 +61,7 @@ func FormatRoutes(statuses []RouteStatus) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "%-28s %-25s %s\n", "host", "target", "status")
 	for _, status := range statuses {
-		fmt.Fprintf(&out, "%-28s %-25s %s\n", status.Route.Host, status.Route.Target, status.Status)
+		fmt.Fprintf(&out, "%-28s %-25s %s\n", status.Route.Host, status.Route.EffectiveTarget(), status.Status)
 	}
 	return out.String()
 }
@@ -79,7 +80,7 @@ func FormatRoutesVerbose(statuses []RouteStatus) string {
 		}
 		fmt.Fprintf(&out, "%-28s %-25s %-7s %-8s %-8s %-8s %-6d %-20s %-36s %s\n",
 			status.Route.Host,
-			status.Route.Target,
+			status.Route.EffectiveTarget(),
 			status.Status,
 			RouteMode(status.Route),
 			RouteSource(status.Route),
@@ -142,6 +143,10 @@ func RouteStatuses(routes []router.Route) []RouteStatus {
 func RouteStatusesWithRouterReady(routes []router.Route, routerReady bool) []RouteStatus {
 	statuses := make([]RouteStatus, 0, len(routes))
 	for _, route := range routes {
+		if route.EffectiveState() == router.RouteStatePending {
+			statuses = append(statuses, RouteStatus{Route: route, Status: RouteStatusStarting})
+			continue
+		}
 		if !routerReady {
 			statuses = append(statuses, RouteStatus{Route: route, Status: RouteStatusUnknown})
 			continue
@@ -300,10 +305,17 @@ func UnverifiedProcessWarning(pid int) string {
 }
 
 func classifyRoute(route router.Route) RouteStatusKind {
+	if route.EffectiveState() == router.RouteStatePending {
+		return RouteStatusStarting
+	}
 	if route.PID > 0 && routePIDIsLocal(route) && !PIDAlive(route.PID) {
 		return RouteStatusDead
 	}
-	return targetStatus(route.Target)
+	status := targetStatus(route.Target)
+	if router.RouteLeaseExpired(route, time.Now()) && status != RouteStatusDead {
+		return RouteStatusUnknown
+	}
+	return status
 }
 
 func routePIDIsLocal(route router.Route) bool {
