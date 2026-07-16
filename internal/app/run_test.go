@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1353,7 +1354,7 @@ func TestRunStartsLocalProjectBeforeServiceRegistration(t *testing.T) {
 	}
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
 		calls = append(calls, "runner")
-		return &runner.Result{Port: 5173}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	dir := tempProject(t, map[string]string{
@@ -1363,8 +1364,118 @@ func TestRunStartsLocalProjectBeforeServiceRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 2 || calls[0] != "runner" || calls[1] != "admin" {
-		t.Fatalf("calls = %#v", calls)
+	if len(calls) != 2 || calls[0] != "admin" || calls[1] != "runner" {
+		t.Fatalf("calls = %#v, want reservation authority before runner", calls)
+	}
+}
+
+func TestRunPlannedReservesExactEnvironmentBeforeStartupAndActivatesAfterReadiness(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
+	t.Setenv("GOHERE_URL", "https://stale.localhost")
+	t.Setenv("GOHERE_API_TARGET", "http://127.0.0.1:1")
+
+	admin := &recordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) { return admin, nil }
+	dir := tempProject(t, map[string]string{"package.json": `{"scripts":{"dev":"vite"}}`})
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		routes, err := admin.Routes(ctx)
+		if err != nil || len(routes) != 1 || routes[0].EffectiveState() != router.RouteStatePending {
+			t.Fatalf("routes before startup = %#v, err = %v", routes, err)
+		}
+		if admin.activateCalls != 0 {
+			t.Fatal("route activated before child readiness")
+		}
+		wantURL := "http://" + routes[0].Host
+		assertEnv(t, cfg.Env, "GOHERE_URL", wantURL)
+		assertEnv(t, cfg.Env, "PORT", strconv.Itoa(cfg.ChosenPort))
+		assertMissingEnv(t, cfg.Env, "GOHERE_API_TARGET")
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if admin.reserveCalls != 1 || admin.activateCalls != 1 || admin.releaseCalls != 1 {
+		t.Fatalf("lifecycle calls reserve/activate/release = %d/%d/%d", admin.reserveCalls, admin.activateCalls, admin.releaseCalls)
+	}
+}
+
+func TestRunPlannedUsesCollisionSafeReservedHostnameInEnvironment(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
+	dir := tempProject(t, map[string]string{"package.json": `{"scripts":{"dev":"vite"}}`})
+	desiredHost := filepath.Base(dir) + ".localhost"
+	admin := &recordingAdminClient{routes: []router.Route{{Host: desiredHost, Target: "http://127.0.0.1:49999", CWD: "/other/project"}}}
+	defaultAdminClientFunc = func() (adminClient, error) { return admin, nil }
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		url := mustEnv(t, cfg.Env, "GOHERE_URL")
+		if url == "http://"+desiredHost || !strings.HasSuffix(url, ".localhost") {
+			t.Fatalf("collision-safe GOHERE_URL = %q, desired host was occupied", url)
+		}
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlannedReusableRouteRejectsWrongFixedTarget(t *testing.T) {
+	dir := t.TempDir()
+	route := router.Route{ID: "existing", Generation: 1, Host: "app.localhost", Target: "http://127.0.0.1:3002", CWD: dir}
+	admin := &recordingAdminClient{routes: []router.Route{route}}
+	plan := RunPlan{Host: route.Host, CWD: dir, Port: 3001, RouteTargetHost: "127.0.0.1", FixedPort: true}
+	if got, reused, err := plannedReusableRoute(t.Context(), admin, plan); err != nil || reused {
+		t.Fatalf("reuse = %#v/%v, err = %v; wrong fixed target must not be reused", got, reused, err)
+	}
+}
+
+func TestVerifyPlannedWSLTargetRetriesReachability(t *testing.T) {
+	oldTimeout, oldInterval := wslTargetProbeTimeout, wslTargetProbeInterval
+	wslTargetProbeTimeout, wslTargetProbeInterval = 100*time.Millisecond, time.Millisecond
+	defer func() { wslTargetProbeTimeout, wslTargetProbeInterval = oldTimeout, oldInterval }()
+	admin := &recordingAdminClient{probeReachableAfter: 3}
+	if err := verifyPlannedTarget(t.Context(), admin, "http://127.0.0.1:3001", true); err != nil {
+		t.Fatal(err)
+	}
+	if admin.probeCalls != 3 {
+		t.Fatalf("probe calls = %d, want retry until third probe", admin.probeCalls)
+	}
+}
+
+func TestRunPlannedRollsBackReservationWhenActivationFails(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
+	admin := &recordingAdminClient{activateErr: errors.New("activation failed")}
+	defaultAdminClientFunc = func() (adminClient, error) { return admin, nil }
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+	dir := tempProject(t, map[string]string{"package.json": `{"scripts":{"dev":"vite"}}`})
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "activation failed") {
+		t.Fatalf("error = %v", err)
+	}
+	routes, _ := admin.Routes(context.Background())
+	if len(routes) != 0 || admin.releaseCalls != 1 {
+		t.Fatalf("reservation was not rolled back: routes=%#v release=%d", routes, admin.releaseCalls)
+	}
+}
+
+func TestRunLazyTaskDoesNotResolveRouterOrInjectRuntimeURL(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
+	defaultAdminClientFunc = func() (adminClient, error) { return nil, errors.New("router should not be touched") }
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		assertMissingEnv(t, cfg.Env, "GOHERE_URL")
+		return nil, runner.ErrProcessFinished
+	}
+	dir := tempProject(t, map[string]string{"package.json": `{"scripts":{"build":"vite build"}}`})
+	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "build", ExplicitScript: true}, dir, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1379,9 +1490,13 @@ func TestRunWSLReusesReadyRouteBeforeStartingRunner(t *testing.T) {
 	})
 	admin := &recordingAdminClient{statuses: []router.RouteStatus{{
 		Route: router.Route{
+			ID:             "existing-route",
+			Generation:     1,
 			Host:           "ctrltube.localhost",
 			Target:         "http://127.0.0.1:57940",
 			CWD:            dir,
+			ProjectRoot:    dir,
+			ProjectName:    "ctrltube",
 			OwnerEnv:       "wsl",
 			OwnerInstance:  "test-owner",
 			Distro:         "Ubuntu",
@@ -1475,7 +1590,7 @@ func TestRunSuppressesChildStartupOutputOnSuccessfulStartup(t *testing.T) {
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
 		cfg.Stdout.Write([]byte("Local: http://127.0.0.1:5173/\n"))
 		cfg.Stderr.Write([]byte("vite noisy warning\n"))
-		return &runner.Result{Port: 5173}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	dir := tempProject(t, map[string]string{
@@ -1508,7 +1623,7 @@ func TestRunSuccessOutputLabelsExplicitScriptInNormalMode(t *testing.T) {
 	}
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
 		cfg.Stdout.Write([]byte("Local: http://127.0.0.1:5173/\n"))
-		return &runner.Result{Port: 5173}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	dir := tempProject(t, map[string]string{
@@ -1538,7 +1653,7 @@ func TestRunUsesAsAliasInOutputAndRoute(t *testing.T) {
 		return admin, nil
 	}
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
-		return &runner.Result{Port: 5173}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	dir := tempProject(t, map[string]string{
@@ -2645,7 +2760,7 @@ func TestRunExplicitPackageDirectoryUsesTargetCWDAndLabelsPath(t *testing.T) {
 	var dir string
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
 		dir = cfg.Dir
-		return &runner.Result{Port: 5173}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	root := tempProject(t, map[string]string{
@@ -2687,7 +2802,7 @@ func TestRunImplicitDevAtWorkspaceRootWithoutDevPackagesFallsBackToRootScript(t 
 	var commands []string
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
 		commands = append(commands, strings.Join(cfg.Command, " "))
-		return &runner.Result{Port: 5173}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	root := tempProject(t, map[string]string{
@@ -2729,7 +2844,7 @@ func TestRunExplicitScriptAtWorkspaceRootRunsRootScriptAsSingleRoute(t *testing.
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
 		commands = append(commands, strings.Join(cfg.Command, " "))
 		dirs = append(dirs, cfg.Dir)
-		return &runner.Result{Port: 5173}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	root := tempProject(t, map[string]string{
@@ -2925,7 +3040,7 @@ func TestRunOpenLaunchesBrowserAfterRouteRegistration(t *testing.T) {
 		return fakeAdminClient{}, nil
 	}
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
-		return &runner.Result{Port: 5173}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 	var opened string
 	openBrowserFunc = func(ctx context.Context, url string) error {
@@ -2964,7 +3079,7 @@ func TestRunOpenFailureKeepsServerRunning(t *testing.T) {
 		return fakeAdminClient{}, nil
 	}
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
-		return &runner.Result{Port: 5173}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 	openBrowserFunc = func(ctx context.Context, url string) error {
 		return errors.New("open failed")
@@ -3008,11 +3123,8 @@ func TestRunStaticUsesPlainSuccessLabel(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if admin.route.PID == 0 {
-		t.Fatalf("static route PID = 0, want current gohere process PID")
-	}
-	if admin.route.ProcessIdentity == "" {
-		t.Fatal("static route process identity is empty")
+	if admin.route.ID == "" || admin.route.Generation == 0 {
+		t.Fatalf("static route identity is missing: %#v", admin.route)
 	}
 	want := "gohere \u2192 http://" + filepath.Base(dir) + ".localhost\n"
 	if stdout.String() != want {
@@ -3220,9 +3332,11 @@ func TestRunVerboseOutputIncludesCleanURLAndMetadata(t *testing.T) {
 	defaultAdminClientFunc = func() (adminClient, error) {
 		return fakeAdminClient{}, nil
 	}
+	chosenPort := 0
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		chosenPort = cfg.ChosenPort
 		cfg.Stdout.Write([]byte("Local: http://127.0.0.1:5173/\n"))
-		return &runner.Result{Port: 5173}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	dir := tempProject(t, map[string]string{
@@ -3234,7 +3348,7 @@ func TestRunVerboseOutputIncludesCleanURLAndMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(stdout.String(), "gohere \u2192 http://"+filepath.Base(dir)+".localhost\n\n") ||
-		!strings.Contains(stdout.String(), "\ntarget: http://127.0.0.1:5173\n") ||
+		!strings.Contains(stdout.String(), fmt.Sprintf("\ntarget: http://127.0.0.1:%d\n", chosenPort)) ||
 		!strings.Contains(stdout.String(), "project root: "+dir+"\n") ||
 		!strings.Contains(stdout.String(), "command: npm run dev -- --host 127.0.0.1 --port ") ||
 		!strings.Contains(stdout.String(), "service: running\n") ||
@@ -3300,7 +3414,7 @@ func TestRunUsesWindowsRouterBridgeFromWSL(t *testing.T) {
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
 		gotEnv = cfg.Env
 		gotCommand = cfg.Command
-		return &runner.Result{Port: 5173}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	dir := tempProject(t, map[string]string{
@@ -3315,7 +3429,8 @@ func TestRunUsesWindowsRouterBridgeFromWSL(t *testing.T) {
 	if strings.Contains(strings.Join(gotCommand, " "), "--host 0.0.0.0") {
 		t.Fatalf("command = %#v, should not bind all interfaces when Windows can reach WSL loopback", gotCommand)
 	}
-	if !strings.Contains(stdout.String(), "\ntarget: http://127.0.0.1:5173\n") ||
+	port := mustEnv(t, gotEnv, "PORT")
+	if !strings.Contains(stdout.String(), "\ntarget: http://127.0.0.1:"+port+"\n") ||
 		!strings.Contains(stdout.String(), "service: Windows\n") {
 		t.Fatalf("verbose stdout = %q", stdout.String())
 	}
@@ -3956,8 +4071,9 @@ func TestRunStaticTreatsContextCancelAsCleanShutdown(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Run static after context cancel = %v, want nil", err)
 	}
-	if admin.deleted == "" {
-		t.Fatal("expected static route cleanup")
+	routes, err := admin.Routes(context.Background())
+	if err != nil || len(routes) != 0 {
+		t.Fatalf("static routes after cleanup = %#v, err = %v", routes, err)
 	}
 }
 
@@ -5601,6 +5717,16 @@ func (fakeAdminClient) ProbeTarget(context.Context, string) (bool, error) {
 	return true, nil
 }
 
+func (fakeAdminClient) ReserveRoutes(_ context.Context, request router.ReservationRequest) (router.ReservationResult, error) {
+	return fakeReservationResult(request), nil
+}
+func (fakeAdminClient) ActivateRoutes(_ context.Context, _ string, refs []router.RouteRef) ([]router.Route, error) {
+	return fakeActivatedRoutes(refs), nil
+}
+func (fakeAdminClient) ReleaseRoutes(context.Context, string, []router.RouteRef) error { return nil }
+func (fakeAdminClient) RenewRoutes(context.Context, string, []router.RouteRef) error   { return nil }
+func (fakeAdminClient) DeleteRouteRef(context.Context, router.RouteRef) error          { return nil }
+
 type contextHealthAdminClient struct{}
 
 func (contextHealthAdminClient) Health(ctx context.Context) error {
@@ -5634,6 +5760,22 @@ func (staleTokenAdminClient) UpsertRoute(context.Context, router.Route) error {
 }
 
 func (staleTokenAdminClient) DeleteRoute(context.Context, string) error {
+	return admin.ErrUnauthorized
+}
+
+func (staleTokenAdminClient) ReserveRoutes(context.Context, router.ReservationRequest) (router.ReservationResult, error) {
+	return router.ReservationResult{}, admin.ErrUnauthorized
+}
+func (staleTokenAdminClient) ActivateRoutes(context.Context, string, []router.RouteRef) ([]router.Route, error) {
+	return nil, admin.ErrUnauthorized
+}
+func (staleTokenAdminClient) ReleaseRoutes(context.Context, string, []router.RouteRef) error {
+	return admin.ErrUnauthorized
+}
+func (staleTokenAdminClient) RenewRoutes(context.Context, string, []router.RouteRef) error {
+	return admin.ErrUnauthorized
+}
+func (staleTokenAdminClient) DeleteRouteRef(context.Context, router.RouteRef) error {
 	return admin.ErrUnauthorized
 }
 
@@ -5681,6 +5823,10 @@ type recordingAdminClient struct {
 	probeCalls          int
 	probeReachableAfter int
 	probeErr            error
+	activateErr         error
+	reserveCalls        int
+	activateCalls       int
+	releaseCalls        int
 	deleted             string
 	deleteErr           error
 }
@@ -5712,6 +5858,7 @@ func (c routeStatusesUnsupportedClient) DeleteRoute(context.Context, string) err
 type multiRecordingAdminClient struct {
 	mu        sync.Mutex
 	routes    []router.Route
+	activated []router.Route
 	deleted   []string
 	deleteErr error
 }
@@ -5750,11 +5897,63 @@ func (c *multiRecordingAdminClient) DeleteRoute(ctx context.Context, host string
 	return c.deleteErr
 }
 
+func (c *multiRecordingAdminClient) ReserveRoutes(_ context.Context, request router.ReservationRequest) (router.ReservationResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	store := &runtimeTestStore{routes: append([]router.Route(nil), c.routes...)}
+	result, err := router.ReserveRoutes(store, request, time.Now().UTC())
+	c.routes = store.routes
+	return result, err
+}
+func (c *multiRecordingAdminClient) ActivateRoutes(_ context.Context, _ string, refs []router.RouteRef) ([]router.Route, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var active []router.Route
+	for i := range c.routes {
+		for _, ref := range refs {
+			if c.routes[i].Ref() == ref {
+				c.routes[i].State = router.RouteStateActive
+				c.routes[i].Target = c.routes[i].PendingTarget
+				c.routes[i].PendingTarget = ""
+				active = append(active, c.routes[i])
+			}
+		}
+	}
+	c.activated = append(c.activated, active...)
+	return active, nil
+}
+func (c *multiRecordingAdminClient) ReleaseRoutes(_ context.Context, _ string, refs []router.RouteRef) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	remove := map[router.RouteRef]bool{}
+	for _, ref := range refs {
+		remove[ref] = true
+	}
+	next := c.routes[:0]
+	for _, route := range c.routes {
+		if !remove[route.Ref()] {
+			next = append(next, route)
+		}
+	}
+	c.routes = next
+	return nil
+}
+func (c *multiRecordingAdminClient) RenewRoutes(context.Context, string, []router.RouteRef) error {
+	return nil
+}
+func (c *multiRecordingAdminClient) DeleteRouteRef(context.Context, router.RouteRef) error {
+	return nil
+}
+
 func (c *multiRecordingAdminClient) upsertedHosts() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	hosts := make([]string, 0, len(c.routes))
-	for _, route := range c.routes {
+	routes := c.routes
+	if len(c.activated) > 0 {
+		routes = c.activated
+	}
+	hosts := make([]string, 0, len(routes))
+	for _, route := range routes {
 		hosts = append(hosts, route.Host)
 	}
 	return hosts
@@ -5763,6 +5962,9 @@ func (c *multiRecordingAdminClient) upsertedHosts() []string {
 func (c *multiRecordingAdminClient) upsertedRoutes() []router.Route {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if len(c.activated) > 0 {
+		return append([]router.Route(nil), c.activated...)
+	}
 	return append([]router.Route(nil), c.routes...)
 }
 
@@ -5865,6 +6067,89 @@ func (c *recordingAdminClient) ProbeTarget(_ context.Context, target string) (bo
 		return c.probeReachable[target], nil
 	}
 	return true, nil
+}
+
+func (c *recordingAdminClient) ReserveRoutes(_ context.Context, request router.ReservationRequest) (router.ReservationResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reserveCalls++
+	stored := append([]router.Route(nil), c.routes...)
+	if len(stored) == 0 {
+		for _, status := range c.statuses {
+			stored = append(stored, status.Route)
+		}
+	}
+	store := &runtimeTestStore{routes: stored}
+	result, err := router.ReserveRoutes(store, request, time.Now().UTC())
+	c.routes = store.routes
+	return result, err
+}
+
+func (c *recordingAdminClient) ActivateRoutes(_ context.Context, runID string, refs []router.RouteRef) ([]router.Route, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.activateCalls++
+	if c.activateErr != nil {
+		return nil, c.activateErr
+	}
+	store := &runtimeTestStore{routes: append([]router.Route(nil), c.routes...)}
+	routes, err := router.ActivateRoutes(store, runID, refs, time.Now().UTC(), router.DefaultRouteLeaseTTL)
+	c.routes = store.routes
+	if err == nil && len(routes) > 0 {
+		c.route = routes[0]
+		if c.upserted == nil {
+			c.upserted = make(chan struct{})
+		}
+		if !c.upsertedClosed {
+			close(c.upserted)
+			c.upsertedClosed = true
+		}
+	}
+	return routes, err
+}
+
+func (c *recordingAdminClient) ReleaseRoutes(_ context.Context, runID string, refs []router.RouteRef) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.releaseCalls++
+	store := &runtimeTestStore{routes: append([]router.Route(nil), c.routes...)}
+	err := router.ReleaseRoutes(store, runID, refs)
+	c.routes = store.routes
+	return err
+}
+func (c *recordingAdminClient) RenewRoutes(context.Context, string, []router.RouteRef) error {
+	return nil
+}
+func (c *recordingAdminClient) DeleteRouteRef(_ context.Context, ref router.RouteRef) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	store := &runtimeTestStore{routes: append([]router.Route(nil), c.routes...)}
+	err := router.DeleteRouteRef(store, ref)
+	c.routes = store.routes
+	return err
+}
+
+type runtimeTestStore struct{ routes []router.Route }
+
+func (s *runtimeTestStore) Load() ([]router.Route, error) {
+	return append([]router.Route(nil), s.routes...), nil
+}
+func (s *runtimeTestStore) Save(routes []router.Route) error {
+	s.routes = append([]router.Route(nil), routes...)
+	return nil
+}
+
+func fakeReservationResult(request router.ReservationRequest) router.ReservationResult {
+	store := &runtimeTestStore{}
+	result, _ := router.ReserveRoutes(store, request, time.Now().UTC())
+	return result
+}
+func fakeActivatedRoutes(refs []router.RouteRef) []router.Route {
+	routes := make([]router.Route, len(refs))
+	for i, ref := range refs {
+		routes[i] = router.Route{ID: ref.ID, Generation: ref.Generation, State: router.RouteStateActive}
+	}
+	return routes
 }
 
 type recordingProbeClient struct {
@@ -6062,6 +6347,11 @@ func (c *testWindowsCompanionControl) Info(ctx context.Context) (companion.Info,
 			"control.route-statuses",
 			"control.routes",
 			"control.upsert-route",
+			companion.CapabilityReserveRoutes,
+			companion.CapabilityActivateRoutes,
+			companion.CapabilityReleaseRoutes,
+			companion.CapabilityRenewRoutes,
+			companion.CapabilityDeleteRouteRef,
 			"control.uninstall",
 			"control.stop-router",
 		},
@@ -6158,6 +6448,22 @@ func (c *testWindowsCompanionControl) ProbeTarget(ctx context.Context, target st
 		return false, errors.New("test companion does not support target probes")
 	}
 	return probe.ProbeTarget(ctx, target)
+}
+
+func (c *testWindowsCompanionControl) ReserveRoutes(ctx context.Context, request router.ReservationRequest) (router.ReservationResult, error) {
+	return c.admin.(routeLifecycleClient).ReserveRoutes(ctx, request)
+}
+func (c *testWindowsCompanionControl) ActivateRoutes(ctx context.Context, runID string, refs []router.RouteRef) ([]router.Route, error) {
+	return c.admin.(routeLifecycleClient).ActivateRoutes(ctx, runID, refs)
+}
+func (c *testWindowsCompanionControl) ReleaseRoutes(ctx context.Context, runID string, refs []router.RouteRef) error {
+	return c.admin.(routeLifecycleClient).ReleaseRoutes(ctx, runID, refs)
+}
+func (c *testWindowsCompanionControl) RenewRoutes(ctx context.Context, runID string, refs []router.RouteRef) error {
+	return c.admin.(routeLifecycleClient).RenewRoutes(ctx, runID, refs)
+}
+func (c *testWindowsCompanionControl) DeleteRouteRef(ctx context.Context, ref router.RouteRef) error {
+	return c.admin.(routeLifecycleClient).DeleteRouteRef(ctx, ref)
 }
 
 func stubLocalhostHTTPStatus(t *testing.T, status LocalhostHTTPStatus) func() {

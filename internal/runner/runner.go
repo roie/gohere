@@ -148,8 +148,36 @@ func HasExplicitPortFlag(command string) bool {
 		if strings.HasPrefix(field, "--port=") {
 			return true
 		}
+		if strings.HasPrefix(field, "-p") && len(field) > 2 {
+			port, err := strconv.Atoi(strings.TrimPrefix(field, "-p"))
+			if err == nil && port > 0 && port <= 65535 {
+				return true
+			}
+		}
 	}
 	return false
+}
+
+func ExplicitPort(command string) (int, bool) {
+	fields := strings.Fields(command)
+	for i, field := range fields {
+		value := ""
+		switch {
+		case field == "--port" || field == "-p":
+			if i+1 < len(fields) {
+				value = fields[i+1]
+			}
+		case strings.HasPrefix(field, "--port="):
+			value = strings.TrimPrefix(field, "--port=")
+		case strings.HasPrefix(field, "-p") && len(field) > 2:
+			value = strings.TrimPrefix(field, "-p")
+		}
+		port, err := strconv.Atoi(value)
+		if err == nil && port > 0 && port <= 65535 {
+			return port, true
+		}
+	}
+	return 0, false
 }
 
 func HasExplicitHostFlag(command string) bool {

@@ -86,6 +86,8 @@ func TestPortFlagConflictDetection(t *testing.T) {
 		{"vite --port 5173", true},
 		{"vite --port=5173", true},
 		{"next dev -p 3001", true},
+		{"next dev -p3002", true},
+		{"custom -profile dev", false},
 		{"vite --host 0.0.0.0", true},
 		{"astro dev --hostname 127.0.0.1", true},
 		{"vite", false},
@@ -97,6 +99,26 @@ func TestPortFlagConflictDetection(t *testing.T) {
 				t.Fatalf("HasExplicitPortOrHostFlag(%q) = %v, want %v", tt.command, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExplicitPort(t *testing.T) {
+	for _, test := range []struct {
+		command string
+		port    int
+		ok      bool
+	}{
+		{"vite --port 5173", 5173, true},
+		{"vite --port=4173", 4173, true},
+		{"next dev -p 3001", 3001, true},
+		{"next dev -p3002", 3002, true},
+		{"vite", 0, false},
+		{"vite --port nope", 0, false},
+	} {
+		port, ok := ExplicitPort(test.command)
+		if port != test.port || ok != test.ok {
+			t.Fatalf("ExplicitPort(%q) = %d/%v, want %d/%v", test.command, port, ok, test.port, test.ok)
+		}
 	}
 }
 

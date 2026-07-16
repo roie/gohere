@@ -146,6 +146,7 @@ type RunPlan struct {
 	RouterLabel         string
 	StaticBindHost      string
 	ManagedPort         bool
+	FixedPort           bool
 	Mode                string
 	URLScheme           string
 	AuthorityURLScheme  string
@@ -226,6 +227,16 @@ func prepareRunWithHost(cmd cli.Command, cwd, childHost string) (RunPlan, error)
 	if !ok {
 		return RunPlan{}, missingScriptError(cmd.Script, pkg.AvailableScripts())
 	}
+	if cmd.TargetPort == 0 {
+		if explicitPort, ok := runner.ExplicitPort(scriptCommand); ok {
+			port = explicitPort
+			env = runner.ChildEnvForHost(os.Environ(), port, childHost)
+		}
+	}
+	fixedPort := cmd.TargetPort != 0
+	if _, ok := runner.ExplicitPort(scriptCommand); ok {
+		fixedPort = true
+	}
 
 	pm, _, err := project.DetectPackageManager(projectDir(packagePath))
 	if err != nil {
@@ -243,10 +254,11 @@ func prepareRunWithHost(cmd cli.Command, cwd, childHost string) (RunPlan, error)
 	if err != nil {
 		return RunPlan{}, err
 	}
-	return applyRunOptions(cmd, RunPlan{Command: command, Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: projectRoot, ProjectName: projectName, ManagedPort: managedPort})
+	return applyRunOptions(cmd, RunPlan{Command: command, Env: env, Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"), CWD: cwd, ProjectRoot: projectRoot, ProjectName: projectName, ManagedPort: managedPort, FixedPort: fixedPort})
 }
 
 func applyRunOptions(cmd cli.Command, plan RunPlan) (RunPlan, error) {
+	plan.FixedPort = plan.FixedPort || cmd.TargetPort != 0
 	plan, err := applyAsAlias(cmd, plan)
 	if err != nil {
 		return RunPlan{}, err
@@ -331,52 +343,19 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		return err
 	}
 
-	if detectWSLFunc() {
+	if classifyRunIntent(cmd, plan) == runIntentPlanned {
 		if err := ensureRunRouter(); err != nil {
 			return err
 		}
-		if shouldPrepareForChildBindHost(cmd, resolvedRouter.ChildHost) {
+		if detectWSLFunc() && shouldPrepareForChildBindHost(cmd, resolvedRouter.ChildHost) {
 			plan, err = prepareRunWithHost(cmd, cwd, resolvedRouter.ChildHost)
 			if err != nil {
 				return err
 			}
 			applyRunRouter(&plan, resolvedRouter)
 		}
-	}
-	if routerResolved {
 		applyPublicURLScheme(&plan, cmd)
-		reused, err := reuseReadySingleRoute(ctx, adminClient, cmd, plan, stdout)
-		if err != nil {
-			return err
-		}
-		if reused {
-			return nil
-		}
-	}
-
-	if plan.Static {
-		if err := ensureRunRouter(); err != nil {
-			return err
-		}
-		applyPublicURLScheme(&plan, cmd)
-
-		staticServer, err := staticserver.StartWithConfig(ctx, staticserver.Config{
-			Dir:  plan.CWD,
-			Port: plan.Port,
-			Host: plan.StaticBindHost,
-			Live: plan.Live,
-		})
-		if err != nil {
-			return err
-		}
-		defer staticServer.Close()
-		cleanup, err := registerRoute(ctx, adminClient, cmd, plan, staticServer.Port(), os.Getpid(), stdout, stderr)
-		if err != nil {
-			return err
-		}
-		defer cleanup()
-		<-ctx.Done()
-		return nil
+		return runPlannedSingle(ctx, cmd, plan, adminClient, stdout, stderr)
 	}
 
 	liveStdout := newReplayWriter(32*1024, stdout)
@@ -1202,28 +1181,6 @@ func startRouteLease(ctx context.Context, client adminClient, route router.Route
 	}
 }
 
-func reuseReadySingleRoute(ctx context.Context, client adminClient, cmd cli.Command, plan RunPlan, stdout io.Writer) (bool, error) {
-	if cmd.Kind != cli.CommandRun {
-		return false, nil
-	}
-	statuses, err := adminRouteStatuses(ctx, client)
-	if err != nil {
-		if errors.Is(err, admin.ErrUnauthorized) {
-			return false, staleRouterTokenError()
-		}
-		return false, err
-	}
-	route, ok := reusableExistingRoute(plan, statuses)
-	if !ok {
-		return false, nil
-	}
-	if cmd.TargetPort != 0 && route.Target != routeTarget(plan.RouteTargetHost, cmd.TargetPort) {
-		return false, nil
-	}
-	fmt.Fprint(stdout, runSuccessOutputForScheme(cmd, plan.URLScheme, route.Host, plan.URLPath))
-	return true, nil
-}
-
 func routeCleanupWarning(host string, err error) string {
 	if routeCleanupTimedOut(err) {
 		return fmt.Sprintf("Could not remove route %s before shutdown; run gohere prune if it still appears in gohere list.", host)
@@ -1332,6 +1289,11 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer, cmd cli.Command) (r
 		"control.routes",
 		"control.route-statuses",
 		"control.upsert-route",
+		companion.CapabilityReserveRoutes,
+		companion.CapabilityActivateRoutes,
+		companion.CapabilityReleaseRoutes,
+		companion.CapabilityRenewRoutes,
+		companion.CapabilityDeleteRouteRef,
 	}
 	opened, err := openWindowsCompanion(ctx, requiredCapabilities...)
 	if err != nil {

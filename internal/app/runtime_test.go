@@ -29,6 +29,7 @@ func TestClassifyRunIntent(t *testing.T) {
 		{name: "port flag", cmd: cli.Command{Kind: cli.CommandRun, ExplicitScript: true, Script: "custom", PortFlag: "--listen"}, want: runIntentPlanned},
 		{name: "path", cmd: cli.Command{Kind: cli.CommandRun, TargetPath: "./site"}, want: runIntentPlanned},
 		{name: "build", cmd: cli.Command{Kind: cli.CommandRun, ExplicitScript: true, Script: "build"}, want: runIntentLazy},
+		{name: "build adapter remains lazy", cmd: cli.Command{Kind: cli.CommandRun, ExplicitScript: true, Script: "build"}, plan: RunPlan{ManagedPort: true}, want: runIntentLazy},
 		{name: "lint", cmd: cli.Command{Kind: cli.CommandRun, ExplicitScript: true, Script: "lint"}, want: runIntentLazy},
 		{name: "test", cmd: cli.Command{Kind: cli.CommandRun, ExplicitScript: true, Script: "test"}, want: runIntentLazy},
 		{name: "raw", cmd: cli.Command{Kind: cli.CommandRaw, Raw: []string{"node", "server.js"}}, want: runIntentLazy},

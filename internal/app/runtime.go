@@ -1,6 +1,10 @@
 package app
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"net/url"
 	"strings"
 
@@ -14,6 +18,14 @@ const (
 	runIntentLazy runIntent = iota
 	runIntentPlanned
 )
+
+type routeLifecycleClient interface {
+	ReserveRoutes(context.Context, router.ReservationRequest) (router.ReservationResult, error)
+	ActivateRoutes(context.Context, string, []router.RouteRef) ([]router.Route, error)
+	ReleaseRoutes(context.Context, string, []router.RouteRef) error
+	RenewRoutes(context.Context, string, []router.RouteRef) error
+	DeleteRouteRef(context.Context, router.RouteRef) error
+}
 
 type resolvedService struct {
 	Plan       RunPlan
@@ -37,16 +49,20 @@ func classifyRunIntent(cmd cli.Command, plan RunPlan) runIntent {
 	if cmd.Kind != cli.CommandRun {
 		return runIntentLazy
 	}
-	if len(cmd.Scripts) > 1 || !cmd.ExplicitScript || plan.ManagedPort {
+	if len(cmd.Scripts) > 1 || (!cmd.ExplicitScript && cmd.Script == "dev") {
 		return runIntentPlanned
 	}
 	firstSegment := strings.ToLower(strings.SplitN(cmd.Script, ":", 2)[0])
 	switch firstSegment {
+	case "build", "lint", "test":
+		return runIntentLazy
 	case "dev", "start", "serve", "preview":
 		return runIntentPlanned
-	default:
-		return runIntentLazy
 	}
+	if plan.ManagedPort {
+		return runIntentPlanned
+	}
+	return runIntentLazy
 }
 
 func resolveServiceEnvironment(base []string, current resolvedService, all []resolvedService) []string {
@@ -84,6 +100,24 @@ func resolveServiceEnvironment(base []string, current resolvedService, all []res
 		}
 	}
 	return env
+}
+
+func newRunID() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(random[:]), nil
+}
+
+func resolvedRoute(route router.Route) (router.Route, error) {
+	if route.EffectiveState() == router.RouteStatePending {
+		if strings.TrimSpace(route.PendingTarget) == "" {
+			return router.Route{}, errors.New("pending route omitted target")
+		}
+		route.Target = route.PendingTarget
+	}
+	return route, nil
 }
 
 func resolvedPublicURL(plan RunPlan, route router.Route) string {
