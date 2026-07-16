@@ -52,6 +52,52 @@ func TestClientHealthAndRoutes(t *testing.T) {
 	}
 }
 
+func TestClientReservationLifecycle(t *testing.T) {
+	store := router.NewMemoryStore()
+	srv := router.NewServer(router.Config{Token: "secret", Store: store})
+	httpSrv := httptest.NewServer(srv.AdminHandler())
+	defer httpSrv.Close()
+	client := NewClient(httpSrv.URL, "secret")
+
+	result, err := client.ReserveRoutes(t.Context(), router.ReservationRequest{RunID: "run-a", Routes: []router.RouteReservation{{DesiredHost: "web.localhost", Target: "http://127.0.0.1:48301", CWD: "/work/web"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := result.PendingRefs()
+	active, err := client.ActivateRoutes(t.Context(), "run-a", refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 1 || active[0].Target != "http://127.0.0.1:48301" {
+		t.Fatalf("active = %#v", active)
+	}
+	if err := client.RenewRoutes(t.Context(), "run-a", refs); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ReleaseRoutes(t.Context(), "run-a", refs); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := client.Routes(t.Context())
+	if err != nil || len(routes) != 0 {
+		t.Fatalf("routes/error = %#v/%v", routes, err)
+	}
+}
+
+func TestClientDeleteRouteRef(t *testing.T) {
+	store := router.NewMemoryStore()
+	route := router.Route{ID: "route-1", Generation: 2, State: router.RouteStateActive, Host: "web.localhost", Target: "http://127.0.0.1:48302"}
+	if err := store.Save([]router.Route{route}); err != nil {
+		t.Fatal(err)
+	}
+	srv := router.NewServer(router.Config{Token: "secret", Store: store})
+	httpSrv := httptest.NewServer(srv.AdminHandler())
+	defer httpSrv.Close()
+	client := NewClient(httpSrv.URL, "secret")
+	if err := client.DeleteRouteRef(t.Context(), route.Ref()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientRejectsLegacyHealthResponse(t *testing.T) {
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
