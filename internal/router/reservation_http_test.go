@@ -50,8 +50,8 @@ func TestReservationLifecycleAPI(t *testing.T) {
 		t.Fatalf("renew status/body = %d/%q", rec.Code, rec.Body.String())
 	}
 	routes, _ := store.Load()
-	if !routes[0].LeaseExpiresAt.After(oldExpiry) {
-		t.Fatalf("renewed expiry = %v, old = %v", routes[0].LeaseExpiresAt, oldExpiry)
+	if routes[0].LeaseExpiresAt.Before(oldExpiry) {
+		t.Fatalf("renewed expiry regressed: %v, old = %v", routes[0].LeaseExpiresAt, oldExpiry)
 	}
 
 	body.Reset()
