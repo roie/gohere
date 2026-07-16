@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -159,6 +160,9 @@ func TestReleaseVersionComparisonPreventsWindowsDowngrade(t *testing.T) {
 }
 
 func TestCompanionReadyInfoUpgradesOlderWindowsBinaryWithoutChangingHTTPSPolicy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX script to emulate an older Windows binary")
+	}
 	stateDir := t.TempDir()
 	stableBinary := filepath.Join(stateDir, "bin", "gohere.exe")
 	writeCompanionTestFile(t, stableBinary, "#!/bin/sh\nprintf 'gohere 1.2.3\\n'\n")

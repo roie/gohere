@@ -3492,6 +3492,9 @@ func TestResolveRunRouterRunsSetupBeforeReadingMissingToken(t *testing.T) {
 }
 
 func TestResolveRunRouterReportsUncontrolledRouterWhenTokenMissingAfterHealth(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test exercises the non-Windows local-router diagnostic")
+	}
 	oldDetectWSL := detectWSLFunc
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldRouterHealth := routerHealthFunc
@@ -3519,6 +3522,9 @@ func TestResolveRunRouterReportsUncontrolledRouterWhenTokenMissingAfterHealth(t 
 }
 
 func TestResolveRunRouterHandlesTypedNilAdminClientAfterHealth(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test exercises the non-Windows local-router diagnostic")
+	}
 	oldDetectWSL := detectWSLFunc
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldRouterHealth := routerHealthFunc

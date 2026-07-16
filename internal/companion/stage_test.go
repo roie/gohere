@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -20,8 +21,12 @@ func TestBundledWindowsBinaryFindsNPMVendorCompanion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != windowsBinary {
-		t.Fatalf("binary = %q, want %q", got, windowsBinary)
+	want, err := filepath.EvalSymlinks(windowsBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("binary = %q, want %q", got, want)
 	}
 }
 
@@ -60,8 +65,14 @@ func TestStageWindowsBinaryCopiesAndRepairsContentAddressedCompanion(t *testing.
 		t.Fatalf("destination = %q", destination)
 	}
 	assertFileContent(t, destination, "signed-windows-binary")
-	if info, err := os.Stat(destination); err != nil || info.Mode().Perm()&0100 == 0 {
-		t.Fatalf("staged mode = %v, err = %v", info.Mode(), err)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(destination)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0100 == 0 {
+			t.Fatalf("staged mode = %v", info.Mode())
+		}
 	}
 
 	writeTestFile(t, destination, "tampered")
