@@ -434,18 +434,6 @@ func runWorkspaceIfAvailable(ctx context.Context, cmd cli.Command, cwd string, s
 
 func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.PackageManager, packages []project.WorkspacePackage, stdout, stderr io.Writer) error {
 	var items []multiRunItem
-	cleanupStarted := func() {
-		for i := len(items) - 1; i >= 0; i-- {
-			if items[i].cleanup != nil {
-				items[i].cleanup()
-			}
-			if items[i].result != nil {
-				items[i].result.Stop()
-			}
-		}
-	}
-	defer cleanupStarted()
-
 	var adminClient adminClient
 	routerResolved := false
 	ensureRunRouter := func() (runRouter, error) {
@@ -495,71 +483,11 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 		}
 		resolvedRouter = rr
 	}
-	if err := resolveMultiRunHosts(ctx, adminClient, items); err != nil {
-		return err
-	}
-	if err := markReusableExistingRoutes(ctx, adminClient, items); err != nil {
-		return err
-	}
 	for i := range items {
+		applyRunRouter(&items[i].plan, resolvedRouter)
 		applyPublicURLScheme(&items[i].plan, items[i].cmd)
 	}
-	if err := applyServiceDiscoveryEnv(items); err != nil {
-		return err
-	}
-
-	for i := range items {
-		itemCmd := items[i].cmd
-		plan := items[i].plan
-		if items[i].reused {
-			fmt.Fprint(stdout, runSuccessOutputForScheme(itemCmd, plan.URLScheme, items[i].reusedRoute.Host, plan.URLPath))
-			continue
-		}
-		if routerResolved {
-			applyRunRouter(&plan, resolvedRouter)
-		}
-		outputPrefix := "[" + serviceDiscoveryLabel(multiRunItem{cmd: itemCmd, plan: plan}) + "] "
-		liveStdout := newReplayWriter(32*1024, newLinePrefixWriter(stdout, outputPrefix))
-		liveStderr := newReplayWriter(32*1024, newLinePrefixWriter(stderr, outputPrefix))
-		result, err := startRunnerFunc(ctx, runner.Config{
-			Command:        plan.Command,
-			Dir:            plan.CWD,
-			Env:            plan.Env,
-			ChosenPort:     plan.Port,
-			Stdout:         liveStdout,
-			Stderr:         liveStderr,
-			StartupTimeout: 15 * time.Second,
-		})
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			replayCapturedOutput(newLinePrefixWriter(stderr, outputPrefix), liveStdout.capture(), liveStderr.capture())
-			return formatMultiRunError(itemCmd, err)
-		}
-
-		if !routerResolved {
-			rr, err := ensureRunRouter()
-			if err != nil {
-				result.Stop()
-				return err
-			}
-			resolvedRouter = rr
-			applyRunRouter(&plan, rr)
-		}
-
-		cleanup, err := registerRoute(ctx, adminClient, itemCmd, plan, result.Port, result.PID(), stdout, stderr)
-		if err != nil {
-			result.Stop()
-			return err
-		}
-		startLiveOutput(liveStdout, liveStderr, cmd.Verbose)
-		items[i].plan = plan
-		items[i].result = result
-		items[i].cleanup = cleanup
-	}
-
-	return waitForMulti(ctx, items)
+	return runPlannedGroup(ctx, cmd.Verbose, items, adminClient, stdout, stderr)
 }
 
 func injectedArgsControlPort(args []string, portFlag string) bool {
@@ -587,6 +515,12 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 		return RunPlan{}, err
 	}
 	env := runner.ChildEnvForHost(os.Environ(), port, childHost)
+	fixedPort := cmd.TargetPort != 0
+	if explicitPort, ok := runner.ExplicitPort(workspacePackage.Script); ok {
+		port = explicitPort
+		fixedPort = true
+		env = runner.ChildEnvForHost(os.Environ(), port, childHost)
+	}
 	injected := runner.InjectPortArgsForHost(workspacePackage.Script, port, cmd.PortFlag, childHost)
 	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
 	managedPort := injectedArgsControlPort(injected, cmd.PortFlag)
@@ -608,33 +542,20 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 		ProjectRoot: root,
 		ProjectName: projectName,
 		ManagedPort: managedPort,
+		FixedPort:   fixedPort,
 		Mode:        "workspace",
 	}, nil
 }
 
 type multiRunItem struct {
-	cmd         cli.Command
-	plan        RunPlan
-	result      *runner.Result
-	cleanup     func()
-	reusedRoute router.Route
-	reused      bool
+	cmd    cli.Command
+	plan   RunPlan
+	result *runner.Result
+	reused bool
 }
 
 func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Writer) error {
 	var items []multiRunItem
-	cleanupStarted := func() {
-		for i := len(items) - 1; i >= 0; i-- {
-			if items[i].cleanup != nil {
-				items[i].cleanup()
-			}
-			if items[i].result != nil {
-				items[i].result.Stop()
-			}
-		}
-	}
-	defer cleanupStarted()
-
 	var adminClient adminClient
 	routerResolved := false
 	ensureRunRouter := func() (runRouter, error) {
@@ -689,71 +610,11 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 		}
 		resolvedRouter = rr
 	}
-	if err := resolveMultiRunHosts(ctx, adminClient, items); err != nil {
-		return err
-	}
-	if err := markReusableExistingRoutes(ctx, adminClient, items); err != nil {
-		return err
-	}
 	for i := range items {
+		applyRunRouter(&items[i].plan, resolvedRouter)
 		applyPublicURLScheme(&items[i].plan, items[i].cmd)
 	}
-	if err := applyServiceDiscoveryEnv(items); err != nil {
-		return err
-	}
-
-	for i := range items {
-		itemCmd := items[i].cmd
-		plan := items[i].plan
-		if items[i].reused {
-			fmt.Fprint(stdout, runSuccessOutputForScheme(itemCmd, plan.URLScheme, items[i].reusedRoute.Host, plan.URLPath))
-			continue
-		}
-		if routerResolved {
-			applyRunRouter(&plan, resolvedRouter)
-		}
-		outputPrefix := "[" + serviceDiscoveryLabel(multiRunItem{cmd: itemCmd, plan: plan}) + "] "
-		liveStdout := newReplayWriter(32*1024, newLinePrefixWriter(stdout, outputPrefix))
-		liveStderr := newReplayWriter(32*1024, newLinePrefixWriter(stderr, outputPrefix))
-		result, err := startRunnerFunc(ctx, runner.Config{
-			Command:             plan.Command,
-			Env:                 plan.Env,
-			ChosenPort:          plan.Port,
-			RequireDetectedPort: plan.RequireDetectedPort,
-			Stdout:              liveStdout,
-			Stderr:              liveStderr,
-			StartupTimeout:      15 * time.Second,
-		})
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			replayCapturedOutput(newLinePrefixWriter(stderr, outputPrefix), liveStdout.capture(), liveStderr.capture())
-			return formatMultiRunError(itemCmd, err)
-		}
-
-		if !routerResolved {
-			rr, err := ensureRunRouter()
-			if err != nil {
-				result.Stop()
-				return err
-			}
-			resolvedRouter = rr
-			applyRunRouter(&plan, rr)
-		}
-
-		cleanup, err := registerRoute(ctx, adminClient, itemCmd, plan, result.Port, result.PID(), stdout, stderr)
-		if err != nil {
-			result.Stop()
-			return err
-		}
-		startLiveOutput(liveStdout, liveStderr, cmd.Verbose)
-		items[i].plan = plan
-		items[i].result = result
-		items[i].cleanup = cleanup
-	}
-
-	return waitForMulti(ctx, items)
+	return runPlannedGroup(ctx, cmd.Verbose, items, adminClient, stdout, stderr)
 }
 
 func multiScriptHost(script, baseHost string) string {
@@ -763,85 +624,6 @@ func multiScriptHost(script, baseHost string) string {
 		label = script[index+1:]
 	}
 	return project.NormalizeHostnameName(label) + "." + base + ".localhost"
-}
-
-func applyServiceDiscoveryEnv(items []multiRunItem) error {
-	if len(items) <= 1 {
-		return nil
-	}
-	values, err := serviceDiscoveryEnv(items)
-	if err != nil {
-		return err
-	}
-	for i := range items {
-		items[i].plan.Env = appendMissingEnv(items[i].plan.Env, values)
-	}
-	return nil
-}
-
-func serviceDiscoveryEnv(items []multiRunItem) (map[string]string, error) {
-	values := map[string]string{}
-	seen := map[string]string{}
-
-	for _, item := range items {
-		label := serviceDiscoveryLabel(item)
-		key := serviceDiscoveryEnvKey(label)
-		if key == "" {
-			return nil, fmt.Errorf("gohere error: service env key is empty for %s", serviceDiscoverySource(item))
-		}
-		if existing, ok := seen[key]; ok {
-			return nil, fmt.Errorf("gohere error: service env key %q is ambiguous for %s and %s", key, existing, serviceDiscoverySource(item))
-		}
-		seen[key] = serviceDiscoverySource(item)
-
-		values["GOHERE_"+key+"_URL"] = publicRouteURLForScheme(item.plan.URLScheme, item.plan.Host, item.plan.URLPath)
-		if item.plan.ManagedPort {
-			portValue := fmt.Sprintf("%d", item.plan.Port)
-			target := fmt.Sprintf("http://127.0.0.1:%d", item.plan.Port)
-			values["GOHERE_"+key+"_PORT"] = portValue
-			values["GOHERE_"+key+"_TARGET"] = target
-		}
-	}
-	return values, nil
-}
-
-func resolveMultiRunHosts(ctx context.Context, client adminClient, items []multiRunItem) error {
-	routes, err := client.Routes(ctx)
-	if err != nil {
-		if errors.Is(err, admin.ErrUnauthorized) {
-			return staleRouterTokenError()
-		}
-		return err
-	}
-	active := toRegisteredRoutes(routes)
-	for i := range items {
-		host := resolveRouteHost(items[i].plan, active)
-		items[i].plan.Host = host
-		items[i].plan.Name = strings.TrimSuffix(host, ".localhost")
-		active = append(active, registeredRoute{
-			Host: host,
-			CWD:  items[i].plan.CWD,
-		})
-	}
-	return nil
-}
-
-func markReusableExistingRoutes(ctx context.Context, client adminClient, items []multiRunItem) error {
-	statuses, err := adminRouteStatuses(ctx, client)
-	if err != nil {
-		return err
-	}
-	for i := range items {
-		route, ok := reusableExistingRoute(items[i].plan, statuses)
-		if !ok {
-			continue
-		}
-		items[i].reusedRoute = route
-		items[i].reused = true
-		items[i].plan.Host = route.Host
-		items[i].plan.Name = strings.TrimSuffix(route.Host, ".localhost")
-	}
-	return nil
 }
 
 func reusableExistingRoute(plan RunPlan, statuses []lifecycle.RouteStatus) (router.Route, bool) {

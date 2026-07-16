@@ -28,7 +28,34 @@ import (
 	"github.com/roie/gohere/internal/setup"
 )
 
+type deferredTestGroupRunner struct {
+	mu     sync.Mutex
+	ctx    context.Context
+	config runner.Config
+	result *runner.Result
+}
+
+func (r *deferredTestGroupRunner) WaitReady() (*runner.Result, error) {
+	result, err := startRunnerFunc(r.ctx, r.config)
+	r.mu.Lock()
+	r.result = result
+	r.mu.Unlock()
+	return result, err
+}
+
+func (r *deferredTestGroupRunner) Stop() {
+	r.mu.Lock()
+	result := r.result
+	r.mu.Unlock()
+	if result != nil {
+		result.Stop()
+	}
+}
+
 func TestMain(m *testing.M) {
+	launchGroupRunnerFunc = func(ctx context.Context, cfg runner.Config) (groupRunner, error) {
+		return &deferredTestGroupRunner{ctx: ctx, config: cfg}, nil
+	}
 	if runtime.GOOS == "windows" && isFakeWindowsNPMInvocation() {
 		runFakeWindowsNPM()
 		os.Exit(0)
@@ -2024,13 +2051,13 @@ func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
 	defaultAdminClientFunc = func() (adminClient, error) {
 		return admin, nil
 	}
-	ports := []int{5101, 5102}
 	var commands []string
+	var commandsMu sync.Mutex
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		commandsMu.Lock()
 		commands = append(commands, strings.Join(cfg.Command, " "))
-		port := ports[0]
-		ports = ports[1:]
-		return &runner.Result{Port: port}, nil
+		commandsMu.Unlock()
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 	var opened []string
 	openBrowserFunc = func(ctx context.Context, url string) error {
@@ -2050,8 +2077,9 @@ func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
 	base := filepath.Base(dir)
 	wantWeb := "web." + base + ".localhost"
 	wantAPI := "api." + base + ".localhost"
-	if !sameStrings(admin.upsertedHosts(), []string{wantWeb, wantAPI}) {
-		t.Fatalf("upserted hosts = %#v, want %#v", admin.upsertedHosts(), []string{wantWeb, wantAPI})
+	upsertedHosts := admin.upsertedHosts()
+	if len(upsertedHosts) != 2 || !containsString(upsertedHosts, wantWeb) || !containsString(upsertedHosts, wantAPI) {
+		t.Fatalf("upserted hosts = %#v, want %#v", upsertedHosts, []string{wantWeb, wantAPI})
 	}
 	if !sameStrings(opened, []string{"http://" + wantWeb, "http://" + wantAPI}) {
 		t.Fatalf("opened = %#v", opened)
@@ -2060,8 +2088,98 @@ func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
 	if stdout.String() != wantOut || stderr.String() != "" {
 		t.Fatalf("stdout=%q stderr=%q, want %q", stdout.String(), stderr.String(), wantOut)
 	}
-	if len(commands) != 2 || !strings.Contains(commands[0], "dev:web") || !strings.Contains(commands[1], "dev:api") {
+	joinedCommands := strings.Join(commands, "\n")
+	if len(commands) != 2 || !strings.Contains(joinedCommands, "dev:web") || !strings.Contains(joinedCommands, "dev:api") {
 		t.Fatalf("commands = %#v", commands)
+	}
+}
+
+func TestRunMultiReservesOneBatchAndStartsAllChildrenBeforeActivation(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
+
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) { return admin, nil }
+	var mu sync.Mutex
+	started := 0
+	allStarted := make(chan struct{})
+	envs := map[string][]string{}
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		command := strings.Join(cfg.Command, " ")
+		label := "api"
+		if strings.Contains(command, "dev:web") {
+			label = "web"
+		}
+		mu.Lock()
+		envs[label] = append([]string(nil), cfg.Env...)
+		started++
+		if started == 2 {
+			close(allStarted)
+		}
+		mu.Unlock()
+		select {
+		case <-allStarted:
+		case <-time.After(time.Second):
+			return nil, errors.New("sibling was not started concurrently")
+		}
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+
+	dir := tempProject(t, map[string]string{"package.json": `{"scripts":{"dev:web":"vite","dev:api":"vite"}}`})
+	cmd := cli.Command{Kind: cli.CommandRun, Script: "dev:web", Scripts: []string{"dev:web", "dev:api"}}
+	if err := Run(context.Background(), cmd, dir, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if admin.reserveCalls != 1 || admin.reservedBatch != 2 || admin.activationCalls != 1 || admin.releaseCalls != 1 {
+		t.Fatalf("lifecycle reserve/batch/activate/release = %d/%d/%d/%d", admin.reserveCalls, admin.reservedBatch, admin.activationCalls, admin.releaseCalls)
+	}
+	webEnv, apiEnv := envValues(envs["web"]), envValues(envs["api"])
+	base := filepath.Base(dir)
+	if webEnv["GOHERE_URL"] != "http://web."+base+".localhost" || apiEnv["GOHERE_URL"] != "http://api."+base+".localhost" {
+		t.Fatalf("self URLs web/api = %q/%q", webEnv["GOHERE_URL"], apiEnv["GOHERE_URL"])
+	}
+	for _, key := range []string{"GOHERE_WEB_URL", "GOHERE_WEB_TARGET", "GOHERE_WEB_PORT", "GOHERE_API_URL", "GOHERE_API_TARGET", "GOHERE_API_PORT"} {
+		if webEnv[key] == "" || webEnv[key] != apiEnv[key] {
+			t.Fatalf("named map %s differs: web=%q api=%q", key, webEnv[key], apiEnv[key])
+		}
+	}
+}
+
+func TestRunMultiActivationFailureReleasesNewBatchAndKeepsReusedRoute(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
+	dir := tempProject(t, map[string]string{"package.json": `{"scripts":{"dev:web":"vite","dev:api":"vite"}}`})
+	base := filepath.Base(dir)
+	reused := router.Route{ID: "web-existing", Generation: 1, Host: "web." + base + ".localhost", Target: "http://127.0.0.1:49001", CWD: dir}
+	admin := &multiRecordingAdminClient{routes: []router.Route{reused}, activateErr: errors.New("activation failed")}
+	defaultAdminClientFunc = func() (adminClient, error) { return admin, nil }
+	starts := 0
+	var apiEnv []string
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		starts++
+		apiEnv = append([]string(nil), cfg.Env...)
+		if strings.Contains(strings.Join(cfg.Command, " "), "dev:web") {
+			t.Fatal("reused web child started")
+		}
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+	cmd := cli.Command{Kind: cli.CommandRun, Script: "dev:web", Scripts: []string{"dev:web", "dev:api"}}
+	err := Run(context.Background(), cmd, dir, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "activation failed") {
+		t.Fatalf("error = %v", err)
+	}
+	env := envValues(apiEnv)
+	if env["GOHERE_WEB_TARGET"] != reused.Target || env["GOHERE_WEB_PORT"] != "49001" {
+		t.Fatalf("reused discovery target/port = %q/%q, want %q/49001", env["GOHERE_WEB_TARGET"], env["GOHERE_WEB_PORT"], reused.Target)
+	}
+	if admin.probeCalls[reused.Target] < 2 {
+		t.Fatalf("reused target probe calls = %d, want pre-reservation and pre-activation probes", admin.probeCalls[reused.Target])
+	}
+	routes, _ := admin.Routes(context.Background())
+	if starts != 1 || len(routes) != 1 || routes[0].Ref() != reused.Ref() || admin.releaseCalls != 1 {
+		t.Fatalf("starts=%d routes=%#v releases=%d; reused route must survive", starts, routes, admin.releaseCalls)
 	}
 }
 
@@ -2077,16 +2195,13 @@ func TestRunMultiScriptsSuppressesChildStartupOutput(t *testing.T) {
 	defaultAdminClientFunc = func() (adminClient, error) {
 		return admin, nil
 	}
-	ports := []int{5101, 5102}
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
-		port := ports[0]
-		ports = ports[1:]
 		if strings.Contains(strings.Join(cfg.Command, " "), "dev:web") {
 			cfg.Stdout.Write([]byte("web ready\n"))
 		} else {
 			cfg.Stderr.Write([]byte("api warning\n"))
 		}
-		return &runner.Result{Port: port}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	dir := tempProject(t, map[string]string{
@@ -2120,16 +2235,13 @@ func TestRunMultiScriptsVerboseReplaysPrefixedStartupOutput(t *testing.T) {
 	defaultAdminClientFunc = func() (adminClient, error) {
 		return admin, nil
 	}
-	ports := []int{5101, 5102}
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
-		port := ports[0]
-		ports = ports[1:]
 		if strings.Contains(strings.Join(cfg.Command, " "), "dev:web") {
 			cfg.Stdout.Write([]byte("web ready\n"))
 		} else {
 			cfg.Stderr.Write([]byte("api warning\n"))
 		}
-		return &runner.Result{Port: port}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	dir := tempProject(t, map[string]string{
@@ -2163,13 +2275,13 @@ func TestRunImplicitDevAtWorkspaceRootLaunchesWorkspacePackages(t *testing.T) {
 	}
 	var commands []string
 	var dirs []string
-	ports := []int{5101, 5102}
+	var startsMu sync.Mutex
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		startsMu.Lock()
 		commands = append(commands, strings.Join(cfg.Command, " "))
 		dirs = append(dirs, cfg.Dir)
-		port := ports[0]
-		ports = ports[1:]
-		return &runner.Result{Port: port}, nil
+		startsMu.Unlock()
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	root := tempProject(t, map[string]string{
@@ -2189,7 +2301,7 @@ func TestRunImplicitDevAtWorkspaceRootLaunchesWorkspacePackages(t *testing.T) {
 		t.Fatalf("upserted hosts = %#v, want %#v", admin.upsertedHosts(), wantHosts)
 	}
 	wantDirs := []string{filepath.Join(root, "apps", "web"), filepath.Join(root, "apps", "worker")}
-	if !sameStrings(dirs, wantDirs) {
+	if len(dirs) != 2 || !containsString(dirs, wantDirs[0]) || !containsString(dirs, wantDirs[1]) {
 		t.Fatalf("runner dirs = %#v, want %#v", dirs, wantDirs)
 	}
 	if len(commands) != 2 || !strings.Contains(commands[0], "pnpm run dev") || !strings.Contains(commands[1], "pnpm run dev") {
@@ -2218,11 +2330,6 @@ func TestRunWorkspaceReusesReadyUnmanagedRouteFromSameCWD(t *testing.T) {
 		startRunnerFunc = oldStartRunner
 	}()
 
-	workerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer workerServer.Close()
-
 	root := tempProject(t, map[string]string{
 		"package.json":             `{"name":"ctrltube","workspaces":["apps/*"],"scripts":{"dev":"pnpm --parallel --filter @ctrltube/worker --filter @ctrltube/web dev"}}`,
 		"pnpm-lock.yaml":           "",
@@ -2231,9 +2338,11 @@ func TestRunWorkspaceReusesReadyUnmanagedRouteFromSameCWD(t *testing.T) {
 	})
 	workerDir := filepath.Join(root, "apps", "worker")
 	admin := &multiRecordingAdminClient{routes: []router.Route{{
-		Host:   "worker.ctrltube.localhost",
-		Target: workerServer.URL,
-		CWD:    workerDir,
+		ID:         "worker-existing",
+		Generation: 1,
+		Host:       "worker.ctrltube.localhost",
+		Target:     "http://127.0.0.1:8787",
+		CWD:        workerDir,
 	}}}
 	defaultAdminClientFunc = func() (adminClient, error) {
 		return admin, nil
@@ -2256,8 +2365,9 @@ func TestRunWorkspaceReusesReadyUnmanagedRouteFromSameCWD(t *testing.T) {
 	if !sameStrings(dirs, []string{"web"}) {
 		t.Fatalf("started dirs = %#v, want only web", dirs)
 	}
-	if countString(admin.upsertedHosts(), "worker.ctrltube.localhost") != 1 {
-		t.Fatalf("reused worker route should not be duplicated: %#v", admin.upsertedHosts())
+	routes, err := admin.Routes(context.Background())
+	if err != nil || len(routes) != 1 || routes[0].Host != "worker.ctrltube.localhost" {
+		t.Fatalf("routes after run = %#v, err=%v; reused worker must remain without duplication", routes, err)
 	}
 	wantOut := "gohere web \u2192 http://web.ctrltube.localhost\n" +
 		"gohere worker \u2192 http://worker.ctrltube.localhost\n"
@@ -2286,9 +2396,11 @@ func TestRunWorkspaceReusesReadyManagedRouteFromSameCWD(t *testing.T) {
 	})
 	webDir := filepath.Join(root, "apps", "web")
 	admin := &multiRecordingAdminClient{routes: []router.Route{{
-		Host:   "web.ctrltube.localhost",
-		Target: webServer.URL,
-		CWD:    webDir,
+		ID:         "web-existing",
+		Generation: 1,
+		Host:       "web.ctrltube.localhost",
+		Target:     webServer.URL,
+		CWD:        webDir,
 	}}}
 	defaultAdminClientFunc = func() (adminClient, error) {
 		return admin, nil
@@ -2331,9 +2443,11 @@ func TestRunWorkspaceReusesUnknownManagedRouteFromSameCWD(t *testing.T) {
 	})
 	webDir := filepath.Join(root, "apps", "web")
 	route := router.Route{
-		Host:   "web.ctrltube.localhost",
-		Target: "http://127.0.0.1:57940",
-		CWD:    webDir,
+		ID:         "web-unknown",
+		Generation: 1,
+		Host:       "web.ctrltube.localhost",
+		Target:     "http://127.0.0.1:57940",
+		CWD:        webDir,
 	}
 	admin := &recordingAdminClient{
 		routes:   []router.Route{route},
@@ -2377,8 +2491,11 @@ func TestRunWorkspaceInjectsServiceDiscoveryEnv(t *testing.T) {
 		return &multiRecordingAdminClient{}, nil
 	}
 	envs := map[string][]string{}
+	var envsMu sync.Mutex
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		envsMu.Lock()
 		envs[filepath.Base(cfg.Dir)] = cfg.Env
+		envsMu.Unlock()
 		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
@@ -2429,8 +2546,11 @@ func TestRunWorkspaceServiceDiscoveryEnvUsesResolvedConflictHosts(t *testing.T) 
 		return admin, nil
 	}
 	envs := map[string][]string{}
+	var envsMu sync.Mutex
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		envsMu.Lock()
 		envs[filepath.Base(cfg.Dir)] = cfg.Env
+		envsMu.Unlock()
 		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 	nextPort := 5100
@@ -2477,8 +2597,11 @@ func TestRunMultiInjectsServiceDiscoveryEnv(t *testing.T) {
 		return &multiRecordingAdminClient{}, nil
 	}
 	var envs [][]string
+	var envsMu sync.Mutex
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		envsMu.Lock()
 		envs = append(envs, cfg.Env)
+		envsMu.Unlock()
 		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
@@ -2532,8 +2655,8 @@ func TestRunServiceDiscoveryMarksExplicitPortScriptsUnmanaged(t *testing.T) {
 	}
 
 	assertEnv(t, webEnv, "GOHERE_WORKER_URL", "http://worker.ctrltube.localhost")
-	assertMissingEnv(t, webEnv, "GOHERE_WORKER_PORT")
-	assertMissingEnv(t, webEnv, "GOHERE_WORKER_TARGET")
+	assertEnv(t, webEnv, "GOHERE_WORKER_PORT", "8787")
+	assertEnv(t, webEnv, "GOHERE_WORKER_TARGET", "http://127.0.0.1:8787")
 	assertMissingEnv(t, webEnv, "GOHERE_SERVICES_JSON")
 }
 
@@ -2548,11 +2671,9 @@ func TestRunServiceDiscoveryMarksUnknownScriptsUnmanaged(t *testing.T) {
 	defaultAdminClientFunc = func() (adminClient, error) {
 		return &multiRecordingAdminClient{}, nil
 	}
-	var webEnv []string
+	starts := 0
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
-		if filepath.Base(cfg.Dir) == "web" {
-			webEnv = cfg.Env
-		}
+		starts++
 		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
@@ -2563,14 +2684,13 @@ func TestRunServiceDiscoveryMarksUnknownScriptsUnmanaged(t *testing.T) {
 		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"custom-worker"}}`,
 	})
 
-	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, io.Discard, io.Discard); err != nil {
-		t.Fatal(err)
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "worker does not expose a controllable port") || !strings.Contains(err.Error(), "--port-flag") {
+		t.Fatalf("error = %v, want unsupported adapter guidance", err)
 	}
-
-	assertEnv(t, webEnv, "GOHERE_WORKER_URL", "http://worker.ctrltube.localhost")
-	assertMissingEnv(t, webEnv, "GOHERE_WORKER_PORT")
-	assertMissingEnv(t, webEnv, "GOHERE_WORKER_TARGET")
-	assertMissingEnv(t, webEnv, "GOHERE_SERVICES_JSON")
+	if starts != 0 {
+		t.Fatalf("started %d children before adapter validation", starts)
+	}
 }
 
 func TestRunServiceDiscoveryPreservesExistingUserEnv(t *testing.T) {
@@ -2604,7 +2724,7 @@ func TestRunServiceDiscoveryPreservesExistingUserEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertEnv(t, webEnv, "GOHERE_WORKER_URL", "http://custom.localhost")
+	assertEnv(t, webEnv, "GOHERE_WORKER_URL", "http://worker.ctrltube.localhost")
 	if mustEnv(t, webEnv, "GOHERE_WORKER_PORT") == "" {
 		t.Fatal("expected generated worker port to remain available")
 	}
@@ -2704,13 +2824,13 @@ func TestRunExplicitPathToWorkspaceRootBehavesLikeRunningThere(t *testing.T) {
 	}
 	var commands []string
 	var dirs []string
-	ports := []int{5101, 5102}
+	var startsMu sync.Mutex
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		startsMu.Lock()
 		commands = append(commands, strings.Join(cfg.Command, " "))
 		dirs = append(dirs, cfg.Dir)
-		port := ports[0]
-		ports = ports[1:]
-		return &runner.Result{Port: port}, nil
+		startsMu.Unlock()
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	parent := tempProject(t, map[string]string{
@@ -2732,7 +2852,7 @@ func TestRunExplicitPathToWorkspaceRootBehavesLikeRunningThere(t *testing.T) {
 		t.Fatalf("upserted hosts = %#v, want %#v", admin.upsertedHosts(), wantHosts)
 	}
 	wantDirs := []string{filepath.Join(repo, "apps", "web"), filepath.Join(repo, "apps", "worker")}
-	if !sameStrings(dirs, wantDirs) {
+	if len(dirs) != 2 || !containsString(dirs, wantDirs[0]) || !containsString(dirs, wantDirs[1]) {
 		t.Fatalf("runner dirs = %#v, want %#v", dirs, wantDirs)
 	}
 	if len(commands) != 2 || !strings.Contains(commands[0], "pnpm run dev") || !strings.Contains(commands[1], "pnpm run dev") {
@@ -2891,7 +3011,7 @@ func TestRunMultiAppliesRouterTargetToEveryRoute(t *testing.T) {
 		return admin, nil
 	}
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
-		return &runner.Result{Port: 5100 + len(admin.upsertedHosts()) + 1}, nil
+		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
 	dir := tempProject(t, map[string]string{
@@ -2959,16 +3079,42 @@ func TestRunMultiScriptFinishedBeforeURLIsErrorAndCleansUp(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	want := "gohere error: script \"lint\" finished without starting a local server."
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err.Error(), want)
+	if !strings.Contains(err.Error(), "lint does not expose a controllable port") || !strings.Contains(err.Error(), "--port-flag") {
+		t.Fatalf("error = %q, want unsupported adapter guidance", err.Error())
 	}
-	apiHost := "api." + filepath.Base(dir) + ".localhost"
-	if !sameStrings(admin.deletedHosts(), []string{apiHost}) {
-		t.Fatalf("deleted hosts = %#v, want %q", admin.deletedHosts(), apiHost)
+	if calls != 0 || len(admin.upsertedHosts()) != 0 {
+		t.Fatalf("started=%d routes=%#v, want rejection before state/startup", calls, admin.upsertedHosts())
 	}
-	if !strings.Contains(stdout.String(), "gohere dev:api \u2192 http://"+apiHost+"\n") {
-		t.Fatalf("stdout = %q", stdout.String())
+	if stdout.String() != "" || stderr.String() != "" {
+		t.Fatalf("stdout=%q stderr=%q, want no output", stdout.String(), stderr.String())
+	}
+}
+
+func TestRunMultiReadinessFailureReleasesBatchWithoutActivation(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
+	admin := &multiRecordingAdminClient{}
+	defaultAdminClientFunc = func() (adminClient, error) { return admin, nil }
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		if strings.Contains(strings.Join(cfg.Command, " "), "dev:api") {
+			_, _ = cfg.Stderr.Write([]byte("failed to bind api\n"))
+			return nil, runner.ErrNoLocalURL
+		}
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+	dir := tempProject(t, map[string]string{"package.json": `{"scripts":{"dev:web":"vite","dev:api":"vite"}}`})
+	cmd := cli.Command{Kind: cli.CommandRun, Script: "dev:web", Scripts: []string{"dev:web", "dev:api"}}
+	var stderr strings.Builder
+	if err := Run(context.Background(), cmd, dir, io.Discard, &stderr); err == nil {
+		t.Fatal("expected readiness failure")
+	}
+	if !strings.Contains(stderr.String(), "[api] failed to bind api\n") {
+		t.Fatalf("stderr = %q, want prefixed startup failure output", stderr.String())
+	}
+	routes, _ := admin.Routes(context.Background())
+	if admin.activationCalls != 0 || admin.releaseCalls != 1 || len(routes) != 0 {
+		t.Fatalf("activate/release/routes = %d/%d/%#v, want 0/1/empty", admin.activationCalls, admin.releaseCalls, routes)
 	}
 }
 
@@ -3950,8 +4096,11 @@ func TestRunWorkspaceWSLBridgeChoosesPortsForChildBindHost(t *testing.T) {
 		return port, nil
 	}
 	var configs []runner.Config
+	var configsMu sync.Mutex
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		configsMu.Lock()
 		configs = append(configs, cfg)
+		configsMu.Unlock()
 		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
@@ -5856,11 +6005,17 @@ func (c routeStatusesUnsupportedClient) DeleteRoute(context.Context, string) err
 }
 
 type multiRecordingAdminClient struct {
-	mu        sync.Mutex
-	routes    []router.Route
-	activated []router.Route
-	deleted   []string
-	deleteErr error
+	mu              sync.Mutex
+	routes          []router.Route
+	activated       []router.Route
+	deleted         []string
+	deleteErr       error
+	activateErr     error
+	reserveCalls    int
+	reservedBatch   int
+	activationCalls int
+	releaseCalls    int
+	probeCalls      map[string]int
 }
 
 type cleanupVerifiedAdminClient struct {
@@ -5897,9 +6052,21 @@ func (c *multiRecordingAdminClient) DeleteRoute(ctx context.Context, host string
 	return c.deleteErr
 }
 
+func (c *multiRecordingAdminClient) ProbeTarget(_ context.Context, target string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.probeCalls == nil {
+		c.probeCalls = map[string]int{}
+	}
+	c.probeCalls[target]++
+	return true, nil
+}
+
 func (c *multiRecordingAdminClient) ReserveRoutes(_ context.Context, request router.ReservationRequest) (router.ReservationResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reserveCalls++
+	c.reservedBatch = len(request.Routes)
 	store := &runtimeTestStore{routes: append([]router.Route(nil), c.routes...)}
 	result, err := router.ReserveRoutes(store, request, time.Now().UTC())
 	c.routes = store.routes
@@ -5908,6 +6075,10 @@ func (c *multiRecordingAdminClient) ReserveRoutes(_ context.Context, request rou
 func (c *multiRecordingAdminClient) ActivateRoutes(_ context.Context, _ string, refs []router.RouteRef) ([]router.Route, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.activationCalls++
+	if c.activateErr != nil {
+		return nil, c.activateErr
+	}
 	var active []router.Route
 	for i := range c.routes {
 		for _, ref := range refs {
@@ -5925,6 +6096,7 @@ func (c *multiRecordingAdminClient) ActivateRoutes(_ context.Context, _ string, 
 func (c *multiRecordingAdminClient) ReleaseRoutes(_ context.Context, _ string, refs []router.RouteRef) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.releaseCalls++
 	remove := map[router.RouteRef]bool{}
 	for _, ref := range refs {
 		remove[ref] = true

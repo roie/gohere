@@ -32,11 +32,13 @@ type Config struct {
 }
 
 type Result struct {
-	Port    int
-	ctx     context.Context
-	cmd     *exec.Cmd
-	done    chan struct{}
-	waitErr error
+	Port     int
+	ctx      context.Context
+	cmd      *exec.Cmd
+	done     chan struct{}
+	detected chan int
+	config   Config
+	waitErr  error
 }
 
 const defaultChosenPortStartupDeadline = 60 * time.Second
@@ -272,12 +274,22 @@ func trimArgSeparator(args []string) []string {
 }
 
 func Start(ctx context.Context, cfg Config) (*Result, error) {
+	result, err := Launch(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := result.WaitReady(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func Launch(ctx context.Context, cfg Config) (*Result, error) {
 	if len(cfg.Command) == 0 {
 		return nil, errors.New("command is required")
 	}
-	timeout := cfg.StartupTimeout
-	if timeout == 0 {
-		timeout = 15 * time.Second
+	if cfg.StartupTimeout == 0 {
+		cfg.StartupTimeout = 15 * time.Second
 	}
 	if cfg.Stdout == nil {
 		cfg.Stdout = io.Discard
@@ -285,7 +297,6 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	if cfg.Stderr == nil {
 		cfg.Stderr = io.Discard
 	}
-
 	cmd := exec.CommandContext(ctx, cfg.Command[0], cfg.Command[1:]...)
 	cmd.Dir = cfg.Dir
 	cmd.Env = cfg.Env
@@ -293,10 +304,7 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 		cmd.Env = os.Environ()
 	}
 	configureProcessTree(cmd)
-	cmd.Cancel = func() error {
-		return terminateProcessTree(cmd)
-	}
-
+	cmd.Cancel = func() error { return terminateProcessTree(cmd) }
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -306,53 +314,55 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 		stdout.Close()
 		return nil, err
 	}
-
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-
 	detected := make(chan int, 1)
 	var scanWG sync.WaitGroup
 	scanWG.Add(2)
 	go streamAndScan(stdout, cfg.Stdout, detected, &scanWG)
 	go streamAndScan(stderr, cfg.Stderr, detected, &scanWG)
-
 	done := make(chan struct{})
-	result := &Result{ctx: ctx, cmd: cmd, done: done}
+	result := &Result{ctx: ctx, cmd: cmd, done: done, detected: detected, config: cfg}
 	go func() {
 		result.waitErr = cmd.Wait()
 		scanWG.Wait()
 		close(done)
 	}()
+	return result, nil
+}
 
+func (r *Result) WaitReady() error {
+	cfg := r.config
+	timeout := cfg.StartupTimeout
 	select {
-	case port := <-detected:
-		result.Port = port
-		return result, nil
-	case <-done:
-		return nil, result.startupError()
+	case port := <-r.detected:
+		r.Port = port
+		return nil
+	case <-r.done:
+		return r.startupError()
 	case <-time.After(timeout):
 		if !cfg.RequireDetectedPort && cfg.ChosenPort != 0 && PortReachable(cfg.ChosenPort) {
-			result.Port = cfg.ChosenPort
-			return result, nil
+			r.Port = cfg.ChosenPort
+			return nil
 		}
 		if !cfg.RequireDetectedPort && cfg.ChosenPort != 0 {
 			reachabilityTimeout := cfg.ReachabilityTimeout
 			if reachabilityTimeout == 0 {
 				reachabilityTimeout = defaultChosenPortStartupDeadline - timeout
 			}
-			port, err := waitForChosenPort(result, detected, done, cfg.ChosenPort, reachabilityTimeout)
+			port, err := waitForChosenPort(r, r.detected, r.done, cfg.ChosenPort, reachabilityTimeout)
 			if err == nil {
-				result.Port = port
-				return result, nil
+				r.Port = port
+				return nil
 			}
 			if !errors.Is(err, ErrNoLocalURL) {
-				return nil, err
+				return err
 			}
 		}
-		terminateProcessTree(cmd)
-		<-done
-		return nil, ErrNoLocalURL
+		terminateProcessTree(r.cmd)
+		<-r.done
+		return ErrNoLocalURL
 	}
 }
 

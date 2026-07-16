@@ -222,6 +222,26 @@ func TestDetectPortFromOutput(t *testing.T) {
 	}
 }
 
+func TestLaunchSeparatesProcessStartFromReadiness(t *testing.T) {
+	result, err := Launch(context.Background(), Config{
+		Command: []string{os.Args[0], "-test.run=TestHelperProcess", "--", "print-port-sleep"},
+		Env:     []string{"GOHERE_HELPER_PROCESS=1"}, StartupTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stop()
+	if result.Port != 0 {
+		t.Fatalf("port before readiness = %d, want 0", result.Port)
+	}
+	if err := result.WaitReady(); err != nil {
+		t.Fatal(err)
+	}
+	if result.Port != 47654 {
+		t.Fatalf("ready port = %d, want 47654", result.Port)
+	}
+}
+
 func TestRunStreamsOutputAndDetectsPort(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
