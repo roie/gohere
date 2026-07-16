@@ -198,6 +198,49 @@ func TestCompanionReadyInfoUpgradesOlderWindowsBinaryWithoutChangingHTTPSPolicy(
 	}
 }
 
+func TestCompanionRouteLifecycleUsesWindowsAuthorityStore(t *testing.T) {
+	stateDir := t.TempDir()
+	authority := newCompanionAuthority(CompanionConfig{GOOS: "windows", StateDir: stateDir})
+	result, err := authority.ReserveRoutes(t.Context(), router.ReservationRequest{RunID: "run-a", Routes: []router.RouteReservation{{DesiredHost: "web.localhost", Target: "http://127.0.0.1:49101", CWD: `/work/web`}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Routes) != 1 || result.Routes[0].Route.EffectiveState() != router.RouteStatePending {
+		t.Fatalf("reservation = %#v", result)
+	}
+	refs := result.PendingRefs()
+	active, err := authority.ActivateRoutes(t.Context(), "run-a", refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 1 || active[0].Target != "http://127.0.0.1:49101" {
+		t.Fatalf("active = %#v", active)
+	}
+	if err := authority.RenewRoutes(t.Context(), "run-a", refs); err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.ReleaseRoutes(t.Context(), "run-a", refs); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := router.NewRouteStore(filepath.Join(stateDir, router.RoutesFilename)).Load()
+	if err != nil || len(stored) != 0 {
+		t.Fatalf("stored/error = %#v/%v", stored, err)
+	}
+}
+
+func TestCompanionInfoAdvertisesRouteLifecycleCapabilities(t *testing.T) {
+	authority := newCompanionAuthority(CompanionConfig{GOOS: "windows", StateDir: t.TempDir()})
+	info, err := authority.Info(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []string{"control.reserve-routes-v2", "control.activate-routes-v2", "control.release-routes-v2", "control.renew-routes-v2", "control.delete-route-ref-v2"} {
+		if !hasCompanionCapability(info, capability) {
+			t.Fatalf("capabilities missing %q: %#v", capability, info.Capabilities)
+		}
+	}
+}
+
 func TestCompanionReturnsOnlyPublicCACertificate(t *testing.T) {
 	stateDir := t.TempDir()
 	store := localcert.Store{StateDir: stateDir}

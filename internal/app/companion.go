@@ -149,6 +149,11 @@ func (a *companionAuthority) Info(ctx context.Context) (companion.Info, error) {
 		"control.health",
 		"control.info",
 		"control.probe-target",
+		companion.CapabilityReserveRoutes,
+		companion.CapabilityActivateRoutes,
+		companion.CapabilityReleaseRoutes,
+		companion.CapabilityRenewRoutes,
+		companion.CapabilityDeleteRouteRef,
 		"control.ready-info",
 		"control.route-statuses",
 		"control.routes",
@@ -344,6 +349,46 @@ func (a *companionAuthority) ProbeTarget(ctx context.Context, target string) (bo
 		return false, errors.New("Windows router does not support target probes")
 	}
 	return probeClient.ProbeTarget(ctx, target)
+}
+
+func (a *companionAuthority) ReserveRoutes(_ context.Context, request router.ReservationRequest) (router.ReservationResult, error) {
+	if err := a.requireWindows(); err != nil {
+		return router.ReservationResult{}, err
+	}
+	request.TTL = router.DefaultReservationTTL
+	return router.ReserveRoutes(a.routeStore(), request, time.Now().UTC())
+}
+
+func (a *companionAuthority) ActivateRoutes(_ context.Context, runID string, refs []router.RouteRef) ([]router.Route, error) {
+	if err := a.requireWindows(); err != nil {
+		return nil, err
+	}
+	return router.ActivateRoutes(a.routeStore(), runID, refs, time.Now().UTC(), router.DefaultRouteLeaseTTL)
+}
+
+func (a *companionAuthority) ReleaseRoutes(_ context.Context, runID string, refs []router.RouteRef) error {
+	if err := a.requireWindows(); err != nil {
+		return err
+	}
+	return router.ReleaseRoutes(a.routeStore(), runID, refs)
+}
+
+func (a *companionAuthority) RenewRoutes(_ context.Context, runID string, refs []router.RouteRef) error {
+	if err := a.requireWindows(); err != nil {
+		return err
+	}
+	return router.RenewRoutes(a.routeStore(), runID, refs, time.Now().UTC(), router.DefaultRouteLeaseTTL)
+}
+
+func (a *companionAuthority) DeleteRouteRef(_ context.Context, ref router.RouteRef) error {
+	if err := a.requireWindows(); err != nil {
+		return err
+	}
+	return router.DeleteRouteRef(a.routeStore(), ref)
+}
+
+func (a *companionAuthority) routeStore() router.Store {
+	return router.NewRouteStore(filepath.Join(a.stateDir, router.RoutesFilename))
 }
 
 func (a *companionAuthority) client() (adminClient, error) {

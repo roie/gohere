@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/roie/gohere/internal/router"
 )
 
 func TestClientInfoUsesOneShotInternalCommand(t *testing.T) {
@@ -61,6 +63,50 @@ func TestClientReadyInfoUsesOneShotInternalCommand(t *testing.T) {
 	}
 	if request.Operation != OperationReadyInfo {
 		t.Fatalf("operation = %q", request.Operation)
+	}
+}
+
+func TestClientRouteLifecycleOperations(t *testing.T) {
+	reservation := router.ReservationResult{RunID: "run-a", Routes: []router.ReservedRoute{{Route: router.Route{ID: "route-1", Generation: 1, State: router.RouteStatePending}}}}
+	runner := &sequenceProcessRunner{results: []processResult{
+		{stdout: responseJSON(t, Response{ProtocolVersion: ProtocolVersion, OK: true, Info: &Info{Capabilities: []string{CapabilityReserveRoutes}}})},
+		{stdout: responseJSON(t, Response{ProtocolVersion: ProtocolVersion, OK: true, Reservation: &reservation})},
+	}}
+	client := Client{Binary: "gohere.exe", Runner: runner}
+	result, err := client.ReserveRoutes(t.Context(), router.ReservationRequest{RunID: "run-a", Routes: []router.RouteReservation{{DesiredHost: "web.localhost", Target: "http://127.0.0.1:49001", CWD: "/work/web"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result, reservation) {
+		t.Fatalf("result = %#v", result)
+	}
+	var request Request
+	if err := json.Unmarshal(runner.stdins[1], &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Operation != OperationReserveRoutes || request.Reservation == nil || request.Reservation.RunID != "run-a" {
+		t.Fatalf("request = %#v", request)
+	}
+}
+
+func TestClientRouteLifecycleUnsupportedIsActionable(t *testing.T) {
+	runner := &sequenceProcessRunner{results: []processResult{
+		{stdout: responseJSON(t, Response{ProtocolVersion: ProtocolVersion, OK: true, Info: &Info{}})},
+	}}
+	client := Client{Binary: "gohere.exe", Runner: runner}
+	_, err := client.ReserveRoutes(t.Context(), router.ReservationRequest{RunID: "run-a"})
+	if err == nil || !strings.Contains(err.Error(), "npm install -g gohere@latest") {
+		t.Fatalf("error = %v", err)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("calls = %d, old companion received lifecycle payload", runner.calls)
+	}
+	var request Request
+	if err := json.Unmarshal(runner.stdins[0], &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Operation != OperationInfo {
+		t.Fatalf("operation = %q, want capability preflight", request.Operation)
 	}
 }
 
@@ -220,11 +266,13 @@ type processResult struct {
 type sequenceProcessRunner struct {
 	results []processResult
 	calls   int
+	stdins  [][]byte
 }
 
-func (r *sequenceProcessRunner) Run(context.Context, string, []string, []byte) ([]byte, []byte, error) {
+func (r *sequenceProcessRunner) Run(_ context.Context, _ string, _ []string, stdin []byte) ([]byte, []byte, error) {
 	index := r.calls
 	r.calls++
+	r.stdins = append(r.stdins, append([]byte(nil), stdin...))
 	if index >= len(r.results) {
 		index = len(r.results) - 1
 	}

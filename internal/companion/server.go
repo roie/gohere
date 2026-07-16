@@ -26,6 +26,11 @@ type Authority interface {
 	UpsertRoute(context.Context, router.Route) error
 	DeleteRoute(context.Context, string) error
 	ProbeTarget(context.Context, string) (bool, error)
+	ReserveRoutes(context.Context, router.ReservationRequest) (router.ReservationResult, error)
+	ActivateRoutes(context.Context, string, []router.RouteRef) ([]router.Route, error)
+	ReleaseRoutes(context.Context, string, []router.RouteRef) error
+	RenewRoutes(context.Context, string, []router.RouteRef) error
+	DeleteRouteRef(context.Context, router.RouteRef) error
 }
 
 func Serve(ctx context.Context, in io.Reader, out io.Writer, authority Authority) error {
@@ -149,6 +154,48 @@ func dispatch(ctx context.Context, authority Authority, request Request) Respons
 			return authorityError(err)
 		}
 		return Response{OK: true, Reachable: &reachable}
+	case OperationReserveRoutes:
+		if request.Reservation == nil {
+			return errorResponse("invalid_request", errors.New("reserve-routes-v2 requires reservation"))
+		}
+		result, err := authority.ReserveRoutes(ctx, *request.Reservation)
+		if err != nil {
+			return authorityError(err)
+		}
+		return Response{OK: true, Reservation: &result}
+	case OperationActivateRoutes:
+		if strings.TrimSpace(request.RunID) == "" || len(request.Refs) == 0 {
+			return errorResponse("invalid_request", errors.New("activate-routes-v2 requires run ID and refs"))
+		}
+		routes, err := authority.ActivateRoutes(ctx, request.RunID, request.Refs)
+		if err != nil {
+			return authorityError(err)
+		}
+		return Response{OK: true, Routes: routes}
+	case OperationReleaseRoutes:
+		if strings.TrimSpace(request.RunID) == "" || len(request.Refs) == 0 {
+			return errorResponse("invalid_request", errors.New("release-routes-v2 requires run ID and refs"))
+		}
+		if err := authority.ReleaseRoutes(ctx, request.RunID, request.Refs); err != nil {
+			return authorityError(err)
+		}
+		return Response{OK: true}
+	case OperationRenewRoutes:
+		if strings.TrimSpace(request.RunID) == "" || len(request.Refs) == 0 {
+			return errorResponse("invalid_request", errors.New("renew-routes-v2 requires run ID and refs"))
+		}
+		if err := authority.RenewRoutes(ctx, request.RunID, request.Refs); err != nil {
+			return authorityError(err)
+		}
+		return Response{OK: true}
+	case OperationDeleteRouteRef:
+		if request.Ref == nil {
+			return errorResponse("invalid_request", errors.New("delete-route-ref-v2 requires ref"))
+		}
+		if err := authority.DeleteRouteRef(ctx, *request.Ref); err != nil {
+			return authorityError(err)
+		}
+		return Response{OK: true}
 	default:
 		return errorResponse("unsupported_operation", fmt.Errorf("unsupported companion operation %q", request.Operation))
 	}

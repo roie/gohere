@@ -8,47 +8,65 @@ const InternalCommand = "__companion"
 
 const maxMessageBytes = 1024 * 1024
 
+const (
+	CapabilityReserveRoutes  = "control.reserve-routes-v2"
+	CapabilityActivateRoutes = "control.activate-routes-v2"
+	CapabilityReleaseRoutes  = "control.release-routes-v2"
+	CapabilityRenewRoutes    = "control.renew-routes-v2"
+	CapabilityDeleteRouteRef = "control.delete-route-ref-v2"
+)
+
 type Operation string
 
 const (
-	OperationInfo          Operation = "info"
-	OperationReadyInfo     Operation = "ready-info"
-	OperationBootstrap     Operation = "bootstrap"
-	OperationCACertificate Operation = "ca-certificate"
-	OperationEnsureRouter  Operation = "ensure-router"
-	OperationHealth        Operation = "health"
-	OperationRoutes        Operation = "routes"
-	OperationRouteStatuses Operation = "route-statuses"
-	OperationDoctor        Operation = "doctor"
-	OperationUninstall     Operation = "uninstall"
-	OperationStopRouter    Operation = "stop-router"
-	OperationUpsertRoute   Operation = "upsert-route"
-	OperationDeleteRoute   Operation = "delete-route"
-	OperationProbeTarget   Operation = "probe-target"
+	OperationInfo           Operation = "info"
+	OperationReadyInfo      Operation = "ready-info"
+	OperationBootstrap      Operation = "bootstrap"
+	OperationCACertificate  Operation = "ca-certificate"
+	OperationEnsureRouter   Operation = "ensure-router"
+	OperationHealth         Operation = "health"
+	OperationRoutes         Operation = "routes"
+	OperationRouteStatuses  Operation = "route-statuses"
+	OperationDoctor         Operation = "doctor"
+	OperationUninstall      Operation = "uninstall"
+	OperationStopRouter     Operation = "stop-router"
+	OperationUpsertRoute    Operation = "upsert-route"
+	OperationDeleteRoute    Operation = "delete-route"
+	OperationProbeTarget    Operation = "probe-target"
+	OperationReserveRoutes  Operation = "reserve-routes-v2"
+	OperationActivateRoutes Operation = "activate-routes-v2"
+	OperationReleaseRoutes  Operation = "release-routes-v2"
+	OperationRenewRoutes    Operation = "renew-routes-v2"
+	OperationDeleteRouteRef Operation = "delete-route-ref-v2"
 )
 
 type Request struct {
-	Magic           string        `json:"magic"`
-	ProtocolVersion int           `json:"protocolVersion"`
-	Operation       Operation     `json:"operation"`
-	Route           *router.Route `json:"route,omitempty"`
-	Host            string        `json:"host,omitempty"`
-	Target          string        `json:"target,omitempty"`
-	EnableHTTPS     bool          `json:"enableHttps,omitempty"`
-	RemoveState     bool          `json:"removeState,omitempty"`
+	Magic           string                     `json:"magic"`
+	ProtocolVersion int                        `json:"protocolVersion"`
+	Operation       Operation                  `json:"operation"`
+	Route           *router.Route              `json:"route,omitempty"`
+	Host            string                     `json:"host,omitempty"`
+	Target          string                     `json:"target,omitempty"`
+	EnableHTTPS     bool                       `json:"enableHttps,omitempty"`
+	RemoveState     bool                       `json:"removeState,omitempty"`
+	Reservation     *router.ReservationRequest `json:"reservation,omitempty"`
+	RunID           string                     `json:"runId,omitempty"`
+	Refs            []router.RouteRef          `json:"refs,omitempty"`
+	Ref             *router.RouteRef           `json:"ref,omitempty"`
 }
 
 type Response struct {
-	Magic           string               `json:"magic"`
-	ProtocolVersion int                  `json:"protocolVersion"`
-	OK              bool                 `json:"ok"`
-	Error           *ProtocolError       `json:"error,omitempty"`
-	Info            *Info                `json:"info,omitempty"`
-	Routes          []router.Route       `json:"routes,omitempty"`
-	RouteStatuses   []router.RouteStatus `json:"routeStatuses,omitempty"`
-	Output          string               `json:"output,omitempty"`
-	CACertificate   string               `json:"caCertificate,omitempty"`
-	Reachable       *bool                `json:"reachable,omitempty"`
+	Magic           string                    `json:"magic"`
+	ProtocolVersion int                       `json:"protocolVersion"`
+	OK              bool                      `json:"ok"`
+	Error           *ProtocolError            `json:"error,omitempty"`
+	Info            *Info                     `json:"info,omitempty"`
+	Routes          []router.Route            `json:"routes,omitempty"`
+	RouteStatuses   []router.RouteStatus      `json:"routeStatuses,omitempty"`
+	Output          string                    `json:"output,omitempty"`
+	CACertificate   string                    `json:"caCertificate,omitempty"`
+	Reachable       *bool                     `json:"reachable,omitempty"`
+	Reservation     *router.ReservationResult `json:"reservation,omitempty"`
 }
 
 type ProtocolError struct {

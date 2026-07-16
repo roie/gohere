@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -60,6 +61,39 @@ func TestServeRejectsInvalidOrUnboundedRequests(t *testing.T) {
 				t.Fatalf("response = %#v, want error code %q", response, test.code)
 			}
 		})
+	}
+}
+
+func TestServeDispatchesRouteLifecycleOperations(t *testing.T) {
+	authority := &testAuthority{}
+	reservation := router.ReservationRequest{RunID: "run-a", Routes: []router.RouteReservation{{DesiredHost: "web.localhost", Target: "http://127.0.0.1:49001", CWD: "/work/web"}}}
+	response := serveProtocolRequest(t, Request{Operation: OperationReserveRoutes, Reservation: &reservation}, authority)
+	if !response.OK || response.Reservation == nil || authority.reservation.RunID != "run-a" {
+		t.Fatalf("reserve response/authority = %#v/%#v", response, authority)
+	}
+	refs := []router.RouteRef{{ID: "route-1", Generation: 1}}
+	for _, request := range []Request{
+		{Operation: OperationActivateRoutes, RunID: "run-a", Refs: refs},
+		{Operation: OperationRenewRoutes, RunID: "run-a", Refs: refs},
+		{Operation: OperationReleaseRoutes, RunID: "run-a", Refs: refs},
+		{Operation: OperationDeleteRouteRef, Ref: &refs[0]},
+	} {
+		response = serveProtocolRequest(t, request, authority)
+		if !response.OK {
+			t.Fatalf("%s response = %#v", request.Operation, response)
+		}
+	}
+	if authority.runID != "run-a" || !reflect.DeepEqual(authority.refs, refs) || authority.deletedRef != refs[0] {
+		t.Fatalf("authority lifecycle state = %#v", authority)
+	}
+}
+
+func TestServeRejectsMissingRouteLifecyclePayloads(t *testing.T) {
+	for _, operation := range []Operation{OperationReserveRoutes, OperationActivateRoutes, OperationReleaseRoutes, OperationRenewRoutes, OperationDeleteRouteRef} {
+		response := serveProtocolRequest(t, Request{Operation: operation}, &testAuthority{})
+		if response.OK || response.Error == nil || response.Error.Code != "invalid_request" {
+			t.Fatalf("%s response = %#v", operation, response)
+		}
 	}
 }
 
@@ -131,6 +165,17 @@ func FuzzServeCompanionRequestIsBounded(f *testing.F) {
 	})
 }
 
+func serveProtocolRequest(t *testing.T, request Request, authority Authority) Response {
+	t.Helper()
+	request.Magic = ProtocolMagic
+	request.ProtocolVersion = ProtocolVersion
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return serveRequest(t, string(body), authority)
+}
+
 func serveRequest(t *testing.T, body string, authority Authority) Response {
 	t.Helper()
 	var output bytes.Buffer
@@ -154,6 +199,10 @@ type testAuthority struct {
 	upserted       router.Route
 	deleted        string
 	readyInfoCalls int
+	reservation    router.ReservationRequest
+	runID          string
+	refs           []router.RouteRef
+	deletedRef     router.RouteRef
 }
 
 func (a *testAuthority) Info(context.Context) (Info, error) {
@@ -208,4 +257,29 @@ func (a *testAuthority) DeleteRoute(_ context.Context, host string) error {
 
 func (a *testAuthority) ProbeTarget(context.Context, string) (bool, error) {
 	return a.reachable, a.err
+}
+
+func (a *testAuthority) ReserveRoutes(_ context.Context, request router.ReservationRequest) (router.ReservationResult, error) {
+	a.reservation = request
+	return router.ReservationResult{RunID: request.RunID}, a.err
+}
+
+func (a *testAuthority) ActivateRoutes(_ context.Context, runID string, refs []router.RouteRef) ([]router.Route, error) {
+	a.runID, a.refs = runID, append([]router.RouteRef(nil), refs...)
+	return append([]router.Route(nil), a.routes...), a.err
+}
+
+func (a *testAuthority) ReleaseRoutes(_ context.Context, runID string, refs []router.RouteRef) error {
+	a.runID, a.refs = runID, append([]router.RouteRef(nil), refs...)
+	return a.err
+}
+
+func (a *testAuthority) RenewRoutes(_ context.Context, runID string, refs []router.RouteRef) error {
+	a.runID, a.refs = runID, append([]router.RouteRef(nil), refs...)
+	return a.err
+}
+
+func (a *testAuthority) DeleteRouteRef(_ context.Context, ref router.RouteRef) error {
+	a.deletedRef = ref
+	return a.err
 }
