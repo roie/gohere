@@ -38,6 +38,10 @@ type RouteReservation struct {
 	Distro          string    `json:"distro,omitempty"`
 	LinuxUser       string    `json:"linuxUser,omitempty"`
 	ListenTarget    string    `json:"listenTarget,omitempty"`
+	PID             int       `json:"pid,omitempty"`
+	Mode            string    `json:"mode,omitempty"`
+	ProcessIdentity string    `json:"processIdentity,omitempty"`
+	RunnerID        string    `json:"runnerId,omitempty"`
 	Reuse           *RouteRef `json:"reuse,omitempty"`
 }
 
@@ -147,9 +151,15 @@ func ReserveRoutes(store Store, request ReservationRequest, now time.Time) (Rese
 				OwnerInstance:        candidate.OwnerInstance,
 				Distro:               candidate.Distro,
 				LinuxUser:            candidate.LinuxUser,
-				RunnerID:             request.RunID,
+				RunnerID:             candidate.RunnerID,
 				ListenTarget:         candidate.ListenTarget,
+				PID:                  candidate.PID,
+				Mode:                 candidate.Mode,
+				ProcessIdentity:      candidate.ProcessIdentity,
 				StartedAt:            now,
+			}
+			if route.RunnerID == "" {
+				route.RunnerID = request.RunID
 			}
 			routes = append(routes, route)
 			occupiedHosts[finalHost] = "\x00occupied"
@@ -218,9 +228,24 @@ func RenewRoutes(store Store, runID string, refs []RouteRef, now time.Time, ttl 
 		return errors.New("route TTL must be positive")
 	}
 	return UpdateStore(store, func(routes []Route) ([]Route, error) {
-		indexes, err := matchingRunIndexes(routes, runID, refs, "", now)
-		if err != nil {
-			return nil, err
+		if strings.TrimSpace(runID) == "" || len(refs) == 0 {
+			return nil, ErrRouteRefMismatch
+		}
+		indexes := make([]int, 0, len(refs))
+		seen := make(map[RouteRef]bool, len(refs))
+		for _, ref := range refs {
+			if seen[ref] {
+				return nil, ErrRouteRefMismatch
+			}
+			seen[ref] = true
+			index := routeRefIndex(routes, ref)
+			if index < 0 || routes[index].RunID != runID {
+				return nil, ErrRouteRefMismatch
+			}
+			if routes[index].EffectiveState() == RouteStatePending && RouteReservationExpired(routes[index], now) {
+				return nil, ErrRouteRefMismatch
+			}
+			indexes = append(indexes, index)
 		}
 		for _, index := range indexes {
 			if routes[index].EffectiveState() == RouteStatePending {
@@ -243,10 +268,14 @@ func DeleteRouteRef(store Store, ref RouteRef) error {
 	})
 }
 
+func RouteReservationExpired(route Route, now time.Time) bool {
+	return route.EffectiveState() == RouteStatePending && !route.ReservationExpiresAt.IsZero() && !route.ReservationExpiresAt.After(now)
+}
+
 func removeExpiredReservations(routes []Route, now time.Time) []Route {
 	result := make([]Route, 0, len(routes))
 	for _, route := range routes {
-		if route.EffectiveState() == RouteStatePending && !route.ReservationExpiresAt.IsZero() && !route.ReservationExpiresAt.After(now) {
+		if RouteReservationExpired(route, now) {
 			continue
 		}
 		result = append(result, route)

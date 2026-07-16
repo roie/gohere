@@ -166,17 +166,26 @@ func PruneWithRouterReady(store router.Store, routerReady bool) (int, error) {
 		return 0, err
 	}
 
-	dead := make(map[string]bool)
+	deadRefs := make(map[router.RouteRef]bool)
+	deadLegacy := make(map[string]bool)
+	now := time.Now()
 	for _, route := range routes {
 		status := RouteStatusUnknown
 		if routerReady {
 			status = classifyRoute(route)
 		}
-		if status == RouteStatusDead {
-			dead[routeUpdateKey(route)] = true
+		expiredReservation := router.RouteReservationExpired(route, now)
+		expiredLease := route.EffectiveState() == router.RouteStateActive && !route.LeaseExpiresAt.IsZero() && router.RouteLeaseExpired(route, now)
+		if status != RouteStatusDead && !expiredReservation && !expiredLease {
+			continue
+		}
+		if route.ID != "" && route.Generation != 0 {
+			deadRefs[route.Ref()] = true
+		} else {
+			deadLegacy[routeUpdateKey(route)] = true
 		}
 	}
-	if len(dead) == 0 {
+	if len(deadRefs) == 0 && len(deadLegacy) == 0 {
 		return 0, nil
 	}
 
@@ -184,7 +193,11 @@ func PruneWithRouterReady(store router.Store, routerReady bool) (int, error) {
 	if err := router.UpdateStore(store, func(routes []router.Route) ([]router.Route, error) {
 		kept := routes[:0]
 		for _, route := range routes {
-			if dead[routeUpdateKey(route)] {
+			matched := deadRefs[route.Ref()]
+			if !matched && len(deadLegacy) > 0 {
+				matched = deadLegacy[routeUpdateKey(route)]
+			}
+			if matched {
 				removed++
 				continue
 			}
@@ -213,20 +226,21 @@ func StopCWDs(store router.Store, cwds []string) (StopResult, error) {
 	}
 
 	var result StopResult
-	remove := make(map[string]bool)
+	removeRefs := make(map[router.RouteRef]bool)
+	removeLegacy := make(map[string]bool)
 	for _, route := range routes {
 		if RouteMatchesAnyCWD(route, absCWDs) {
 			result.MatchedHost = route.Host
 			if !PIDAlive(route.PID) || targetStatus(route.Target) == RouteStatusDead {
 				result.Hosts = append(result.Hosts, route.Host)
-				remove[routeUpdateKey(route)] = true
+				markRouteRemoval(route, removeRefs, removeLegacy)
 				continue
 			}
 			if RouteProcessVerified(route) {
 				stopPID(route.PID)
 				result.Hosts = append(result.Hosts, route.Host)
 				result.Stopped = true
-				remove[routeUpdateKey(route)] = true
+				markRouteRemoval(route, removeRefs, removeLegacy)
 				continue
 			}
 			if result.Warning == "" {
@@ -235,11 +249,15 @@ func StopCWDs(store router.Store, cwds []string) (StopResult, error) {
 			continue
 		}
 	}
-	if len(remove) > 0 {
+	if len(removeRefs) > 0 || len(removeLegacy) > 0 {
 		if err := router.UpdateStore(store, func(routes []router.Route) ([]router.Route, error) {
 			kept := routes[:0]
 			for _, route := range routes {
-				if remove[routeUpdateKey(route)] {
+				matched := removeRefs[route.Ref()]
+				if !matched && len(removeLegacy) > 0 {
+					matched = removeLegacy[routeUpdateKey(route)]
+				}
+				if matched {
 					continue
 				}
 				kept = append(kept, route)
@@ -250,6 +268,14 @@ func StopCWDs(store router.Store, cwds []string) (StopResult, error) {
 		}
 	}
 	return result, nil
+}
+
+func markRouteRemoval(route router.Route, refs map[router.RouteRef]bool, legacy map[string]bool) {
+	if route.ID != "" && route.Generation != 0 {
+		refs[route.Ref()] = true
+		return
+	}
+	legacy[routeUpdateKey(route)] = true
 }
 
 func routeUpdateKey(route router.Route) string {

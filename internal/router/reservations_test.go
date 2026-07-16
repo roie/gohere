@@ -21,6 +21,23 @@ func TestLegacyRouteJSONIsActive(t *testing.T) {
 	}
 }
 
+func TestFirstLockedMutationAssignsLegacyRouteIdentity(t *testing.T) {
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{Host: "legacy.localhost", Target: "http://127.0.0.1:41000"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateStore(store, func(routes []Route) ([]Route, error) { return routes, nil }); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].ID == "" || routes[0].Generation != 1 {
+		t.Fatalf("legacy route identity = %#v", routes)
+	}
+}
+
 func TestRouteLifecycleFieldsRoundTrip(t *testing.T) {
 	expiresAt := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	want := Route{ID: "route-1", Generation: 3, RunID: "run-1", State: RouteStatePending, Service: "web", PreferredScheme: "https", Host: "web.localhost", PendingTarget: "http://127.0.0.1:41000", ReservationExpiresAt: expiresAt, CWD: "/work/web"}
@@ -214,6 +231,32 @@ func TestActivateRoutesMismatchIsAtomic(t *testing.T) {
 	routes, _ := store.Load()
 	if routes[0].EffectiveState() != RouteStatePending {
 		t.Fatalf("route mutated after failed activation: %#v", routes[0])
+	}
+}
+
+func TestRenewRoutesAllowsSurvivingSubsetAfterExplicitDelete(t *testing.T) {
+	now := time.Now().UTC()
+	store := NewMemoryStore()
+	result, err := ReserveRoutes(store, ReservationRequest{RunID: "group", TTL: time.Minute, Routes: []RouteReservation{
+		{DesiredHost: "web.localhost", Target: "http://127.0.0.1:42001", CWD: "/web"},
+		{DesiredHost: "api.localhost", Target: "http://127.0.0.1:42002", CWD: "/api"},
+	}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := result.PendingRefs()
+	if _, err := ActivateRoutes(store, "group", refs, now, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteRouteRef(store, refs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenewRoutes(store, "group", []RouteRef{refs[1]}, now.Add(30*time.Second), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	routes, _ := store.Load()
+	if len(routes) != 1 || routes[0].Ref() != refs[1] || !routes[0].LeaseExpiresAt.After(now.Add(time.Minute)) {
+		t.Fatalf("surviving renewal = %#v", routes)
 	}
 }
 

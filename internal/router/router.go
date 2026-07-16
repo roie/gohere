@@ -116,14 +116,28 @@ type StoreUpdater interface {
 }
 
 func UpdateStore(store Store, update func([]Route) ([]Route, error)) error {
+	withIdentities := func(routes []Route) ([]Route, error) {
+		for i := range routes {
+			if routes[i].ID != "" && routes[i].Generation != 0 {
+				continue
+			}
+			id, err := newRouteID()
+			if err != nil {
+				return nil, err
+			}
+			routes[i].ID = id
+			routes[i].Generation = 1
+		}
+		return update(routes)
+	}
 	if updater, ok := store.(StoreUpdater); ok {
-		return updater.Update(update)
+		return updater.Update(withIdentities)
 	}
 	routes, err := store.Load()
 	if err != nil {
 		return err
 	}
-	next, err := update(routes)
+	next, err := withIdentities(routes)
 	if err != nil {
 		return err
 	}

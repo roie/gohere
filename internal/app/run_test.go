@@ -1423,8 +1423,8 @@ func TestRunPlannedReservesExactEnvironmentBeforeStartupAndActivatesAfterReadine
 	if err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if admin.reserveCalls != 1 || admin.activateCalls != 1 || admin.releaseCalls != 1 {
-		t.Fatalf("lifecycle calls reserve/activate/release = %d/%d/%d", admin.reserveCalls, admin.activateCalls, admin.releaseCalls)
+	if admin.reserveCalls != 1 || admin.activateCalls != 1 || admin.deleteRefCalls != 1 {
+		t.Fatalf("lifecycle calls reserve/activate/delete-ref = %d/%d/%d", admin.reserveCalls, admin.activateCalls, admin.deleteRefCalls)
 	}
 }
 
@@ -1700,6 +1700,89 @@ func TestRunUsesAsAliasInOutputAndRoute(t *testing.T) {
 	}
 }
 
+func TestGroupedCleanupDeletesRemainingSiblingAfterExplicitStop(t *testing.T) {
+	admin := &multiRecordingAdminClient{}
+	request := router.ReservationRequest{RunID: "group", TTL: time.Minute, Routes: []router.RouteReservation{
+		{DesiredHost: "web.localhost", Target: "http://127.0.0.1:41001", CWD: "/web"},
+		{DesiredHost: "api.localhost", Target: "http://127.0.0.1:41002", CWD: "/api"},
+	}}
+	reservation, err := admin.ReserveRoutes(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := reservation.PendingRefs()
+	if _, err := admin.ActivateRoutes(t.Context(), "group", refs); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.DeleteRouteRef(t.Context(), refs[0]); err != nil {
+		t.Fatal(err)
+	}
+	oldInterval := routeLeaseInterval
+	routeLeaseInterval = time.Millisecond
+	defer func() { routeLeaseInterval = oldInterval }()
+	stopLease := startReservationLease(t.Context(), admin, "group", refs, io.Discard)
+	deadline := time.Now().Add(time.Second)
+	for {
+		admin.mu.Lock()
+		renewed := admin.renewedRefs[refs[1]]
+		admin.mu.Unlock()
+		if renewed > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("surviving sibling lease was not renewed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stopLease()
+	if err := deleteRouteRefs(t.Context(), admin, refs); err != nil {
+		t.Fatal(err)
+	}
+	routes, _ := admin.Routes(t.Context())
+	if len(routes) != 0 {
+		t.Fatalf("sibling route orphaned after cleanup: %#v", routes)
+	}
+}
+
+func TestStoreStopCannotDeleteReplacementGeneration(t *testing.T) {
+	old := router.Route{ID: "route", Generation: 1, Host: "app.localhost", Target: "http://127.0.0.1:1"}
+	replacement := old
+	replacement.Generation = 2
+	store := router.NewMemoryStore()
+	if err := store.Save([]router.Route{replacement}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stopStoreRoutes(store, []router.Route{old}); err != nil {
+		t.Fatal(err)
+	}
+	routes, _ := store.Load()
+	if len(routes) != 1 || routes[0].Ref() != replacement.Ref() {
+		t.Fatalf("replacement removed by stale stop: %#v", routes)
+	}
+}
+
+func TestRegisterRouteCleanupCannotDeleteReplacementGeneration(t *testing.T) {
+	admin := &recordingAdminClient{}
+	plan := RunPlan{Host: "app.localhost", Name: "app", CWD: t.TempDir()}
+	var stderr strings.Builder
+	cleanup, err := registerRoute(context.Background(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 3000, os.Getpid(), io.Discard, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin.mu.Lock()
+	replacement := admin.route
+	replacement.ID = "replacement"
+	replacement.Generation++
+	replacement.RunID = "new-run"
+	admin.routes = []router.Route{replacement}
+	admin.mu.Unlock()
+	cleanup()
+	routes, err := admin.Routes(context.Background())
+	if err != nil || len(routes) != 1 || routes[0].Ref() != replacement.Ref() {
+		t.Fatalf("routes after stale cleanup = %#v, err=%v; replacement must survive", routes, err)
+	}
+}
+
 func TestRegisterRouteCleanupLogsDeleteError(t *testing.T) {
 	admin := &multiRecordingAdminClient{deleteErr: errors.New("delete failed")}
 	plan := RunPlan{
@@ -1772,13 +1855,14 @@ func TestRegisterRouteStartsCleanupWhenContextIsCanceled(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		admin.mu.Lock()
-		deleted := admin.deleted
+		deletedByRef := admin.deleteRefCalls
+		routes := len(admin.routes)
 		admin.mu.Unlock()
-		if deleted == "app.localhost" {
+		if deletedByRef > 0 && routes == 0 {
 			break
 		}
 		if !time.Now().Before(deadline) {
-			t.Fatalf("deleted route = %q, want app.localhost", deleted)
+			t.Fatalf("delete-ref calls/routes = %d/%d, want identity cleanup and no route", deletedByRef, routes)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -1910,6 +1994,28 @@ func TestRouteCleanupDoesNotDeleteReplacementOwnedByAnotherRunner(t *testing.T) 
 	}
 	if client.deleted != "" {
 		t.Fatalf("deleted = %q, want replacement preserved", client.deleted)
+	}
+}
+
+func TestReservationLeaseRenewsNativeRouteByIdentity(t *testing.T) {
+	oldInterval := routeLeaseInterval
+	routeLeaseInterval = time.Millisecond
+	defer func() { routeLeaseInterval = oldInterval }()
+	client := &recordingAdminClient{}
+	stop := startReservationLease(t.Context(), client, "native-run", []router.RouteRef{{ID: "native", Generation: 1}}, io.Discard)
+	defer stop()
+	deadline := time.Now().Add(time.Second)
+	for {
+		client.mu.Lock()
+		renewed := client.renewCalls
+		client.mu.Unlock()
+		if renewed > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("native route lease was not renewed")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -2131,8 +2237,8 @@ func TestRunMultiReservesOneBatchAndStartsAllChildrenBeforeActivation(t *testing
 	if err := Run(context.Background(), cmd, dir, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if admin.reserveCalls != 1 || admin.reservedBatch != 2 || admin.activationCalls != 1 || admin.releaseCalls != 1 {
-		t.Fatalf("lifecycle reserve/batch/activate/release = %d/%d/%d/%d", admin.reserveCalls, admin.reservedBatch, admin.activationCalls, admin.releaseCalls)
+	if admin.reserveCalls != 1 || admin.reservedBatch != 2 || admin.activationCalls != 1 || admin.deleteRefCalls != 2 {
+		t.Fatalf("lifecycle reserve/batch/activate/delete-ref = %d/%d/%d/%d", admin.reserveCalls, admin.reservedBatch, admin.activationCalls, admin.deleteRefCalls)
 	}
 	webEnv, apiEnv := envValues(envs["web"]), envValues(envs["api"])
 	base := filepath.Base(dir)
@@ -4372,6 +4478,32 @@ func TestListShowsUnknownWhenRouterIsNotReady(t *testing.T) {
 	}
 }
 
+func TestPruneAdminRoutesDeletesExpiredPendingByRef(t *testing.T) {
+	route := router.Route{ID: "pending", Generation: 2, State: router.RouteStatePending, Host: "pending.localhost", ReservationExpiresAt: time.Now().Add(-time.Minute)}
+	admin := &recordingAdminClient{routes: []router.Route{route}, statuses: []router.RouteStatus{{Route: route, Status: string(lifecycle.RouteStatusStarting)}}}
+	removed, err := pruneAdminRoutes(t.Context(), admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes, _ := admin.Routes(t.Context())
+	if removed != 1 || len(routes) != 0 || admin.deleted != "" {
+		t.Fatalf("removed/routes/hostname-delete = %d/%#v/%q", removed, routes, admin.deleted)
+	}
+}
+
+func TestStopAdminRoutesDeletesSelectedGenerationByRef(t *testing.T) {
+	route := router.Route{ID: "route", Generation: 3, Host: "app.localhost", Target: "http://127.0.0.1:1"}
+	admin := &recordingAdminClient{routes: []router.Route{route}}
+	result, err := stopAdminRoutes(t.Context(), admin, []router.Route{route})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes, _ := admin.Routes(t.Context())
+	if len(result.Hosts) != 1 || len(routes) != 0 || admin.deleted != "" {
+		t.Fatalf("result/routes/hostname-delete = %#v/%#v/%q", result, routes, admin.deleted)
+	}
+}
+
 func TestPruneOutput(t *testing.T) {
 	tests := map[int]string{
 		0: "No dead routes.\n",
@@ -5976,6 +6108,8 @@ type recordingAdminClient struct {
 	reserveCalls        int
 	activateCalls       int
 	releaseCalls        int
+	deleteRefCalls      int
+	renewCalls          int
 	deleted             string
 	deleteErr           error
 }
@@ -6015,7 +6149,9 @@ type multiRecordingAdminClient struct {
 	reservedBatch   int
 	activationCalls int
 	releaseCalls    int
+	deleteRefCalls  int
 	probeCalls      map[string]int
+	renewedRefs     map[router.RouteRef]int
 }
 
 type cleanupVerifiedAdminClient struct {
@@ -6097,6 +6233,9 @@ func (c *multiRecordingAdminClient) ReleaseRoutes(_ context.Context, _ string, r
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.releaseCalls++
+	if c.deleteErr != nil {
+		return c.deleteErr
+	}
 	remove := map[router.RouteRef]bool{}
 	for _, ref := range refs {
 		remove[ref] = true
@@ -6110,10 +6249,38 @@ func (c *multiRecordingAdminClient) ReleaseRoutes(_ context.Context, _ string, r
 	c.routes = next
 	return nil
 }
-func (c *multiRecordingAdminClient) RenewRoutes(context.Context, string, []router.RouteRef) error {
-	return nil
+func (c *multiRecordingAdminClient) RenewRoutes(_ context.Context, runID string, refs []router.RouteRef) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	store := &runtimeTestStore{routes: append([]router.Route(nil), c.routes...)}
+	err := router.RenewRoutes(store, runID, refs, time.Now().UTC(), router.DefaultRouteLeaseTTL)
+	c.routes = store.routes
+	if err == nil {
+		if c.renewedRefs == nil {
+			c.renewedRefs = map[router.RouteRef]int{}
+		}
+		for _, ref := range refs {
+			c.renewedRefs[ref]++
+		}
+	}
+	return err
 }
-func (c *multiRecordingAdminClient) DeleteRouteRef(context.Context, router.RouteRef) error {
+func (c *multiRecordingAdminClient) DeleteRouteRef(_ context.Context, ref router.RouteRef) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deleteRefCalls++
+	if c.deleteErr != nil {
+		return c.deleteErr
+	}
+	next := c.routes[:0]
+	for _, route := range c.routes {
+		if route.Ref() == ref {
+			c.deleted = append(c.deleted, route.Host)
+			continue
+		}
+		next = append(next, route)
+	}
+	c.routes = next
 	return nil
 }
 
@@ -6284,17 +6451,24 @@ func (c *recordingAdminClient) ReleaseRoutes(_ context.Context, runID string, re
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.releaseCalls++
+	if c.deleteErr != nil {
+		return c.deleteErr
+	}
 	store := &runtimeTestStore{routes: append([]router.Route(nil), c.routes...)}
 	err := router.ReleaseRoutes(store, runID, refs)
 	c.routes = store.routes
 	return err
 }
 func (c *recordingAdminClient) RenewRoutes(context.Context, string, []router.RouteRef) error {
+	c.mu.Lock()
+	c.renewCalls++
+	c.mu.Unlock()
 	return nil
 }
 func (c *recordingAdminClient) DeleteRouteRef(_ context.Context, ref router.RouteRef) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.deleteRefCalls++
 	store := &runtimeTestStore{routes: append([]router.Route(nil), c.routes...)}
 	err := router.DeleteRouteRef(store, ref)
 	c.routes = store.routes

@@ -216,6 +216,47 @@ func TestPruneRemovesDeadRoutes(t *testing.T) {
 	}
 }
 
+func TestPruneRemovesExpiredPendingAndActiveLeasesWithoutRouter(t *testing.T) {
+	now := time.Now().UTC()
+	store := router.NewMemoryStore()
+	if err := store.Save([]router.Route{
+		{ID: "pending", Generation: 1, Host: "pending.localhost", State: router.RouteStatePending, ReservationExpiresAt: now.Add(-time.Minute)},
+		{ID: "active", Generation: 1, Host: "active.localhost", State: router.RouteStateActive, Target: "http://127.0.0.1:1", LeaseExpiresAt: now.Add(-time.Minute)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := PruneWithRouterReady(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 2 {
+		t.Fatalf("removed = %d, want 2", removed)
+	}
+	routes, _ := store.Load()
+	if len(routes) != 0 {
+		t.Fatalf("expired routes remain: %#v", routes)
+	}
+}
+
+func TestPrunePreservesReplacementGenerationAddedDuringUpdate(t *testing.T) {
+	old := router.Route{ID: "route", Generation: 1, Host: "app.localhost", Target: "http://127.0.0.1:5173", PID: 999999}
+	replacement := old
+	replacement.Generation = 2
+	replacement.PID = 0
+	store := &interleavingRouteStore{routes: []router.Route{old}, added: replacement}
+	removed, err := PruneWithRouterReady(store, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want old generation only", removed)
+	}
+	routes, _ := store.Load()
+	if len(routes) != 1 || routes[0].Ref() != replacement.Ref() {
+		t.Fatalf("replacement was pruned: %#v", routes)
+	}
+}
+
 func TestPrunePreservesRoutesAddedBetweenLoadAndSave(t *testing.T) {
 	added := router.Route{Host: "added.localhost", Target: "://bad-url"}
 	store := &interleavingRouteStore{
@@ -394,6 +435,21 @@ func TestPruneKeepsUnknownRoutes(t *testing.T) {
 	routes, _ := store.Load()
 	if len(routes) != 1 || routes[0].Host != "unknown.localhost" {
 		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestStopCWDsPreservesReplacementGenerationAddedDuringUpdate(t *testing.T) {
+	cwd := t.TempDir()
+	old := router.Route{ID: "route", Generation: 1, Host: "app.localhost", Target: "http://127.0.0.1:1", CWD: cwd, PID: 999999}
+	replacement := old
+	replacement.Generation = 2
+	store := &interleavingRouteStore{routes: []router.Route{old}, added: replacement}
+	if _, err := StopCWDs(store, []string{cwd}); err != nil {
+		t.Fatal(err)
+	}
+	routes, _ := store.Load()
+	if len(routes) != 1 || routes[0].Ref() != replacement.Ref() {
+		t.Fatalf("replacement removed by stale stop: %#v", routes)
 	}
 }
 

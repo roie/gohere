@@ -783,6 +783,13 @@ func waitForMulti(ctx context.Context, items []multiRunItem) error {
 }
 
 func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command, plan RunPlan, port, pid int, stdout, stderr io.Writer) (func(), error) {
+	if lifecycleClient, ok := adminClient.(routeLifecycleClient); ok {
+		return registerDetectedRouteLifecycle(ctx, adminClient, lifecycleClient, cmd, plan, port, pid, stdout, stderr)
+	}
+	return registerLegacyRoute(ctx, adminClient, cmd, plan, port, pid, stdout, stderr)
+}
+
+func registerLegacyRoute(ctx context.Context, adminClient adminClient, cmd cli.Command, plan RunPlan, port, pid int, stdout, stderr io.Writer) (func(), error) {
 	routes, err := adminClient.Routes(ctx)
 	if err != nil {
 		if errors.Is(err, admin.ErrUnauthorized) {
@@ -902,6 +909,11 @@ func waitForWSLTarget(ctx context.Context, client bridgeProbeClient, target stri
 }
 
 func deleteOwnedRouteRegistration(ctx context.Context, client adminClient, expected router.Route) error {
+	if expected.ID != "" && expected.Generation != 0 {
+		if lifecycleClient, ok := client.(routeLifecycleClient); ok {
+			return lifecycleClient.DeleteRouteRef(ctx, expected.Ref())
+		}
+	}
 	if expected.RunnerID != "" {
 		routes, err := client.Routes(ctx)
 		if err != nil {
@@ -2304,14 +2316,17 @@ func pruneAdminRoutes(ctx context.Context, client adminClient) (int, error) {
 		return 0, err
 	}
 	removed := 0
+	now := time.Now()
 	for _, status := range statuses {
-		if status.Status != lifecycle.RouteStatusDead {
+		expiredReservation := status.Route.EffectiveState() == router.RouteStatePending && router.RouteReservationExpired(status.Route, now)
+		expiredLease := status.Route.EffectiveState() == router.RouteStateActive && !status.Route.LeaseExpiresAt.IsZero() && router.RouteLeaseExpired(status.Route, now)
+		if status.Status != lifecycle.RouteStatusDead && !expiredReservation && !expiredLease {
 			continue
 		}
-		if status.Route.OwnerEnv == "wsl" && !router.RouteLeaseExpired(status.Route, time.Now()) {
+		if status.Route.OwnerEnv == "wsl" && !expiredReservation && !router.RouteLeaseExpired(status.Route, now) {
 			continue
 		}
-		if err := client.DeleteRoute(ctx, status.Route.Host); err != nil {
+		if err := deleteAdminRouteIdentity(ctx, client, status.Route); err != nil {
 			if removed > 0 {
 				return removed, fmt.Errorf("removed %d dead route%s before failing to delete %s: %w", removed, pluralS(removed), status.Route.Host, err)
 			}
@@ -2459,12 +2474,30 @@ func stopAdminRoutes(ctx context.Context, client adminClient, routes []router.Ro
 			lifecycle.StopPID(route.PID)
 			result.Stopped = true
 		}
-		if err := deleteAdminRoute(ctx, client, route.Host); err != nil {
+		if err := deleteAdminRouteIdentity(ctx, client, route); err != nil {
 			return result, err
 		}
 		result.Hosts = append(result.Hosts, route.Host)
 	}
 	return result, nil
+}
+
+func deleteAdminRouteIdentity(ctx context.Context, client adminClient, route router.Route) error {
+	if route.ID != "" && route.Generation != 0 {
+		if lifecycleClient, ok := client.(routeLifecycleClient); ok {
+			if err := lifecycleClient.DeleteRouteRef(ctx, route.Ref()); err != nil {
+				if errors.Is(err, admin.ErrUnauthorized) {
+					return staleRouterTokenError()
+				}
+				if routeRefMismatch(err) {
+					return nil
+				}
+				return err
+			}
+			return nil
+		}
+	}
+	return deleteAdminRoute(ctx, client, route.Host)
 }
 
 func deleteAdminRoute(ctx context.Context, client adminClient, host string) error {
@@ -2479,14 +2512,24 @@ func stopStoreRoutes(store router.Store, selected []router.Route) (lifecycle.Sto
 	if err != nil {
 		return lifecycle.StopResult{}, err
 	}
-	selectedHosts := make(map[string]bool, len(selected))
+	selectedRefs := make(map[router.RouteRef]bool, len(selected))
+	selectedLegacyHosts := make(map[string]bool)
 	for _, route := range selected {
-		selectedHosts[route.Host] = true
+		if route.ID != "" && route.Generation != 0 {
+			selectedRefs[route.Ref()] = true
+		} else {
+			selectedLegacyHosts[route.Host] = true
+		}
 	}
 	var result lifecycle.StopResult
-	remove := make(map[string]bool)
+	removeRefs := make(map[router.RouteRef]bool)
+	removeLegacy := make(map[string]bool)
 	for _, route := range routes {
-		if !selectedHosts[route.Host] {
+		matched := selectedRefs[route.Ref()]
+		if !matched && route.ID == "" {
+			matched = selectedLegacyHosts[route.Host]
+		}
+		if !matched {
 			continue
 		}
 		result.MatchedHost = route.Host
@@ -2500,13 +2543,21 @@ func stopStoreRoutes(store router.Store, selected []router.Route) (lifecycle.Sto
 			result.Stopped = true
 		}
 		result.Hosts = append(result.Hosts, route.Host)
-		remove[appRouteUpdateKey(route)] = true
+		if route.ID != "" && route.Generation != 0 {
+			removeRefs[route.Ref()] = true
+		} else {
+			removeLegacy[appRouteUpdateKey(route)] = true
+		}
 	}
-	if len(remove) > 0 {
+	if len(removeRefs) > 0 || len(removeLegacy) > 0 {
 		if err := router.UpdateStore(store, func(routes []router.Route) ([]router.Route, error) {
 			kept := routes[:0]
 			for _, route := range routes {
-				if remove[appRouteUpdateKey(route)] {
+				matched := removeRefs[route.Ref()]
+				if !matched && len(removeLegacy) > 0 {
+					matched = removeLegacy[appRouteUpdateKey(route)]
+				}
+				if matched {
 					continue
 				}
 				kept = append(kept, route)
@@ -2580,7 +2631,7 @@ func stopAdminCWDs(ctx context.Context, client adminClient, cwds []string) (life
 		}
 		result.MatchedHost = route.Host
 		if !lifecycle.PIDAlive(route.PID) || lifecycle.RouteStatuses([]router.Route{route})[0].Status == lifecycle.RouteStatusDead {
-			if err := deleteAdminRoute(ctx, client, route.Host); err != nil {
+			if err := deleteAdminRouteIdentity(ctx, client, route); err != nil {
 				return result, err
 			}
 			result.Hosts = append(result.Hosts, route.Host)
@@ -2588,7 +2639,7 @@ func stopAdminCWDs(ctx context.Context, client adminClient, cwds []string) (life
 		}
 		if lifecycle.RouteProcessVerified(route) {
 			lifecycle.StopPID(route.PID)
-			if err := deleteAdminRoute(ctx, client, route.Host); err != nil {
+			if err := deleteAdminRouteIdentity(ctx, client, route); err != nil {
 				return result, err
 			}
 			result.Hosts = append(result.Hosts, route.Host)

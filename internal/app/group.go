@@ -98,6 +98,7 @@ func runPlannedGroup(ctx context.Context, cmdVerbose bool, items []multiRunItem,
 		return err
 	}
 	pendingRefs := reservation.PendingRefs()
+	activated := false
 	released := false
 	release := func() {
 		if released || len(pendingRefs) == 0 {
@@ -106,7 +107,13 @@ func runPlannedGroup(ctx context.Context, cmdVerbose bool, items []multiRunItem,
 		released = true
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		if err := lifecycleClient.ReleaseRoutes(cleanupCtx, runID, pendingRefs); err != nil && stderr != nil {
+		var err error
+		if activated {
+			err = deleteRouteRefs(cleanupCtx, lifecycleClient, pendingRefs)
+		} else {
+			err = lifecycleClient.ReleaseRoutes(cleanupCtx, runID, pendingRefs)
+		}
+		if err != nil && stderr != nil {
 			fmt.Fprintf(stderr, "gohere warning: could not release route group: %v\n", err)
 		}
 	}
@@ -214,6 +221,7 @@ func runPlannedGroup(ctx context.Context, cmdVerbose bool, items []multiRunItem,
 		if _, err := lifecycleClient.ActivateRoutes(ctx, runID, pendingRefs); err != nil {
 			return err
 		}
+		activated = true
 	}
 	stopLease := startReservationLease(ctx, lifecycleClient, runID, pendingRefs, stderr)
 	defer stopLease()

@@ -49,6 +49,7 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 	}
 	service := resolvedService{Plan: plan, Route: route, Ref: route.Ref(), ServiceKey: serviceDiscoveryEnvKey(plan.Name), PublicURL: resolvedPublicURL(plan, route), Reused: reserved.Reused}
 	pendingRefs := reservation.PendingRefs()
+	activated := false
 	released := false
 	release := func() {
 		if released || len(pendingRefs) == 0 {
@@ -57,7 +58,13 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 		released = true
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		if err := lifecycleClient.ReleaseRoutes(cleanupCtx, runID, pendingRefs); err != nil && stderr != nil {
+		var err error
+		if activated {
+			err = deleteRouteRefs(cleanupCtx, lifecycleClient, pendingRefs)
+		} else {
+			err = lifecycleClient.ReleaseRoutes(cleanupCtx, runID, pendingRefs)
+		}
+		if err != nil && stderr != nil {
 			fmt.Fprintln(stderr, routeCleanupWarning(route.Host, err))
 		}
 	}
@@ -85,6 +92,7 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 		if _, err := lifecycleClient.ActivateRoutes(ctx, runID, pendingRefs); err != nil {
 			return err
 		}
+		activated = true
 		stopLease := startReservationLease(ctx, lifecycleClient, runID, pendingRefs, stderr)
 		defer stopLease()
 		if err := announceResolvedService(ctx, cmd, service, stdout, stderr); err != nil {
@@ -119,6 +127,7 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 	if _, err := lifecycleClient.ActivateRoutes(ctx, runID, pendingRefs); err != nil {
 		return err
 	}
+	activated = true
 	stopLease := startReservationLease(ctx, lifecycleClient, runID, pendingRefs, stderr)
 	defer stopLease()
 	if err := announceResolvedService(ctx, cmd, service, stdout, stderr); err != nil {
@@ -138,8 +147,8 @@ func routeReservationForPlan(cmd cli.Command, plan RunPlan) router.RouteReservat
 		Target: routeTarget(plan.RouteTargetHost, plan.Port), CWD: plan.CWD,
 		ProjectRoot: plan.ProjectRoot, ProjectName: plan.ProjectName, Source: plan.RouteSource,
 		OwnerCWD: plan.CWD, OwnerEnv: ownerEnv, OwnerInstance: plan.OwnerInstance,
-		Distro: plan.Distro, LinuxUser: plan.LinuxUser,
-		ListenTarget: routeTarget(plan.ListenHost, plan.Port),
+		Distro: plan.Distro, LinuxUser: plan.LinuxUser, RunnerID: plan.RunnerID,
+		Mode: runMode(cmd, plan), ListenTarget: routeTarget(plan.ListenHost, plan.Port),
 	}
 }
 
@@ -229,7 +238,13 @@ func startReservationLease(ctx context.Context, client routeLifecycleClient, run
 			case <-leaseCtx.Done():
 				return
 			case <-ticker.C:
-				if err := client.RenewRoutes(leaseCtx, runID, refs); err != nil && stderr != nil {
+				var renewErrors []error
+				for _, ref := range refs {
+					if err := client.RenewRoutes(leaseCtx, runID, []router.RouteRef{ref}); err != nil && !routeRefMismatch(err) {
+						renewErrors = append(renewErrors, err)
+					}
+				}
+				if err := errors.Join(renewErrors...); err != nil && stderr != nil {
 					fmt.Fprintf(stderr, "gohere warning: could not renew route lease: %v\n", err)
 				}
 			}
