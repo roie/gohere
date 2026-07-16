@@ -229,8 +229,10 @@ func releaseReservationError(ctx context.Context, client routeLifecycleClient, r
 
 func startReservationLease(ctx context.Context, client routeLifecycleClient, runID string, refs []router.RouteRef, stderr io.Writer) func() {
 	leaseCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	var once sync.Once
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(routeLeaseInterval)
 		defer ticker.Stop()
 		for {
@@ -250,5 +252,10 @@ func startReservationLease(ctx context.Context, client routeLifecycleClient, run
 			}
 		}
 	}()
-	return func() { once.Do(cancel) }
+	return func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
 }
