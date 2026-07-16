@@ -278,6 +278,8 @@ func reconnectDelay(failures int) time.Duration {
 }
 
 func startHelperSession(ctx context.Context, binary string, logOutput io.Writer) (StreamSession, error) {
+	// The executable completed the versioned companion handshake before reaching the edge; os/exec does not invoke a shell.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	command := exec.CommandContext(ctx, binary, tunnel.InternalCommand)
 	stdin, err := command.StdinPipe()
 	if err != nil {
