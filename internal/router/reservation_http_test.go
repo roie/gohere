@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -133,6 +134,46 @@ func TestReservationLifecycleAPIRejectsMalformedAndExpiredRequestsWithoutMutatio
 	routes, _ = store.Load()
 	if len(routes) != 1 || routes[0].EffectiveState() != RouteStatePending {
 		t.Fatalf("expired activation mutated route: %#v", routes)
+	}
+}
+
+func TestReservationAPIReportsSchemeConflict(t *testing.T) {
+	store := NewMemoryStore()
+	existing := Route{
+		ID: "existing", Generation: 1, State: RouteStateActive,
+		Host: "app.localhost", PreferredScheme: "https",
+		Target: "http://127.0.0.1:42601", CWD: "/work/app",
+		ProjectRoot: "/work", ProjectName: "work",
+	}
+	if err := store.Save([]Route{existing}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Token: "secret", Store: store})
+	body := &bytes.Buffer{}
+	if err := json.NewEncoder(body).Encode(ReservationRequest{
+		RunID: "new-run",
+		Routes: []RouteReservation{{
+			DesiredHost: "app.localhost", PreferredScheme: "http",
+			Target: "http://127.0.0.1:42602", CWD: "/work/app",
+			ProjectRoot: "/work", ProjectName: "work",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := reservationAPIRequest(t, srv, http.MethodPost, "/v2/route-reservations", body)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status/body = %d/%q", rec.Code, rec.Body.String())
+	}
+	want := "route app.localhost already uses scheme https; stop it before requesting http"
+	if !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if rec.Header().Get("Content-Type") != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+	routes, err := store.Load()
+	if err != nil || len(routes) != 1 || routes[0].ID != existing.ID {
+		t.Fatalf("routes/error = %#v/%v", routes, err)
 	}
 }
 

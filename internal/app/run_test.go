@@ -1517,19 +1517,20 @@ func TestRunWSLReusesReadyRouteBeforeStartingRunner(t *testing.T) {
 	})
 	admin := &recordingAdminClient{statuses: []router.RouteStatus{{
 		Route: router.Route{
-			ID:             "existing-route",
-			Generation:     1,
-			Host:           "ctrltube.localhost",
-			Target:         "http://127.0.0.1:57940",
-			CWD:            dir,
-			ProjectRoot:    dir,
-			ProjectName:    "ctrltube",
-			OwnerEnv:       "wsl",
-			OwnerInstance:  "test-owner",
-			Distro:         "Ubuntu",
-			LinuxUser:      "alice",
-			RunnerID:       "existing-runner",
-			LeaseExpiresAt: time.Now().Add(time.Minute),
+			ID:              "existing-route",
+			Generation:      1,
+			Host:            "ctrltube.localhost",
+			PreferredScheme: "http",
+			Target:          "http://127.0.0.1:57940",
+			CWD:             dir,
+			ProjectRoot:     dir,
+			ProjectName:     "ctrltube",
+			OwnerEnv:        "wsl",
+			OwnerInstance:   "test-owner",
+			Distro:          "Ubuntu",
+			LinuxUser:       "alice",
+			RunnerID:        "existing-runner",
+			LeaseExpiresAt:  time.Now().Add(time.Minute),
 		},
 		Status: "ready",
 	}}}
@@ -2266,7 +2267,7 @@ func TestRunMultiActivationFailureReleasesNewBatchAndKeepsReusedRoute(t *testing
 	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
 	dir := tempProject(t, map[string]string{"package.json": `{"scripts":{"dev:web":"vite","dev:api":"vite"}}`})
 	base := filepath.Base(dir)
-	reused := router.Route{ID: "web-existing", Generation: 1, Host: "web." + base + ".localhost", Target: "http://127.0.0.1:49001", CWD: dir}
+	reused := router.Route{ID: "web-existing", Generation: 1, Host: "web." + base + ".localhost", PreferredScheme: "http", Target: "http://127.0.0.1:49001", CWD: dir}
 	admin := &multiRecordingAdminClient{routes: []router.Route{reused}, activateErr: errors.New("activation failed")}
 	defaultAdminClientFunc = func() (adminClient, error) { return admin, nil }
 	starts := 0
@@ -2452,11 +2453,12 @@ func TestRunWorkspaceReusesReadyUnmanagedRouteFromSameCWD(t *testing.T) {
 	})
 	workerDir := filepath.Join(root, "apps", "worker")
 	admin := &multiRecordingAdminClient{routes: []router.Route{{
-		ID:         "worker-existing",
-		Generation: 1,
-		Host:       "worker.ctrltube.localhost",
-		Target:     "http://127.0.0.1:8787",
-		CWD:        workerDir,
+		ID:              "worker-existing",
+		Generation:      1,
+		Host:            "worker.ctrltube.localhost",
+		PreferredScheme: "http",
+		Target:          "http://127.0.0.1:8787",
+		CWD:             workerDir,
 	}}}
 	defaultAdminClientFunc = func() (adminClient, error) {
 		return admin, nil
@@ -2510,11 +2512,12 @@ func TestRunWorkspaceReusesReadyManagedRouteFromSameCWD(t *testing.T) {
 	})
 	webDir := filepath.Join(root, "apps", "web")
 	admin := &multiRecordingAdminClient{routes: []router.Route{{
-		ID:         "web-existing",
-		Generation: 1,
-		Host:       "web.ctrltube.localhost",
-		Target:     webServer.URL,
-		CWD:        webDir,
+		ID:              "web-existing",
+		Generation:      1,
+		Host:            "web.ctrltube.localhost",
+		PreferredScheme: "http",
+		Target:          webServer.URL,
+		CWD:             webDir,
 	}}}
 	defaultAdminClientFunc = func() (adminClient, error) {
 		return admin, nil
@@ -2557,11 +2560,12 @@ func TestRunWorkspaceReusesUnknownManagedRouteFromSameCWD(t *testing.T) {
 	})
 	webDir := filepath.Join(root, "apps", "web")
 	route := router.Route{
-		ID:         "web-unknown",
-		Generation: 1,
-		Host:       "web.ctrltube.localhost",
-		Target:     "http://127.0.0.1:57940",
-		CWD:        webDir,
+		ID:              "web-unknown",
+		Generation:      1,
+		Host:            "web.ctrltube.localhost",
+		PreferredScheme: "http",
+		Target:          "http://127.0.0.1:57940",
+		CWD:             webDir,
 	}
 	admin := &recordingAdminClient{
 		routes:   []router.Route{route},

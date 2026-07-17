@@ -136,7 +136,10 @@ func decodeAdminJSON(r *http.Request, destination any) error {
 
 func writeReservationError(w http.ResponseWriter, err error) {
 	status := http.StatusBadRequest
-	if errors.Is(err, ErrRouteRefMismatch) || errors.Is(err, ErrReservationConflict) {
+	var schemeConflict *routeSchemeConflictError
+	if errors.Is(err, ErrRouteRefMismatch) ||
+		errors.Is(err, ErrReservationConflict) ||
+		errors.As(err, &schemeConflict) {
 		status = http.StatusConflict
 	}
 	http.Error(w, err.Error(), status)

@@ -56,6 +56,19 @@ type ReservedRoute struct {
 	Reused bool  `json:"reused"`
 }
 
+type routeSchemeConflictError struct {
+	Host            string
+	ExistingScheme  string
+	RequestedScheme string
+}
+
+func (e *routeSchemeConflictError) Error() string {
+	return fmt.Sprintf(
+		"route %s already uses scheme %s; stop it before requesting %s",
+		e.Host, e.ExistingScheme, e.RequestedScheme,
+	)
+}
+
 func (r ReservationResult) PendingRefs() []RouteRef {
 	refs := make([]RouteRef, 0, len(r.Routes))
 	for _, reserved := range r.Routes {
@@ -68,6 +81,29 @@ func (r ReservationResult) PendingRefs() []RouteRef {
 
 func (r Route) Ref() RouteRef {
 	return RouteRef{ID: r.ID, Generation: r.Generation}
+}
+
+func schemeConflictForRoute(route Route, candidate RouteReservation) error {
+	if route.PreferredScheme == candidate.PreferredScheme {
+		return nil
+	}
+	return &routeSchemeConflictError{
+		Host:            route.Host,
+		ExistingScheme:  route.PreferredScheme,
+		RequestedScheme: candidate.PreferredScheme,
+	}
+}
+
+func routeSchemeConflict(routes []Route, candidate RouteReservation) error {
+	for _, route := range routes {
+		if route.Host != candidate.DesiredHost || !reservationOwnerMatches(route, candidate) {
+			continue
+		}
+		if err := schemeConflictForRoute(route, candidate); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ReserveRoutes(store Store, request ReservationRequest, now time.Time) (ReservationResult, error) {
@@ -87,8 +123,44 @@ func ReserveRoutes(store Store, request ReservationRequest, now time.Time) (Rese
 	result := ReservationResult{RunID: request.RunID}
 	err := UpdateStore(store, func(stored []Route) ([]Route, error) {
 		routes := removeExpiredRoutes(stored, now)
-		occupiedHosts := make(map[string]string, len(routes)+len(request.Routes))
-		occupiedTargets := make(map[string]bool, len(routes)+len(request.Routes))
+		candidates := make([]RouteReservation, len(request.Routes))
+		for i, raw := range request.Routes {
+			candidate, err := validateReservation(raw)
+			if err != nil {
+				return nil, err
+			}
+			candidates[i] = candidate
+		}
+
+		reused := make([]*Route, len(candidates))
+		logicalRoutes := append([]Route(nil), routes...)
+		for i, candidate := range candidates {
+			if candidate.Reuse != nil {
+				existing, ok := routeByRef(routes, *candidate.Reuse)
+				if !ok || existing.EffectiveState() != RouteStateActive || !reservationOwnerMatches(existing, candidate) {
+					return nil, ErrRouteRefMismatch
+				}
+				if err := schemeConflictForRoute(existing, candidate); err != nil {
+					return nil, err
+				}
+				existingCopy := existing
+				reused[i] = &existingCopy
+			}
+			if err := routeSchemeConflict(logicalRoutes, candidate); err != nil {
+				return nil, err
+			}
+			logicalRoutes = append(logicalRoutes, Route{
+				Host:            candidate.DesiredHost,
+				PreferredScheme: candidate.PreferredScheme,
+				CWD:             candidate.CWD,
+				OwnerCWD:        candidate.OwnerCWD,
+				ProjectRoot:     candidate.ProjectRoot,
+				ProjectName:     candidate.ProjectName,
+			})
+		}
+
+		occupiedHosts := make(map[string]string, len(routes)+len(candidates))
+		occupiedTargets := make(map[string]bool, len(routes)+len(candidates))
 		for _, route := range routes {
 			occupiedHosts[route.Host] = "\x00occupied"
 			target := route.Target
@@ -99,29 +171,25 @@ func ReserveRoutes(store Store, request ReservationRequest, now time.Time) (Rese
 				occupiedTargets[key] = true
 			}
 		}
-
-		reserved := make([]ReservedRoute, 0, len(request.Routes))
-		for _, candidate := range request.Routes {
-			normalized, err := validateReservation(candidate)
-			if err != nil {
-				return nil, err
-			}
-			candidate = normalized
-			if candidate.Reuse != nil {
-				existing, ok := routeByRef(routes, *candidate.Reuse)
-				if !ok || existing.EffectiveState() != RouteStateActive || !reservationOwnerMatches(existing, candidate) {
-					return nil, ErrRouteRefMismatch
-				}
-				reserved = append(reserved, ReservedRoute{Route: existing, Reused: true})
+		for i, candidate := range candidates {
+			if reused[i] != nil {
 				continue
 			}
-
 			targetKey, err := reservationTargetKey(candidate.Target)
 			if err != nil {
 				return nil, err
 			}
 			if occupiedTargets[targetKey] {
 				return nil, fmt.Errorf("%w: target %s is already reserved", ErrReservationConflict, candidate.Target)
+			}
+			occupiedTargets[targetKey] = true
+		}
+
+		reserved := make([]ReservedRoute, 0, len(candidates))
+		for i, candidate := range candidates {
+			if reused[i] != nil {
+				reserved = append(reserved, ReservedRoute{Route: *reused[i], Reused: true})
+				continue
 			}
 			finalHost := project.ResolveHostnameConflict(candidate.DesiredHost, candidate.CWD, occupiedHosts)
 			id, err := newRouteID()
@@ -165,7 +233,6 @@ func ReserveRoutes(store Store, request ReservationRequest, now time.Time) (Rese
 			}
 			routes = append(routes, route)
 			occupiedHosts[finalHost] = "\x00occupied"
-			occupiedTargets[targetKey] = true
 			reserved = append(reserved, ReservedRoute{Route: route})
 		}
 		result.Routes = reserved

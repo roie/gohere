@@ -84,6 +84,39 @@ func TestClientReservationLifecycle(t *testing.T) {
 	}
 }
 
+func TestClientReserveRoutesReportsSchemeConflict(t *testing.T) {
+	store := router.NewMemoryStore()
+	existing := router.Route{
+		ID: "existing", Generation: 1, State: router.RouteStateActive,
+		Host: "app.localhost", PreferredScheme: "https",
+		Target: "http://127.0.0.1:42701", CWD: "/work/app",
+		ProjectRoot: "/work", ProjectName: "work",
+	}
+	if err := store.Save([]router.Route{existing}); err != nil {
+		t.Fatal(err)
+	}
+	srv := router.NewServer(router.Config{Token: "secret", Store: store})
+	httpSrv := httptest.NewServer(srv.AdminHandler())
+	defer httpSrv.Close()
+	client := NewClient(httpSrv.URL, "secret")
+	_, err := client.ReserveRoutes(t.Context(), router.ReservationRequest{
+		RunID: "new-run",
+		Routes: []router.RouteReservation{{
+			DesiredHost: "app.localhost", PreferredScheme: "http",
+			Target: "http://127.0.0.1:42702", CWD: "/work/app",
+			ProjectRoot: "/work", ProjectName: "work",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "409 Conflict") ||
+		!strings.Contains(err.Error(), "already uses scheme https; stop it before requesting http") {
+		t.Fatalf("error = %v", err)
+	}
+	routes, loadErr := store.Load()
+	if loadErr != nil || len(routes) != 1 || routes[0].ID != existing.ID {
+		t.Fatalf("routes/error = %#v/%v", routes, loadErr)
+	}
+}
+
 func TestClientDeleteRouteRef(t *testing.T) {
 	store := router.NewMemoryStore()
 	route := router.Route{ID: "route-1", Generation: 2, State: router.RouteStateActive, Host: "web.localhost", Target: "http://127.0.0.1:48302"}

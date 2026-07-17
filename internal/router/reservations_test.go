@@ -112,12 +112,12 @@ func TestReserveRoutesBatchFailureDoesNotMutateStore(t *testing.T) {
 
 func TestReserveRoutesReusesOnlyMatchingPreprobedRef(t *testing.T) {
 	store := NewMemoryStore()
-	existing := Route{ID: "route-1", Generation: 4, State: RouteStateActive, PreferredScheme: "http", Host: "web.localhost", Target: "http://127.0.0.1:43001", CWD: "/work/web", ProjectRoot: "/work", ProjectName: "work"}
+	existing := Route{ID: "route-1", Generation: 4, State: RouteStateActive, PreferredScheme: "https", Host: "web.localhost", Target: "http://127.0.0.1:43001", CWD: "/work/web", ProjectRoot: "/work", ProjectName: "work"}
 	if err := store.Save([]Route{existing}); err != nil {
 		t.Fatal(err)
 	}
 	ref := existing.Ref()
-	result, err := ReserveRoutes(store, ReservationRequest{RunID: "run-b", TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:43002", CWD: "/work/web", ProjectRoot: "/work", ProjectName: "work", Reuse: &ref}}}, time.Now().UTC())
+	result, err := ReserveRoutes(store, ReservationRequest{RunID: "run-b", TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "https", Target: "http://127.0.0.1:43002", CWD: "/work/web", ProjectRoot: "/work", ProjectName: "work", Reuse: &ref}}}, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,9 +125,86 @@ func TestReserveRoutesReusesOnlyMatchingPreprobedRef(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 	badRef := RouteRef{ID: ref.ID, Generation: ref.Generation + 1}
-	_, err = ReserveRoutes(store, ReservationRequest{RunID: "run-c", TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:43003", CWD: "/work/web", Reuse: &badRef}}}, time.Now().UTC())
+	_, err = ReserveRoutes(store, ReservationRequest{RunID: "run-c", TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "https", Target: "http://127.0.0.1:43003", CWD: "/work/web", Reuse: &badRef}}}, time.Now().UTC())
 	if !errors.Is(err, ErrRouteRefMismatch) {
 		t.Fatalf("error = %v, want ErrRouteRefMismatch", err)
+	}
+	_, err = ReserveRoutes(store, ReservationRequest{RunID: "run-d", TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:43004", CWD: "/work/web", ProjectRoot: "/work", ProjectName: "work", Reuse: &ref}}}, time.Now().UTC())
+	var conflict *routeSchemeConflictError
+	if !errors.As(err, &conflict) || conflict.ExistingScheme != "https" || conflict.RequestedScheme != "http" {
+		t.Fatalf("conflict = %#v, error = %v", conflict, err)
+	}
+}
+
+func TestReserveRoutesRejectsExactLogicalSchemeConflict(t *testing.T) {
+	now := time.Now().UTC()
+	for _, existing := range []Route{
+		{
+			ID: "active", Generation: 1, State: RouteStateActive,
+			Host: "app.localhost", PreferredScheme: "https",
+			Target: "http://127.0.0.1:42001", CWD: "/work/app",
+			ProjectRoot: "/work", ProjectName: "work",
+		},
+		{
+			ID: "pending", Generation: 1, State: RouteStatePending,
+			Host: "app.localhost", PreferredScheme: "https",
+			PendingTarget: "http://127.0.0.1:42001", CWD: "/work/app",
+			ProjectRoot: "/work", ProjectName: "work",
+			ReservationExpiresAt: now.Add(time.Minute),
+		},
+	} {
+		t.Run(string(existing.EffectiveState()), func(t *testing.T) {
+			store := NewMemoryStore()
+			if err := store.Save([]Route{existing}); err != nil {
+				t.Fatal(err)
+			}
+			_, err := ReserveRoutes(store, ReservationRequest{
+				RunID: "new-run", TTL: time.Minute,
+				Routes: []RouteReservation{{
+					DesiredHost: "app.localhost", PreferredScheme: "http",
+					Target: "http://127.0.0.1:42002", CWD: "/work/app",
+					ProjectRoot: "/work", ProjectName: "work",
+				}},
+			}, now)
+			var conflict *routeSchemeConflictError
+			if !errors.As(err, &conflict) {
+				t.Fatalf("error = %v", err)
+			}
+			if conflict.Host != "app.localhost" || conflict.ExistingScheme != "https" || conflict.RequestedScheme != "http" {
+				t.Fatalf("conflict = %#v", conflict)
+			}
+			got, _ := store.Load()
+			if !reflect.DeepEqual(got, []Route{existing}) {
+				t.Fatalf("store changed = %#v", got)
+			}
+		})
+	}
+}
+
+func TestReserveRoutesRejectsBatchSchemeConflict(t *testing.T) {
+	store := NewMemoryStore()
+	_, err := ReserveRoutes(store, ReservationRequest{
+		RunID: "batch-run", TTL: time.Minute,
+		Routes: []RouteReservation{
+			{
+				DesiredHost: "app.localhost", PreferredScheme: "https",
+				Target: "http://127.0.0.1:42401", CWD: "/work/app",
+				ProjectRoot: "/work", ProjectName: "work",
+			},
+			{
+				DesiredHost: "app.localhost", PreferredScheme: "http",
+				Target: "http://127.0.0.1:42402", CWD: "/work/app",
+				ProjectRoot: "/work", ProjectName: "work",
+			},
+		},
+	}, time.Now().UTC())
+	var conflict *routeSchemeConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("error = %v", err)
+	}
+	routes, loadErr := store.Load()
+	if loadErr != nil || len(routes) != 0 {
+		t.Fatalf("routes/error = %#v/%v", routes, loadErr)
 	}
 }
 
@@ -204,10 +281,86 @@ func TestReservationResultPendingRefsExcludesReusedRoutes(t *testing.T) {
 	}
 }
 
+func TestReserveRoutesKeepsSuffixAllocationForUnrelatedSchemeCollision(t *testing.T) {
+	store := NewMemoryStore()
+	existing := Route{
+		ID: "existing", Generation: 1, State: RouteStateActive,
+		Host: "app.localhost", PreferredScheme: "https",
+		Target: "http://127.0.0.1:42501", CWD: "/other/app",
+		ProjectRoot: "/other", ProjectName: "other",
+	}
+	if err := store.Save([]Route{existing}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ReserveRoutes(store, ReservationRequest{
+		RunID: "new-run", TTL: time.Minute,
+		Routes: []RouteReservation{{
+			DesiredHost: "app.localhost", PreferredScheme: "http",
+			Target: "http://127.0.0.1:42502", CWD: "/work/app",
+			ProjectRoot: "/work", ProjectName: "work",
+		}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Routes[0].Route.Host == "app.localhost" {
+		t.Fatalf("unrelated collision did not receive suffix: %#v", result)
+	}
+}
+
+func TestReserveRoutesRollsBackStagedReclamationWhenLaterCandidateFails(t *testing.T) {
+	now := time.Now().UTC()
+	for _, expired := range []Route{
+		{
+			ID: "pending", Generation: 1, State: RouteStatePending,
+			Host: "old.localhost", PreferredScheme: "https",
+			PendingTarget: "http://127.0.0.1:43001", CWD: "/old",
+			ReservationExpiresAt: now.Add(-time.Second),
+		},
+		{
+			ID: "active", Generation: 1, State: RouteStateActive,
+			Host: "old.localhost", PreferredScheme: "https",
+			Target: "http://127.0.0.1:43001", CWD: "/old",
+			LeaseExpiresAt: now.Add(-time.Second),
+		},
+	} {
+		t.Run(string(expired.EffectiveState()), func(t *testing.T) {
+			store := NewMemoryStore()
+			if err := store.Save([]Route{expired}); err != nil {
+				t.Fatal(err)
+			}
+			_, err := ReserveRoutes(store, ReservationRequest{
+				RunID: "new-run",
+				TTL:   time.Minute,
+				Routes: []RouteReservation{
+					{
+						DesiredHost: "old.localhost", PreferredScheme: "http",
+						Target: "http://127.0.0.1:43002", CWD: "/new",
+					},
+					{
+						DesiredHost: "bad.localhost", PreferredScheme: "https ",
+						Target: "http://127.0.0.1:43003", CWD: "/bad",
+					},
+				},
+			}, now)
+			if err == nil {
+				t.Fatal("expected later candidate failure")
+			}
+			got, loadErr := store.Load()
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if !reflect.DeepEqual(got, []Route{expired}) {
+				t.Fatalf("staged reclamation committed on failure: %#v", got)
+			}
+		})
+	}
+}
+
 func TestReserveRoutesReclaimsExpiredPendingRoute(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Now().UTC()
-	expired := Route{ID: "expired", Generation: 1, RunID: "old", State: RouteStatePending, PreferredScheme: "http", Host: "app.localhost", PendingTarget: "http://127.0.0.1:44001", ReservationExpiresAt: now.Add(-time.Second), CWD: "/old"}
+	expired := Route{ID: "expired", Generation: 1, RunID: "old", State: RouteStatePending, PreferredScheme: "https", Host: "app.localhost", PendingTarget: "http://127.0.0.1:44001", ReservationExpiresAt: now.Add(-time.Second), CWD: "/old"}
 	if err := store.Save([]Route{expired}); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +373,7 @@ func TestReserveRoutesReclaimsExpiredPendingRoute(t *testing.T) {
 func TestReserveRoutesReclaimsExpiredActiveLease(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Now().UTC()
-	expired := Route{ID: "expired-active", Generation: 2, RunID: "old", State: RouteStateActive, PreferredScheme: "http", Host: "app.localhost", Target: "http://127.0.0.1:44002", LeaseExpiresAt: now.Add(-time.Second), CWD: "/old"}
+	expired := Route{ID: "expired-active", Generation: 2, RunID: "old", State: RouteStateActive, PreferredScheme: "https", Host: "app.localhost", Target: "http://127.0.0.1:44002", LeaseExpiresAt: now.Add(-time.Second), CWD: "/old"}
 	if err := store.Save([]Route{expired}); err != nil {
 		t.Fatal(err)
 	}
