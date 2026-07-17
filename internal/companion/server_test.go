@@ -143,6 +143,30 @@ func TestServeEncodesAuthorityFailure(t *testing.T) {
 	}
 }
 
+func TestServeReserveRoutesKeepsAuthorityErrorMapping(t *testing.T) {
+	authority := &testAuthority{err: errors.New(
+		"POST /v2/route-reservations returned 409 Conflict: route app.localhost already uses scheme https; stop it before requesting http",
+	)}
+	response := serveProtocolRequest(t, Request{
+		Magic:           ProtocolMagic,
+		ProtocolVersion: ProtocolVersion,
+		Operation:       OperationReserveRoutes,
+		Reservation: &router.ReservationRequest{
+			RunID: "run-a",
+			Routes: []router.RouteReservation{{
+				DesiredHost: "app.localhost", PreferredScheme: "http",
+				Target: "http://127.0.0.1:44001", CWD: "/work/app",
+			}},
+		},
+	}, authority)
+	if response.OK || response.Error == nil || response.Error.Code != "authority_error" {
+		t.Fatalf("response = %#v", response)
+	}
+	if !strings.Contains(response.Error.Message, "already uses scheme https") {
+		t.Fatalf("message = %q", response.Error.Message)
+	}
+}
+
 func FuzzServeCompanionRequestIsBounded(f *testing.F) {
 	f.Add([]byte(`{"magic":"gohere-companion","protocolVersion":1,"operation":"info"}`))
 	f.Add([]byte(`{"magic":"gohere-companion","protocolVersion":1,"operation":"shell"}`))

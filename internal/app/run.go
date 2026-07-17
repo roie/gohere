@@ -638,6 +638,9 @@ func reusableExistingRoute(plan RunPlan, statuses []lifecycle.RouteStatus) (rout
 		if !strings.EqualFold(status.Route.Host, plan.Host) {
 			continue
 		}
+		if status.Route.PreferredScheme != plan.URLScheme {
+			continue
+		}
 		if status.Route.OwnerEnv == "wsl" &&
 			(status.Route.LeaseExpiresAt.IsZero() || router.RouteLeaseExpired(status.Route, time.Now())) {
 			continue

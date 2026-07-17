@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -1448,13 +1449,115 @@ func TestRunPlannedUsesCollisionSafeReservedHostnameInEnvironment(t *testing.T) 
 	}
 }
 
+func TestReusableExistingRouteRequiresExactScheme(t *testing.T) {
+	dir := t.TempDir()
+	statuses := []lifecycle.RouteStatus{{
+		Route: router.Route{
+			ID: "route-1", Generation: 1, State: router.RouteStateActive,
+			Host: "app.localhost", PreferredScheme: "https",
+			Target: "http://127.0.0.1:44001", CWD: dir,
+		},
+		Status: lifecycle.RouteStatusReady,
+	}}
+	if route, ok := reusableExistingRoute(RunPlan{
+		Host: "app.localhost", CWD: dir, URLScheme: "http",
+	}, statuses); ok {
+		t.Fatalf("reused cross-scheme route: %#v", route)
+	}
+	if route, ok := reusableExistingRoute(RunPlan{
+		Host: "app.localhost", CWD: dir, URLScheme: "https",
+	}, statuses); !ok || route.ID != "route-1" {
+		t.Fatalf("matching reuse = %#v/%v", route, ok)
+	}
+}
+
 func TestPlannedReusableRouteRejectsWrongFixedTarget(t *testing.T) {
 	dir := t.TempDir()
-	route := router.Route{ID: "existing", Generation: 1, Host: "app.localhost", Target: "http://127.0.0.1:3002", CWD: dir}
+	route := router.Route{ID: "existing", Generation: 1, Host: "app.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:3002", CWD: dir}
 	admin := &recordingAdminClient{routes: []router.Route{route}}
-	plan := RunPlan{Host: route.Host, CWD: dir, Port: 3001, RouteTargetHost: "127.0.0.1", FixedPort: true}
+	plan := RunPlan{Host: route.Host, CWD: dir, Port: 3001, RouteTargetHost: "127.0.0.1", URLScheme: "http", FixedPort: true}
 	if got, reused, err := plannedReusableRoute(t.Context(), admin, plan); err != nil || reused {
 		t.Fatalf("reuse = %#v/%v, err = %v; wrong fixed target must not be reused", got, reused, err)
+	}
+}
+
+func TestRunPlannedSingleRejectsSchemeConflictBeforeStartingChild(t *testing.T) {
+	oldStartRunner := startRunnerFunc
+	defer func() { startRunnerFunc = oldStartRunner }()
+	startRunnerFunc = func(context.Context, runner.Config) (*runner.Result, error) {
+		t.Fatal("runner started before scheme conflict was rejected")
+		return nil, nil
+	}
+	dir := t.TempDir()
+	existing := router.Route{
+		ID: "existing", Generation: 1, State: router.RouteStateActive,
+		Host: "app.localhost", PreferredScheme: "https",
+		Target: "http://127.0.0.1:44001", CWD: dir,
+		ProjectRoot: dir, ProjectName: "app",
+	}
+	admin := &recordingAdminClient{routes: []router.Route{existing}}
+	plan := RunPlan{
+		Command: []string{"test-server"}, Port: 44002,
+		Host: "app.localhost", Name: "app", CWD: dir,
+		ProjectRoot: dir, ProjectName: "app",
+		URLScheme: "http", RouteTargetHost: "127.0.0.1",
+		ListenHost: "127.0.0.1", ManagedPort: true,
+	}
+	err := runPlannedSingle(t.Context(), cli.Command{Kind: cli.CommandRun, Script: "dev", HTTP: true}, plan, admin, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "already uses scheme https; stop it before requesting http") {
+		t.Fatalf("error = %v", err)
+	}
+	routes, loadErr := admin.Routes(t.Context())
+	if loadErr != nil || !reflect.DeepEqual(routes, []router.Route{existing}) {
+		t.Fatalf("routes/error = %#v/%v", routes, loadErr)
+	}
+}
+
+func TestRunPlannedGroupRejectsSchemeConflictBeforeLaunchingChildren(t *testing.T) {
+	oldLaunchGroupRunner := launchGroupRunnerFunc
+	defer func() { launchGroupRunnerFunc = oldLaunchGroupRunner }()
+	launchGroupRunnerFunc = func(context.Context, runner.Config) (groupRunner, error) {
+		t.Fatal("group child launched before scheme conflict was rejected")
+		return nil, nil
+	}
+	dir := t.TempDir()
+	existing := router.Route{
+		ID: "existing", Generation: 1, State: router.RouteStateActive,
+		Host: "web.app.localhost", PreferredScheme: "https",
+		Target: "http://127.0.0.1:44101", CWD: dir,
+		ProjectRoot: dir, ProjectName: "app",
+	}
+	admin := &recordingAdminClient{routes: []router.Route{existing}}
+	items := []multiRunItem{
+		{
+			cmd: cli.Command{Kind: cli.CommandRun, Script: "dev:web", HTTP: true},
+			plan: RunPlan{
+				Command: []string{"test-web"}, Port: 44102,
+				Host: "web.app.localhost", Name: "web", CWD: dir,
+				ProjectRoot: dir, ProjectName: "app", URLScheme: "http",
+				RouteTargetHost: "127.0.0.1", ListenHost: "127.0.0.1", ManagedPort: true,
+			},
+		},
+		{
+			cmd: cli.Command{Kind: cli.CommandRun, Script: "dev:api", HTTP: true},
+			plan: RunPlan{
+				Command: []string{"test-api"}, Port: 44103,
+				Host: "api.app.localhost", Name: "api", CWD: dir,
+				ProjectRoot: dir, ProjectName: "app", URLScheme: "http",
+				RouteTargetHost: "127.0.0.1", ListenHost: "127.0.0.1", ManagedPort: true,
+			},
+		},
+	}
+	err := runPlannedGroup(t.Context(), false, items, admin, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "already uses scheme https; stop it before requesting http") {
+		t.Fatalf("error = %v", err)
+	}
+	if admin.reserveCalls != 1 {
+		t.Fatalf("reserve calls = %d", admin.reserveCalls)
+	}
+	routes, loadErr := admin.Routes(t.Context())
+	if loadErr != nil || !reflect.DeepEqual(routes, []router.Route{existing}) {
+		t.Fatalf("routes/error = %#v/%v", routes, loadErr)
 	}
 }
 
