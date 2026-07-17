@@ -1000,7 +1000,7 @@ func TestAdminAPIProbeTargetRejectsPublicHosts(t *testing.T) {
 func TestAdminAPIRejectsRouteWithPublicTarget(t *testing.T) {
 	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
 
-	body := strings.NewReader(`{"host":"app.localhost","target":"https://example.com"}`)
+	body := strings.NewReader(`{"host":"app.localhost","target":"https://example.com","preferredScheme":"http"}`)
 	req := httptest.NewRequest(http.MethodPost, "/routes", body)
 	req.Header.Set("X-Gohere-Token", "secret")
 	rec := httptest.NewRecorder()
@@ -1031,7 +1031,7 @@ func TestAdminAPIRouteCRUD(t *testing.T) {
 	srv := NewServer(Config{Token: "secret", Store: store})
 	handler := srv.AdminHandler()
 
-	body := strings.NewReader(`{"host":"eventca.localhost","target":"http://127.0.0.1:49231","pid":12345,"cwd":"/tmp/eventca","name":"eventca","source":"wsl","ownerCwd":"/home/roie/project","ownerEnv":"wsl","startedAt":"2026-05-16T00:00:00Z"}`)
+	body := strings.NewReader(`{"host":"eventca.localhost","target":"http://127.0.0.1:49231","preferredScheme":"http","pid":12345,"cwd":"/tmp/eventca","name":"eventca","source":"wsl","ownerCwd":"/home/roie/project","ownerEnv":"wsl","startedAt":"2026-05-16T00:00:00Z"}`)
 	req := httptest.NewRequest(http.MethodPost, "/routes", body)
 	req.Header.Set("X-Gohere-Token", "secret")
 	rec := httptest.NewRecorder()
@@ -1067,12 +1067,28 @@ func TestAdminAPIRouteCRUD(t *testing.T) {
 	}
 }
 
+func TestAdminAPIRoutesRequiresExactPreferredScheme(t *testing.T) {
+	for _, scheme := range []string{"", "HTTP", "HTTPS", " https", "https ", "ftp"} {
+		t.Run(fmt.Sprintf("%q", scheme), func(t *testing.T) {
+			srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+			body := fmt.Sprintf(`{"host":"app.localhost","target":"http://127.0.0.1:41001","preferredScheme":%q}`, scheme)
+			req := httptest.NewRequest(http.MethodPost, "/routes", strings.NewReader(body))
+			req.Header.Set("X-Gohere-Token", "secret")
+			rec := httptest.NewRecorder()
+			srv.AdminHandler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("scheme %q status/body = %d/%q", scheme, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestAdminAPIUpsertHostCaseInsensitive(t *testing.T) {
 	store := NewMemoryStore()
-	store.Save([]Route{{Host: "eventca.localhost", Target: "http://127.0.0.1:49231"}})
+	store.Save([]Route{{Host: "eventca.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:49231"}})
 	srv := NewServer(Config{Token: "secret", Store: store})
 
-	body := strings.NewReader(`{"host":"EventCA.localhost","target":"http://127.0.0.1:49232"}`)
+	body := strings.NewReader(`{"host":"EventCA.localhost","target":"http://127.0.0.1:49232","preferredScheme":"http"}`)
 	req := httptest.NewRequest(http.MethodPost, "/routes", body)
 	req.Header.Set("X-Gohere-Token", "secret")
 	rec := httptest.NewRecorder()
@@ -1093,14 +1109,15 @@ func TestAdminAPIUpsertHostCaseInsensitive(t *testing.T) {
 func TestAdminAPIRejectsRouteReplacementFromDifferentWSLOwner(t *testing.T) {
 	store := NewMemoryStore()
 	original := Route{
-		Host:          "eventca.localhost",
-		Target:        "http://172.20.0.2:49231",
-		CWD:           "/home/alice/eventca",
-		OwnerCWD:      "/home/alice/eventca",
-		OwnerEnv:      "wsl",
-		OwnerInstance: "owner-a",
-		Distro:        "Ubuntu",
-		LinuxUser:     "alice",
+		Host:            "eventca.localhost",
+		Target:          "http://172.20.0.2:49231",
+		PreferredScheme: "http",
+		CWD:             "/home/alice/eventca",
+		OwnerCWD:        "/home/alice/eventca",
+		OwnerEnv:        "wsl",
+		OwnerInstance:   "owner-a",
+		Distro:          "Ubuntu",
+		LinuxUser:       "alice",
 	}
 	if err := store.Save([]Route{original}); err != nil {
 		t.Fatal(err)
@@ -1190,7 +1207,7 @@ func TestAdminAPIUpsertNormalizesRouteHostWithPort(t *testing.T) {
 
 	store := NewMemoryStore()
 	srv := NewServer(Config{Token: "secret", Store: store})
-	body := strings.NewReader(fmt.Sprintf(`{"host":"EventCA.localhost:8080","target":%q}`, backend.URL))
+	body := strings.NewReader(fmt.Sprintf(`{"host":"EventCA.localhost:8080","target":%q,"preferredScheme":"http"}`, backend.URL))
 	req := httptest.NewRequest(http.MethodPost, "/routes", body)
 	req.Header.Set("X-Gohere-Token", "secret")
 	rec := httptest.NewRecorder()
@@ -1238,7 +1255,7 @@ func TestAdminAPIConcurrentUpsertsDoNotLoseRoutes(t *testing.T) {
 
 	for i := 0; i < count; i++ {
 		go func(i int) {
-			body := strings.NewReader(fmt.Sprintf(`{"host":"app-%d.localhost","target":"http://127.0.0.1:%d"}`, i, 40000+i))
+			body := strings.NewReader(fmt.Sprintf(`{"host":"app-%d.localhost","target":"http://127.0.0.1:%d","preferredScheme":"http"}`, i, 40000+i))
 			req := httptest.NewRequest(http.MethodPost, "/routes", body)
 			req.Header.Set("X-Gohere-Token", "secret")
 			rec := httptest.NewRecorder()

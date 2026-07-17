@@ -201,7 +201,7 @@ func TestCompanionReadyInfoUpgradesOlderWindowsBinaryWithoutChangingHTTPSPolicy(
 func TestCompanionRouteLifecycleUsesWindowsAuthorityStore(t *testing.T) {
 	stateDir := t.TempDir()
 	authority := newCompanionAuthority(CompanionConfig{GOOS: "windows", StateDir: stateDir})
-	result, err := authority.ReserveRoutes(t.Context(), router.ReservationRequest{RunID: "run-a", Routes: []router.RouteReservation{{DesiredHost: "web.localhost", Target: "http://127.0.0.1:49101", CWD: `/work/web`}}})
+	result, err := authority.ReserveRoutes(t.Context(), router.ReservationRequest{RunID: "run-a", Routes: []router.RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:49101", CWD: `/work/web`}}})
 	if err != nil {
 		t.Fatal(err)
 	}

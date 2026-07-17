@@ -110,7 +110,7 @@ func TestServeRejectsOversizedRequest(t *testing.T) {
 
 func TestServeDispatchesMutationsAndProbe(t *testing.T) {
 	authority := &testAuthority{reachable: true}
-	route := router.Route{Host: "web.localhost", Target: "http://172.20.0.2:5173", OwnerEnv: "wsl"}
+	route := router.Route{Host: "web.localhost", PreferredScheme: "http", Target: "http://172.20.0.2:5173", OwnerEnv: "wsl"}
 	routeJSON, err := json.Marshal(route)
 	if err != nil {
 		t.Fatal(err)

@@ -67,13 +67,13 @@ func TestClientReadyInfoUsesOneShotInternalCommand(t *testing.T) {
 }
 
 func TestClientRouteLifecycleOperations(t *testing.T) {
-	reservation := router.ReservationResult{RunID: "run-a", Routes: []router.ReservedRoute{{Route: router.Route{ID: "route-1", Generation: 1, State: router.RouteStatePending}}}}
+	reservation := router.ReservationResult{RunID: "run-a", Routes: []router.ReservedRoute{{Route: router.Route{ID: "route-1", Generation: 1, State: router.RouteStatePending, PreferredScheme: "http"}}}}
 	runner := &sequenceProcessRunner{results: []processResult{
 		{stdout: responseJSON(t, Response{ProtocolVersion: ProtocolVersion, OK: true, Info: &Info{Capabilities: []string{CapabilityReserveRoutes}}})},
 		{stdout: responseJSON(t, Response{ProtocolVersion: ProtocolVersion, OK: true, Reservation: &reservation})},
 	}}
 	client := Client{Binary: "gohere.exe", Runner: runner}
-	result, err := client.ReserveRoutes(t.Context(), router.ReservationRequest{RunID: "run-a", Routes: []router.RouteReservation{{DesiredHost: "web.localhost", Target: "http://127.0.0.1:49001", CWD: "/work/web"}}})
+	result, err := client.ReserveRoutes(t.Context(), router.ReservationRequest{RunID: "run-a", Routes: []router.RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:49001", CWD: "/work/web"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

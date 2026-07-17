@@ -811,6 +811,7 @@ func registerLegacyRoute(ctx context.Context, adminClient adminClient, cmd cli.C
 		CWD:             plan.CWD,
 		Name:            plan.Name,
 		Mode:            runMode(cmd, plan),
+		PreferredScheme: plan.URLScheme,
 		URLPath:         plan.URLPath,
 		ProjectRoot:     plan.ProjectRoot,
 		ProjectName:     plan.ProjectName,

@@ -12,7 +12,7 @@ import (
 func TestReservationLifecycleAPI(t *testing.T) {
 	store := NewMemoryStore()
 	srv := NewServer(Config{Token: "secret", Store: store})
-	request := ReservationRequest{RunID: "run-a", Routes: []RouteReservation{{DesiredHost: "web.localhost", Target: "http://127.0.0.1:48001", CWD: "/work/web"}}}
+	request := ReservationRequest{RunID: "run-a", Routes: []RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:48001", CWD: "/work/web"}}}
 	var body bytes.Buffer
 	json.NewEncoder(&body).Encode(request)
 	rec := reservationAPIRequest(t, srv, http.MethodPost, "/v2/route-reservations", &body)
@@ -89,8 +89,8 @@ func TestReservationLifecycleAPIRejectsUnauthorizedAndPartialMutation(t *testing
 
 	now := time.Now().UTC()
 	result, err := ReserveRoutes(store, ReservationRequest{RunID: "run-a", TTL: time.Minute, Routes: []RouteReservation{
-		{DesiredHost: "web.localhost", Target: "http://127.0.0.1:48101", CWD: "/work/web"},
-		{DesiredHost: "api.localhost", Target: "http://127.0.0.1:48102", CWD: "/work/api"},
+		{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:48101", CWD: "/work/web"},
+		{DesiredHost: "api.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:48102", CWD: "/work/api"},
 	}}, now)
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func TestReservationLifecycleAPIRejectsMalformedAndExpiredRequestsWithoutMutatio
 	}
 
 	now := time.Now().UTC()
-	result, err := ReserveRoutes(store, ReservationRequest{RunID: "run-a", TTL: time.Second, Routes: []RouteReservation{{DesiredHost: "web.localhost", Target: "http://127.0.0.1:48103", CWD: "/work/web"}}}, now.Add(-2*time.Second))
+	result, err := ReserveRoutes(store, ReservationRequest{RunID: "run-a", TTL: time.Second, Routes: []RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:48103", CWD: "/work/web"}}}, now.Add(-2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -298,7 +298,7 @@ func validateReservation(candidate RouteReservation) (RouteReservation, error) {
 	if _, err := reservationTargetKey(candidate.Target); err != nil {
 		return RouteReservation{}, err
 	}
-	if candidate.PreferredScheme != "" && candidate.PreferredScheme != "http" && candidate.PreferredScheme != "https" {
+	if !validPreferredScheme(candidate.PreferredScheme) {
 		return RouteReservation{}, errors.New("preferred scheme must be http or https")
 	}
 	return candidate, nil

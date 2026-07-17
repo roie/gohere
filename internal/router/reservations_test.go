@@ -3,7 +3,9 @@ package router
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -64,7 +66,7 @@ func TestReserveRoutesAtomicallyResolvesConcurrentHostnameRequests(t *testing.T)
 		runID := "run-" + string(rune('a'+i))
 		go func() {
 			<-start
-			result, err := ReserveRoutes(store, ReservationRequest{RunID: runID, TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: "app.localhost", Target: target, CWD: "/work/app"}}}, now)
+			result, err := ReserveRoutes(store, ReservationRequest{RunID: runID, TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: "app.localhost", PreferredScheme: "http", Target: target, CWD: "/work/app"}}}, now)
 			results <- result
 			errs <- err
 		}()
@@ -93,8 +95,8 @@ func TestReserveRoutesBatchFailureDoesNotMutateStore(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Now().UTC()
 	_, err := ReserveRoutes(store, ReservationRequest{RunID: "run-a", TTL: time.Minute, Routes: []RouteReservation{
-		{DesiredHost: "web.localhost", Target: "http://127.0.0.1:42001", CWD: "/work/web"},
-		{DesiredHost: "api.localhost", Target: "not-a-url", CWD: "/work/api"},
+		{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:42001", CWD: "/work/web"},
+		{DesiredHost: "api.localhost", PreferredScheme: "http", Target: "not-a-url", CWD: "/work/api"},
 	}}, now)
 	if err == nil {
 		t.Fatal("expected invalid target error")
@@ -110,12 +112,12 @@ func TestReserveRoutesBatchFailureDoesNotMutateStore(t *testing.T) {
 
 func TestReserveRoutesReusesOnlyMatchingPreprobedRef(t *testing.T) {
 	store := NewMemoryStore()
-	existing := Route{ID: "route-1", Generation: 4, State: RouteStateActive, Host: "web.localhost", Target: "http://127.0.0.1:43001", CWD: "/work/web", ProjectRoot: "/work", ProjectName: "work"}
+	existing := Route{ID: "route-1", Generation: 4, State: RouteStateActive, PreferredScheme: "http", Host: "web.localhost", Target: "http://127.0.0.1:43001", CWD: "/work/web", ProjectRoot: "/work", ProjectName: "work"}
 	if err := store.Save([]Route{existing}); err != nil {
 		t.Fatal(err)
 	}
 	ref := existing.Ref()
-	result, err := ReserveRoutes(store, ReservationRequest{RunID: "run-b", TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: "web.localhost", Target: "http://127.0.0.1:43002", CWD: "/work/web", ProjectRoot: "/work", ProjectName: "work", Reuse: &ref}}}, time.Now().UTC())
+	result, err := ReserveRoutes(store, ReservationRequest{RunID: "run-b", TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:43002", CWD: "/work/web", ProjectRoot: "/work", ProjectName: "work", Reuse: &ref}}}, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +125,7 @@ func TestReserveRoutesReusesOnlyMatchingPreprobedRef(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 	badRef := RouteRef{ID: ref.ID, Generation: ref.Generation + 1}
-	_, err = ReserveRoutes(store, ReservationRequest{RunID: "run-c", TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: "web.localhost", Target: "http://127.0.0.1:43003", CWD: "/work/web", Reuse: &badRef}}}, time.Now().UTC())
+	_, err = ReserveRoutes(store, ReservationRequest{RunID: "run-c", TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:43003", CWD: "/work/web", Reuse: &badRef}}}, time.Now().UTC())
 	if !errors.Is(err, ErrRouteRefMismatch) {
 		t.Fatalf("error = %v, want ErrRouteRefMismatch", err)
 	}
@@ -133,8 +135,8 @@ func TestReserveRoutesRejectsSameSocketAcrossSchemes(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Now().UTC()
 	_, err := ReserveRoutes(store, ReservationRequest{RunID: "run-a", TTL: time.Minute, Routes: []RouteReservation{
-		{DesiredHost: "web.localhost", Target: "http://127.0.0.1:43500", CWD: "/work/web"},
-		{DesiredHost: "api.localhost", Target: "https://127.0.0.1:43500", CWD: "/work/api"},
+		{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:43500", CWD: "/work/web"},
+		{DesiredHost: "api.localhost", PreferredScheme: "https", Target: "https://127.0.0.1:43500", CWD: "/work/api"},
 	}}, now)
 	if !errors.Is(err, ErrReservationConflict) {
 		t.Fatalf("error = %v, want ErrReservationConflict", err)
@@ -142,6 +144,51 @@ func TestReserveRoutesRejectsSameSocketAcrossSchemes(t *testing.T) {
 	routes, _ := store.Load()
 	if len(routes) != 0 {
 		t.Fatalf("routes after conflicting batch = %#v", routes)
+	}
+}
+
+func TestReserveRoutesRequiresExactPreferredScheme(t *testing.T) {
+	for _, scheme := range []string{"", "HTTP", "HTTPS", " https", "https ", "ftp"} {
+		t.Run(fmt.Sprintf("%q", scheme), func(t *testing.T) {
+			store := NewMemoryStore()
+			_, err := ReserveRoutes(store, ReservationRequest{
+				RunID: "run-a",
+				TTL:   time.Minute,
+				Routes: []RouteReservation{{
+					DesiredHost:     "app.localhost",
+					PreferredScheme: scheme,
+					Target:          "http://127.0.0.1:41001",
+					CWD:             "/work/app",
+				}},
+			}, time.Now().UTC())
+			if err == nil || !strings.Contains(err.Error(), "preferred scheme must be http or https") {
+				t.Fatalf("scheme %q error = %v", scheme, err)
+			}
+			routes, loadErr := store.Load()
+			if loadErr != nil || len(routes) != 0 {
+				t.Fatalf("routes/error = %#v/%v", routes, loadErr)
+			}
+		})
+	}
+
+	for _, scheme := range []string{"http", "https"} {
+		t.Run("valid-"+scheme, func(t *testing.T) {
+			store := NewMemoryStore()
+			result, err := ReserveRoutes(store, ReservationRequest{
+				RunID: "run-a",
+				TTL:   time.Minute,
+				Routes: []RouteReservation{{
+					DesiredHost:     "app.localhost",
+					PreferredScheme: scheme,
+					Target:          "http://127.0.0.1:41001",
+					CWD:             "/work/app",
+				}},
+			}, time.Now().UTC())
+
+			if err != nil || result.Routes[0].Route.PreferredScheme != scheme {
+				t.Fatalf("result/error = %#v/%v", result, err)
+			}
+		})
 	}
 }
 
@@ -160,7 +207,7 @@ func TestReservationResultPendingRefsExcludesReusedRoutes(t *testing.T) {
 func TestReserveRoutesReclaimsExpiredPendingRoute(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Now().UTC()
-	expired := Route{ID: "expired", Generation: 1, RunID: "old", State: RouteStatePending, Host: "app.localhost", PendingTarget: "http://127.0.0.1:44001", ReservationExpiresAt: now.Add(-time.Second), CWD: "/old"}
+	expired := Route{ID: "expired", Generation: 1, RunID: "old", State: RouteStatePending, PreferredScheme: "http", Host: "app.localhost", PendingTarget: "http://127.0.0.1:44001", ReservationExpiresAt: now.Add(-time.Second), CWD: "/old"}
 	if err := store.Save([]Route{expired}); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +220,7 @@ func TestReserveRoutesReclaimsExpiredPendingRoute(t *testing.T) {
 func TestReserveRoutesReclaimsExpiredActiveLease(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Now().UTC()
-	expired := Route{ID: "expired-active", Generation: 2, RunID: "old", State: RouteStateActive, Host: "app.localhost", Target: "http://127.0.0.1:44002", LeaseExpiresAt: now.Add(-time.Second), CWD: "/old"}
+	expired := Route{ID: "expired-active", Generation: 2, RunID: "old", State: RouteStateActive, PreferredScheme: "http", Host: "app.localhost", Target: "http://127.0.0.1:44002", LeaseExpiresAt: now.Add(-time.Second), CWD: "/old"}
 	if err := store.Save([]Route{expired}); err != nil {
 		t.Fatal(err)
 	}
@@ -187,9 +234,10 @@ func TestActivateRoutesPromotesWholeRunWithoutChangingIdentity(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Now().UTC()
 	result, err := ReserveRoutes(store, ReservationRequest{RunID: "run-a", TTL: time.Minute, Routes: []RouteReservation{
-		{DesiredHost: "web.localhost", Target: "http://127.0.0.1:45001", CWD: "/work/web"},
-		{DesiredHost: "api.localhost", Target: "http://127.0.0.1:45002", CWD: "/work/api"},
+		{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:45001", CWD: "/work/web"},
+		{DesiredHost: "api.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:45002", CWD: "/work/api"},
 	}}, now)
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,9 +260,10 @@ func TestActivateAndReleaseRequireCompleteRun(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Now().UTC()
 	result, err := ReserveRoutes(store, ReservationRequest{RunID: "run-a", TTL: time.Minute, Routes: []RouteReservation{
-		{DesiredHost: "web.localhost", Target: "http://127.0.0.1:45501", CWD: "/work/web"},
-		{DesiredHost: "api.localhost", Target: "http://127.0.0.1:45502", CWD: "/work/api"},
+		{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:45501", CWD: "/work/web"},
+		{DesiredHost: "api.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:45502", CWD: "/work/api"},
 	}}, now)
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,9 +300,10 @@ func TestRenewRoutesAllowsSurvivingSubsetAfterExplicitDelete(t *testing.T) {
 	now := time.Now().UTC()
 	store := NewMemoryStore()
 	result, err := ReserveRoutes(store, ReservationRequest{RunID: "group", TTL: time.Minute, Routes: []RouteReservation{
-		{DesiredHost: "web.localhost", Target: "http://127.0.0.1:42001", CWD: "/web"},
-		{DesiredHost: "api.localhost", Target: "http://127.0.0.1:42002", CWD: "/api"},
+		{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:42001", CWD: "/web"},
+		{DesiredHost: "api.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:42002", CWD: "/api"},
 	}}, now)
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +350,7 @@ func TestReleaseRenewAndDeleteUseIdentity(t *testing.T) {
 
 func reserveTestRun(t *testing.T, store Store, runID, host, target, cwd string, now time.Time) ReservationResult {
 	t.Helper()
-	result, err := ReserveRoutes(store, ReservationRequest{RunID: runID, TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: host, Target: target, CWD: cwd}}}, now)
+	result, err := ReserveRoutes(store, ReservationRequest{RunID: runID, TTL: time.Minute, Routes: []RouteReservation{{DesiredHost: host, PreferredScheme: "http", Target: target, CWD: cwd}}}, now)
 	if err != nil {
 		t.Fatal(err)
 	}

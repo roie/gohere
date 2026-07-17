@@ -23,12 +23,13 @@ func TestClientHealthAndRoutes(t *testing.T) {
 	}
 
 	route := router.Route{
-		Host:      "eventca.localhost",
-		Target:    "http://127.0.0.1:49231",
-		PID:       12345,
-		CWD:       "/tmp/eventca",
-		Name:      "eventca",
-		StartedAt: time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+		Host:            "eventca.localhost",
+		Target:          "http://127.0.0.1:49231",
+		PreferredScheme: "http",
+		PID:             12345,
+		CWD:             "/tmp/eventca",
+		Name:            "eventca",
+		StartedAt:       time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
 	}
 	if err := client.UpsertRoute(t.Context(), route); err != nil {
 		t.Fatal(err)
@@ -59,7 +60,7 @@ func TestClientReservationLifecycle(t *testing.T) {
 	defer httpSrv.Close()
 	client := NewClient(httpSrv.URL, "secret")
 
-	result, err := client.ReserveRoutes(t.Context(), router.ReservationRequest{RunID: "run-a", Routes: []router.RouteReservation{{DesiredHost: "web.localhost", Target: "http://127.0.0.1:48301", CWD: "/work/web"}}})
+	result, err := client.ReserveRoutes(t.Context(), router.ReservationRequest{RunID: "run-a", Routes: []router.RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:48301", CWD: "/work/web"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

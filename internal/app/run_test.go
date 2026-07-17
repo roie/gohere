@@ -1703,8 +1703,8 @@ func TestRunUsesAsAliasInOutputAndRoute(t *testing.T) {
 func TestGroupedCleanupDeletesRemainingSiblingAfterExplicitStop(t *testing.T) {
 	admin := &multiRecordingAdminClient{}
 	request := router.ReservationRequest{RunID: "group", TTL: time.Minute, Routes: []router.RouteReservation{
-		{DesiredHost: "web.localhost", Target: "http://127.0.0.1:41001", CWD: "/web"},
-		{DesiredHost: "api.localhost", Target: "http://127.0.0.1:41002", CWD: "/api"},
+		{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:41001", CWD: "/web"},
+		{DesiredHost: "api.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:41002", CWD: "/api"},
 	}}
 	reservation, err := admin.ReserveRoutes(t.Context(), request)
 	if err != nil {
@@ -1763,7 +1763,7 @@ func TestStoreStopCannotDeleteReplacementGeneration(t *testing.T) {
 
 func TestRegisterRouteCleanupCannotDeleteReplacementGeneration(t *testing.T) {
 	admin := &recordingAdminClient{}
-	plan := RunPlan{Host: "app.localhost", Name: "app", CWD: t.TempDir()}
+	plan := RunPlan{Host: "app.localhost", Name: "app", CWD: t.TempDir(), URLScheme: "http"}
 	var stderr strings.Builder
 	cleanup, err := registerRoute(context.Background(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 3000, os.Getpid(), io.Discard, &stderr)
 	if err != nil {
@@ -1786,9 +1786,10 @@ func TestRegisterRouteCleanupCannotDeleteReplacementGeneration(t *testing.T) {
 func TestRegisterRouteCleanupLogsDeleteError(t *testing.T) {
 	admin := &multiRecordingAdminClient{deleteErr: errors.New("delete failed")}
 	plan := RunPlan{
-		Host: "app.localhost",
-		Name: "app",
-		CWD:  t.TempDir(),
+		Host:      "app.localhost",
+		Name:      "app",
+		CWD:       t.TempDir(),
+		URLScheme: "http",
 	}
 	var stdout, stderr strings.Builder
 	cleanup, err := registerRoute(context.Background(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 3000, os.Getpid(), &stdout, &stderr)
@@ -1810,6 +1811,7 @@ func TestRegisterRoutePersistsWSLNamespaceIdentityAndBothTargets(t *testing.T) {
 		Host:            "app.localhost",
 		Name:            "app",
 		CWD:             t.TempDir(),
+		URLScheme:       "http",
 		RouteTargetHost: "172.20.10.2",
 		ListenHost:      "0.0.0.0",
 		RouteSource:     "wsl",
@@ -1838,6 +1840,7 @@ func TestRegisterRouteStartsCleanupWhenContextIsCanceled(t *testing.T) {
 	plan := RunPlan{
 		Host:          "app.localhost",
 		CWD:           t.TempDir(),
+		URLScheme:     "http",
 		OwnerEnv:      "wsl",
 		OwnerInstance: "owner-1",
 		RunnerID:      "runner-1",
@@ -1877,6 +1880,7 @@ func TestRegisterRouteRefusesUnreachableWindowsToWSLTarget(t *testing.T) {
 	plan := RunPlan{
 		Host:            "app.localhost",
 		CWD:             t.TempDir(),
+		URLScheme:       "http",
 		RouteTargetHost: "172.20.10.2",
 		OwnerEnv:        "wsl",
 		OwnerInstance:   "owner-1",
@@ -1911,6 +1915,7 @@ func TestRegisterRouteWaitsForWindowsToReachStartingWSLTarget(t *testing.T) {
 	plan := RunPlan{
 		Host:            "app.localhost",
 		CWD:             t.TempDir(),
+		URLScheme:       "http",
 		RouteTargetHost: "127.0.0.1",
 		OwnerEnv:        "wsl",
 		OwnerInstance:   "owner-1",
@@ -2022,9 +2027,10 @@ func TestReservationLeaseRenewsNativeRouteByIdentity(t *testing.T) {
 func TestRegisterRouteCleanupTimeoutUsesActionableWarning(t *testing.T) {
 	admin := &multiRecordingAdminClient{deleteErr: context.DeadlineExceeded}
 	plan := RunPlan{
-		Host: "app.localhost",
-		Name: "app",
-		CWD:  t.TempDir(),
+		Host:      "app.localhost",
+		Name:      "app",
+		CWD:       t.TempDir(),
+		URLScheme: "http",
 	}
 	var stdout, stderr strings.Builder
 	cleanup, err := registerRoute(context.Background(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 3000, os.Getpid(), &stdout, &stderr)
@@ -2048,9 +2054,10 @@ func TestRegisterRouteCleanupSuppressesWarningWhenTimedOutDeleteRemovedRoute(t *
 		}},
 	}
 	plan := RunPlan{
-		Host: "app.localhost",
-		Name: "app",
-		CWD:  t.TempDir(),
+		Host:      "app.localhost",
+		Name:      "app",
+		CWD:       t.TempDir(),
+		URLScheme: "http",
 	}
 	var stdout, stderr strings.Builder
 	cleanup, err := registerRoute(context.Background(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 3000, os.Getpid(), &stdout, &stderr)
@@ -2077,9 +2084,10 @@ func TestRegisterRouteCleanupSuppressesWarningWhenTimedOutDeleteCompletesAfterCh
 		removeAfterRouteChecks: 2,
 	}
 	plan := RunPlan{
-		Host: "app.localhost",
-		Name: "app",
-		CWD:  t.TempDir(),
+		Host:      "app.localhost",
+		Name:      "app",
+		CWD:       t.TempDir(),
+		URLScheme: "http",
 	}
 	var stdout, stderr strings.Builder
 	cleanup, err := registerRoute(context.Background(), admin, cli.Command{Kind: cli.CommandRun, Script: "dev"}, plan, 3000, os.Getpid(), &stdout, &stderr)

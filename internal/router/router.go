@@ -748,6 +748,10 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		route.Host = routeHost
+		if !validPreferredScheme(route.PreferredScheme) {
+			http.Error(w, "preferred scheme must be http or https", http.StatusBadRequest)
+			return
+		}
 		target, err := url.Parse(route.Target)
 		if err != nil {
 			http.Error(w, "target must be an absolute URL", http.StatusBadRequest)
