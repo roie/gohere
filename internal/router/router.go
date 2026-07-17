@@ -975,15 +975,27 @@ func (s *Server) routeForHost(host string) (Route, bool, error) {
 	if err != nil {
 		return Route{}, false, err
 	}
-	host = strings.ToLower(host)
 	routes, err := s.loadRoutes()
 	if err != nil {
 		return Route{}, false, err
 	}
+	var normalizedMatch Route
+	normalizedMatchFound := false
 	for _, route := range routes {
-		if strings.ToLower(route.Host) == host {
+		if route.Host == host {
 			return route, true, nil
 		}
+		normalizedHost, err := normalizeRouteHost(route.Host)
+		if err != nil {
+			continue
+		}
+		if normalizedHost == host && !normalizedMatchFound {
+			normalizedMatch = route
+			normalizedMatchFound = true
+		}
+	}
+	if normalizedMatchFound {
+		return normalizedMatch, true, nil
 	}
 	return Route{}, false, nil
 }

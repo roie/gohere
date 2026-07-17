@@ -1557,6 +1557,56 @@ func TestProxyHostMatchIsCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestProxyReturnsInvalidRouteHostForPortBearingStoredRoute(t *testing.T) {
+	store := NewMemoryStore()
+	store.Save([]Route{{Host: "app.localhost:8080", PreferredScheme: "https", Target: "http://127.0.0.1:41001"}})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://app.localhost/", nil)
+	req.Host = "app.localhost"
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status/body = %d/%q", rec.Code, rec.Body.String())
+	}
+	var payload proxyErrorPayload
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error != "invalid_route_host" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestProxyPrefersCanonicalStoredHostOverNormalizationEquivalentCorruptRoute(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "proxied response")
+	}))
+	defer backend.Close()
+
+	store := NewMemoryStore()
+	store.Save([]Route{
+		{Host: "app.localhost:8080", PreferredScheme: "https", Target: "http://127.0.0.1:41001"},
+		{Host: "app.localhost", PreferredScheme: "http", Target: backend.URL},
+	})
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://app.localhost/", nil)
+	req.Host = "app.localhost"
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status/body = %d/%q", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "proxied response" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
 func TestProxySupportsUpgradeRequests(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
