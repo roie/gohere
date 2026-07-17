@@ -122,6 +122,8 @@ Route to a known target port:
 gohere --target 5173 -- npm run dev
 ```
 
+Use `--http` when a route must stay on HTTP. It makes HTTP the advertised and canonical scheme for that route and disables automatic HTTP upgrading; the shared HTTPS listener remains available.
+
 Use a custom port flag for tools that do not use `--port`:
 
 ```bash
@@ -191,6 +193,8 @@ npm uninstall -g gohere
 ## How it works
 
 `gohere` runs one local service on HTTP port `80` and HTTPS port `443`.
+
+HTTP requests to HTTPS routes receive a temporary upgrade. Cross-origin requests that require preflight must target `https://` directly, and WebSocket clients must target `wss://` directly.
 
 Each project gets a hidden local port. The service maps the clean `.localhost` hostname to that port using the request `Host` header.
 

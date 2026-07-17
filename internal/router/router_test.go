@@ -396,7 +396,7 @@ func TestHTTPRouteLookupWaitsForStoreWriteLock(t *testing.T) {
 	}))
 	defer backend.Close()
 	store := NewMemoryStore()
-	if err := store.Save([]Route{{Host: "eventca.localhost", Target: backend.URL}}); err != nil {
+	if err := store.Save([]Route{{Host: "eventca.localhost", PreferredScheme: "http", Target: backend.URL}}); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(Config{Token: "secret", Store: store})
@@ -455,12 +455,13 @@ func TestHTTPRouterDoesNotServeExpiredWSLOwnerRoute(t *testing.T) {
 	defer backend.Close()
 	store := NewMemoryStore()
 	if err := store.Save([]Route{{
-		Host:           "offline.localhost",
-		Target:         backend.URL,
-		OwnerEnv:       "wsl",
-		OwnerInstance:  "owner-1",
-		RunnerID:       "runner-1",
-		LeaseExpiresAt: time.Now().Add(-time.Minute),
+		Host:            "offline.localhost",
+		PreferredScheme: "https",
+		Target:          backend.URL,
+		OwnerEnv:        "wsl",
+		OwnerInstance:   "owner-1",
+		RunnerID:        "runner-1",
+		LeaseExpiresAt:  time.Now().Add(-time.Minute),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -835,11 +836,12 @@ func TestPendingRouteReturnsStartingWithoutProxying(t *testing.T) {
 	defer backend.Close()
 	store := NewMemoryStore()
 	if err := store.Save([]Route{{
-		ID:            "route-1",
-		Generation:    1,
-		State:         RouteStatePending,
-		Host:          "web.localhost",
-		PendingTarget: backend.URL,
+		ID:              "route-1",
+		Generation:      1,
+		State:           RouteStatePending,
+		Host:            "web.localhost",
+		PreferredScheme: "https",
+		PendingTarget:   backend.URL,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -877,7 +879,7 @@ func TestProxyRejectsExpiredNativeRoute(t *testing.T) {
 	}))
 	defer backend.Close()
 	store := NewMemoryStore()
-	if err := store.Save([]Route{{State: RouteStateActive, Host: "web.localhost", Target: backend.URL, LeaseExpiresAt: time.Now().Add(-time.Second)}}); err != nil {
+	if err := store.Save([]Route{{State: RouteStateActive, Host: "web.localhost", PreferredScheme: "https", Target: backend.URL, LeaseExpiresAt: time.Now().Add(-time.Second)}}); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "http://web.localhost/", nil)
@@ -892,8 +894,9 @@ func TestProxyRejectsExpiredNativeRoute(t *testing.T) {
 func TestProxyWebSocketUpstreamErrorDoesNotReturnHTMLPage(t *testing.T) {
 	store := NewMemoryStore()
 	if err := store.Save([]Route{{
-		Host:   "web.localhost",
-		Target: "http://127.0.0.1:1",
+		Host:            "web.localhost",
+		PreferredScheme: "http",
+		Target:          "http://127.0.0.1:1",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -917,8 +920,9 @@ func TestProxyWebSocketUpstreamErrorDoesNotReturnHTMLPage(t *testing.T) {
 func TestProxyHTTPUpstreamErrorDoesNotReturnMissingRoutePage(t *testing.T) {
 	store := NewMemoryStore()
 	if err := store.Save([]Route{{
-		Host:   "web.localhost",
-		Target: "http://127.0.0.1:1",
+		Host:            "web.localhost",
+		PreferredScheme: "http",
+		Target:          "http://127.0.0.1:1",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -943,8 +947,9 @@ func TestProxyHTTPUpstreamErrorDoesNotReturnMissingRoutePage(t *testing.T) {
 func TestProxyHTTPUpstreamErrorReturnsJSONForAPIClient(t *testing.T) {
 	store := NewMemoryStore()
 	if err := store.Save([]Route{{
-		Host:   "web.localhost",
-		Target: "http://127.0.0.1:1",
+		Host:            "web.localhost",
+		PreferredScheme: "http",
+		Target:          "http://127.0.0.1:1",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1344,7 +1349,7 @@ func TestProxyRoutesByHostHeader(t *testing.T) {
 	defer backend.Close()
 
 	store := NewMemoryStore()
-	store.Save([]Route{{Host: "eventca.localhost", Target: backend.URL}})
+	store.Save([]Route{{Host: "eventca.localhost", PreferredScheme: "http", Target: backend.URL}})
 	srv := NewServer(Config{Token: "secret", Store: store})
 
 	req := httptest.NewRequest(http.MethodGet, "http://eventca.localhost/", nil)
@@ -1399,7 +1404,7 @@ func TestProxySetsForwardedHeaders(t *testing.T) {
 	defer backend.Close()
 
 	store := NewMemoryStore()
-	store.Save([]Route{{Host: "eventca.localhost", Target: backend.URL}})
+	store.Save([]Route{{Host: "eventca.localhost", PreferredScheme: "http", Target: backend.URL}})
 	srv := NewServer(Config{Token: "secret", Store: store})
 
 	req := httptest.NewRequest(http.MethodGet, "http://eventca.localhost/", nil)
@@ -1433,7 +1438,7 @@ func TestProxyAddsRouteHopHeader(t *testing.T) {
 	defer backend.Close()
 
 	store := NewMemoryStore()
-	store.Save([]Route{{Host: "eventca.localhost", Target: backend.URL}})
+	store.Save([]Route{{Host: "eventca.localhost", PreferredScheme: "http", Target: backend.URL}})
 	srv := NewServer(Config{Token: "secret", Store: store})
 
 	req := httptest.NewRequest(http.MethodGet, "http://eventca.localhost/", nil)
@@ -1457,7 +1462,7 @@ func TestProxyAllowsDifferentRouteHopHeader(t *testing.T) {
 	defer backend.Close()
 
 	store := NewMemoryStore()
-	store.Save([]Route{{Host: "worker.localhost", Target: backend.URL}})
+	store.Save([]Route{{Host: "worker.localhost", PreferredScheme: "http", Target: backend.URL}})
 	srv := NewServer(Config{Token: "secret", Store: store})
 
 	req := httptest.NewRequest(http.MethodGet, "http://worker.localhost/", nil)
@@ -1483,7 +1488,7 @@ func TestProxyDetectsRouteLoop(t *testing.T) {
 	defer backend.Close()
 
 	store := NewMemoryStore()
-	store.Save([]Route{{Host: "web.localhost", Target: backend.URL}})
+	store.Save([]Route{{Host: "web.localhost", PreferredScheme: "https", Target: backend.URL}})
 	srv := NewServer(Config{Token: "secret", Store: store})
 
 	req := httptest.NewRequest(http.MethodGet, "http://web.localhost/api", nil)
@@ -1506,7 +1511,7 @@ func TestProxyDetectsRouteLoop(t *testing.T) {
 
 func TestProxyLoopReturnsJSONForAPIClient(t *testing.T) {
 	store := NewMemoryStore()
-	store.Save([]Route{{Host: "web.localhost", Target: "http://127.0.0.1:1"}})
+	store.Save([]Route{{Host: "web.localhost", PreferredScheme: "https", Target: "http://127.0.0.1:1"}})
 	srv := NewServer(Config{Token: "secret", Store: store})
 
 	req := httptest.NewRequest(http.MethodGet, "http://web.localhost/api", nil)
@@ -1539,7 +1544,7 @@ func TestProxyHostMatchIsCaseInsensitive(t *testing.T) {
 	defer backend.Close()
 
 	store := NewMemoryStore()
-	store.Save([]Route{{Host: "eventca.localhost", Target: backend.URL}})
+	store.Save([]Route{{Host: "eventca.localhost", PreferredScheme: "http", Target: backend.URL}})
 	srv := NewServer(Config{Token: "secret", Store: store})
 
 	req := httptest.NewRequest(http.MethodGet, "http://EventCA.localhost/", nil)
@@ -1583,7 +1588,7 @@ func TestProxySupportsUpgradeRequests(t *testing.T) {
 	defer backend.Close()
 
 	store := NewMemoryStore()
-	store.Save([]Route{{Host: "hmr.localhost", Target: backend.URL}})
+	store.Save([]Route{{Host: "hmr.localhost", PreferredScheme: "http", Target: backend.URL}})
 	routerServer := httptest.NewServer(NewServer(Config{Token: "secret", Store: store}).HTTPHandler())
 	defer routerServer.Close()
 
@@ -1713,7 +1718,7 @@ func TestListenAndProxyOnHighPort(t *testing.T) {
 	defer backend.Close()
 
 	store := NewMemoryStore()
-	store.Save([]Route{{Host: "app.localhost", Target: backend.URL}})
+	store.Save([]Route{{Host: "app.localhost", PreferredScheme: "http", Target: backend.URL}})
 	srv := NewServer(Config{Token: "secret", Store: store})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1832,7 +1837,7 @@ func TestStartProxiesForwardedHeadersOverHTTP(t *testing.T) {
 	defer backend.Close()
 
 	store := NewRouteStore(filepath.Join(stateDir, RoutesFilename))
-	if err := store.Save([]Route{{Host: "smoke.localhost", Target: backend.URL}}); err != nil {
+	if err := store.Save([]Route{{Host: "smoke.localhost", PreferredScheme: "http", Target: backend.URL}}); err != nil {
 		t.Fatal(err)
 	}
 	running, err := Start(t.Context(), StartConfig{
@@ -1888,7 +1893,7 @@ func TestStartProxiesForwardedHeadersOverHTTPS(t *testing.T) {
 	defer backend.Close()
 
 	store := NewRouteStore(filepath.Join(stateDir, RoutesFilename))
-	if err := store.Save([]Route{{Host: "smoke.localhost", Target: backend.URL}}); err != nil {
+	if err := store.Save([]Route{{Host: "smoke.localhost", PreferredScheme: "https", Target: backend.URL}}); err != nil {
 		t.Fatal(err)
 	}
 	tlsCert, err := localcert.Store{StateDir: stateDir}.EnsureHostCert("smoke.localhost")
@@ -1936,6 +1941,79 @@ func TestStartProxiesForwardedHeadersOverHTTPS(t *testing.T) {
 	}
 	if resp.Header.Get("X-Smoke-Forwarded-Host") != "smoke.localhost" {
 		t.Fatalf("X-Forwarded-Host = %q, want smoke.localhost", resp.Header.Get("X-Smoke-Forwarded-Host"))
+	}
+}
+
+func TestStartAppliesRouteSchemePolicyAcrossListeners(t *testing.T) {
+	stateDir := t.TempDir()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, r.Host)
+	}))
+	defer backend.Close()
+	store := NewRouteStore(filepath.Join(stateDir, RoutesFilename))
+	if err := store.Save([]Route{
+		{Host: "secure.localhost", PreferredScheme: "https", Target: backend.URL},
+		{Host: "plain.localhost", PreferredScheme: "http", Target: backend.URL},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := localcert.Store{StateDir: stateDir}.EnsureHostCert("secure.localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := Start(t.Context(), StartConfig{
+		HTTPAddr: "127.0.0.1:0", HTTPSAddr: "127.0.0.1:0", AdminAddr: "127.0.0.1:0",
+		StateDir: stateDir, TLSConfig: &tls.Config{Certificates: []tls.Certificate{certificate}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+
+	httpClient := &http.Client{
+		Timeout:       2 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	tlsClient := &http.Client{
+		Timeout:   2 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	}
+	request := func(client *http.Client, rawURL, host string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = host
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { response.Body.Close() })
+		return response
+	}
+
+	redirected := request(httpClient, "http://"+running.HTTPAddr+"/path?x=1", "secure.localhost")
+	if redirected.StatusCode != http.StatusTemporaryRedirect || redirected.Header.Get("Location") != "https://secure.localhost/path?x=1" {
+		t.Fatalf("secure HTTP response = %d %#v", redirected.StatusCode, redirected.Header)
+	}
+	for _, test := range []struct {
+		client *http.Client
+		url    string
+		host   string
+	}{
+		{httpClient, "http://" + running.HTTPAddr + "/", "plain.localhost"},
+		{tlsClient, "https://" + running.HTTPSAddr + "/", "plain.localhost"},
+		{tlsClient, "https://" + running.HTTPSAddr + "/", "secure.localhost"},
+	} {
+		response := request(test.client, test.url, test.host)
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusOK || string(body) != test.host {
+			t.Fatalf("%s response = %d/%q", test.host, response.StatusCode, body)
+		}
 	}
 }
 
@@ -2098,7 +2176,7 @@ func TestCloseAllowsInFlightRequestToFinish(t *testing.T) {
 		w.Write([]byte("done"))
 	}))
 	defer backend.Close()
-	if err := store.Save([]Route{{Host: "app.localhost", Target: backend.URL}}); err != nil {
+	if err := store.Save([]Route{{Host: "app.localhost", PreferredScheme: "http", Target: backend.URL}}); err != nil {
 		t.Fatal(err)
 	}
 	running, err := Start(t.Context(), StartConfig{

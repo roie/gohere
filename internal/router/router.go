@@ -571,6 +571,9 @@ func (s *Server) HTTPHandler() http.Handler {
 			routeLoopResponse(w, r, route.Host)
 			return
 		}
+		if handleRouteCanonicalization(w, r, route) {
+			return
+		}
 
 		target, err := url.Parse(route.Target)
 		if err != nil {
