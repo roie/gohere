@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2806,23 +2807,131 @@ func TestRunWorkspaceServiceDiscoveryEnvUsesResolvedConflictHosts(t *testing.T) 
 	}
 }
 
+func TestPrepareDistinctGroupPlansRetriesAutoPortAgainstLaterFixedPort(t *testing.T) {
+	calls := make([]int, 2)
+	plans, err := prepareDistinctGroupPlans(2, func(i int) (RunPlan, error) {
+		calls[i]++
+		switch i {
+		case 0:
+			switch calls[i] {
+			case 1:
+				return RunPlan{Port: 46061, Env: []string{"PORT=46061"}, Command: []string{"dev", "--port", "46061"}}, nil
+			case 2:
+				return RunPlan{Port: 46062, Env: []string{"PORT=46062"}, Command: []string{"dev", "--port", "46062"}}, nil
+			default:
+				t.Fatalf("auto plan prepared %d times, want 2", calls[i])
+			}
+		case 1:
+			if calls[i] != 1 {
+				t.Fatalf("fixed plan prepared %d times, want 1", calls[i])
+			}
+			return RunPlan{Port: 46061, FixedPort: true, Env: []string{"PORT=46061"}, Command: []string{"dev", "--port", "46061"}}, nil
+		default:
+			t.Fatalf("unexpected plan index %d", i)
+		}
+		return RunPlan{}, nil
+	}, func(i int) string {
+		return []string{"web", "api"}[i]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := calls; !reflect.DeepEqual(got, []int{2, 1}) {
+		t.Fatalf("prepare calls = %v, want [2 1]", got)
+	}
+	if plans[0].Port != 46062 {
+		t.Fatalf("auto plan port = %d, want 46062", plans[0].Port)
+	}
+	if plans[1].Port != 46061 || !plans[1].FixedPort {
+		t.Fatalf("fixed plan = %#v, want unchanged fixed port 46061", plans[1])
+	}
+	assertEnv(t, plans[0].Env, "PORT", "46062")
+	if !strings.Contains(strings.Join(plans[0].Command, " "), "46062") {
+		t.Fatalf("auto command = %q, want retried port 46062", strings.Join(plans[0].Command, " "))
+	}
+	assertEnv(t, plans[1].Env, "PORT", "46061")
+	if !strings.Contains(strings.Join(plans[1].Command, " "), "46061") {
+		t.Fatalf("fixed command = %q, want fixed port 46061", strings.Join(plans[1].Command, " "))
+	}
+}
+
+func TestPrepareDistinctGroupPlansKeepsEarlierFixedPortAndRetriesLaterAutoPort(t *testing.T) {
+	calls := make([]int, 2)
+	plans, err := prepareDistinctGroupPlans(2, func(i int) (RunPlan, error) {
+		calls[i]++
+		switch i {
+		case 0:
+			if calls[i] != 1 {
+				t.Fatalf("fixed plan prepared %d times, want 1", calls[i])
+			}
+			return RunPlan{Port: 46061, FixedPort: true, Env: []string{"PORT=46061"}, Command: []string{"dev", "--port", "46061"}}, nil
+		case 1:
+			switch calls[i] {
+			case 1:
+				return RunPlan{Port: 46061, Env: []string{"PORT=46061"}, Command: []string{"dev", "--port", "46061"}}, nil
+			case 2:
+				return RunPlan{Port: 46062, Env: []string{"PORT=46062"}, Command: []string{"dev", "--port", "46062"}}, nil
+			default:
+				t.Fatalf("auto plan prepared %d times, want 2", calls[i])
+			}
+		default:
+			t.Fatalf("unexpected plan index %d", i)
+		}
+		return RunPlan{}, nil
+	}, func(i int) string {
+		return []string{"web", "api"}[i]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := calls; !reflect.DeepEqual(got, []int{1, 2}) {
+		t.Fatalf("prepare calls = %v, want [1 2]", got)
+	}
+	if plans[0].Port != 46061 || !plans[0].FixedPort {
+		t.Fatalf("fixed plan = %#v, want unchanged fixed port 46061", plans[0])
+	}
+	if plans[1].Port != 46062 {
+		t.Fatalf("auto plan port = %d, want 46062", plans[1].Port)
+	}
+	assertEnv(t, plans[0].Env, "PORT", "46061")
+	if !strings.Contains(strings.Join(plans[0].Command, " "), "46061") {
+		t.Fatalf("fixed command = %q, want fixed port 46061", strings.Join(plans[0].Command, " "))
+	}
+	assertEnv(t, plans[1].Env, "PORT", "46062")
+	if !strings.Contains(strings.Join(plans[1].Command, " "), "46062") {
+		t.Fatalf("auto command = %q, want retried port 46062", strings.Join(plans[1].Command, " "))
+	}
+}
+
 func TestRunMultiInjectsServiceDiscoveryEnv(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
+	oldChooseFreePortForHost := chooseFreePortForHostFunc
 	defer func() {
 		defaultAdminClientFunc = oldDefaultAdminClient
 		startRunnerFunc = oldStartRunner
+		chooseFreePortForHostFunc = oldChooseFreePortForHost
 	}()
 
 	defaultAdminClientFunc = func() (adminClient, error) {
 		return &multiRecordingAdminClient{}, nil
 	}
-	var envs [][]string
-	var envsMu sync.Mutex
+	ports := []int{46061, 46061, 46062}
+	chooseCalls := 0
+	chooseFreePortForHostFunc = func(host string) (int, error) {
+		if chooseCalls >= len(ports) {
+			t.Fatalf("chooseFreePortForHost called %d times, want at most %d", chooseCalls+1, len(ports))
+		}
+		port := ports[chooseCalls]
+		chooseCalls++
+		return port, nil
+	}
+	var configs []runner.Config
+	var configsMu sync.Mutex
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
-		envsMu.Lock()
-		envs = append(envs, cfg.Env)
-		envsMu.Unlock()
+		configsMu.Lock()
+		configs = append(configs, cfg)
+		configsMu.Unlock()
 		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 
@@ -2834,14 +2943,70 @@ func TestRunMultiInjectsServiceDiscoveryEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(envs) != 2 {
-		t.Fatalf("captured %d envs, want two", len(envs))
+	if chooseCalls != 3 {
+		t.Fatalf("chooseFreePortForHost calls = %d, want 3", chooseCalls)
+	}
+	if len(configs) != 2 {
+		t.Fatalf("captured %d runner configs, want two", len(configs))
+	}
+	gotPorts := []int{configs[0].ChosenPort, configs[1].ChosenPort}
+	sortedPorts := append([]int(nil), gotPorts...)
+	sort.Ints(sortedPorts)
+	if !reflect.DeepEqual(sortedPorts, []int{46061, 46062}) {
+		t.Fatalf("chosen ports = %v, want values [46061 46062]", gotPorts)
 	}
 	base := filepath.Base(dir)
-	for _, env := range envs {
-		assertEnv(t, env, "GOHERE_WEB_URL", "http://web."+base+".localhost")
-		assertEnv(t, env, "GOHERE_API_URL", "http://api."+base+".localhost")
-		assertMissingEnv(t, env, "GOHERE_SERVICES_JSON")
+	for _, cfg := range configs {
+		assertEnv(t, cfg.Env, "PORT", strconv.Itoa(cfg.ChosenPort))
+		if !strings.Contains(strings.Join(cfg.Command, " "), strconv.Itoa(cfg.ChosenPort)) {
+			t.Fatalf("command %q does not include chosen port %d", strings.Join(cfg.Command, " "), cfg.ChosenPort)
+		}
+		assertEnv(t, cfg.Env, "GOHERE_WEB_URL", "http://web."+base+".localhost")
+		assertEnv(t, cfg.Env, "GOHERE_API_URL", "http://api."+base+".localhost")
+		assertMissingEnv(t, cfg.Env, "GOHERE_SERVICES_JSON")
+	}
+}
+
+func TestRunWorkspaceFailsWhenAutoPortSelectionCannotFindDistinctPort(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	oldChooseFreePortForHost := chooseFreePortForHostFunc
+	defer func() {
+		defaultAdminClientFunc = oldDefaultAdminClient
+		startRunnerFunc = oldStartRunner
+		chooseFreePortForHostFunc = oldChooseFreePortForHost
+	}()
+
+	defaultAdminClientFunc = func() (adminClient, error) {
+		return &multiRecordingAdminClient{}, nil
+	}
+	starts := 0
+	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
+		starts++
+		return &runner.Result{Port: cfg.ChosenPort}, nil
+	}
+	chooseCalls := 0
+	chooseFreePortForHostFunc = func(host string) (int, error) {
+		chooseCalls++
+		return 46061, nil
+	}
+
+	root := tempProject(t, map[string]string{
+		"package.json":             `{"name":"ctrltube","workspaces":["apps/*"],"scripts":{"dev":"pnpm --parallel --filter @ctrltube/worker --filter @ctrltube/web dev"}}`,
+		"pnpm-lock.yaml":           "",
+		"apps/web/package.json":    `{"name":"@ctrltube/web","scripts":{"dev":"vite"}}`,
+		"apps/worker/package.json": `{"name":"@ctrltube/worker","scripts":{"dev":"wrangler dev"}}`,
+	})
+
+	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev"}, root, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "worker") || !strings.Contains(err.Error(), "distinct auto port") {
+		t.Fatalf("error = %v, want distinct auto port retry failure for worker", err)
+	}
+	if chooseCalls != 9 {
+		t.Fatalf("chooseFreePortForHost calls = %d, want 9", chooseCalls)
+	}
+	if starts != 0 {
+		t.Fatalf("started %d children before duplicate auto-port planning failed", starts)
 	}
 }
 

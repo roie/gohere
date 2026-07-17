@@ -451,7 +451,8 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 
 	var resolvedRouter runRouter
 	prepareHost := "127.0.0.1"
-	if detectWSLFunc() {
+	isWSL := detectWSLFunc()
+	if isWSL {
 		rr, err := ensureRunRouter()
 		if err != nil {
 			return err
@@ -462,19 +463,32 @@ func runWorkspace(ctx context.Context, cmd cli.Command, root string, pm project.
 		}
 	}
 
-	for _, workspacePackage := range packages {
+	sources := make([]string, len(packages))
+	for i, workspacePackage := range packages {
+		sources[i] = workspacePackage.ShortName
+	}
+	plans, err := prepareDistinctGroupPlans(len(packages), func(i int) (RunPlan, error) {
+		workspacePackage := packages[i]
 		plan, err := prepareWorkspacePackageRun(cmd, root, pm, workspacePackage, prepareHost)
 		if err != nil {
-			return err
+			return RunPlan{}, err
 		}
-		if detectWSLFunc() {
+		if isWSL {
 			applyRunRouter(&plan, resolvedRouter)
 		}
+		return plan, nil
+	}, func(i int) string {
+		return sources[i]
+	})
+	if err != nil {
+		return err
+	}
+	for i, workspacePackage := range packages {
 		itemCmd := cmd
 		itemCmd.Script = workspacePackage.ShortName
 		itemCmd.Scripts = nil
 		itemCmd.ExplicitScript = true
-		items = append(items, multiRunItem{cmd: itemCmd, plan: plan})
+		items = append(items, multiRunItem{cmd: itemCmd, plan: plans[i]})
 	}
 	if !routerResolved {
 		rr, err := ensureRunRouter()
@@ -547,6 +561,44 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 	}, nil
 }
 
+const maxDistinctGroupPortAttempts = 8
+
+func prepareDistinctGroupPlans(count int, prepare func(int) (RunPlan, error), source func(int) string) ([]RunPlan, error) {
+	plans := make([]RunPlan, count)
+	fixedPorts := map[int]bool{}
+	for i := range count {
+		plan, err := prepare(i)
+		if err != nil {
+			return nil, err
+		}
+		plans[i] = plan
+		if plan.FixedPort {
+			fixedPorts[plan.Port] = true
+		}
+	}
+
+	acceptedAutoPorts := map[int]bool{}
+	for i := range count {
+		if plans[i].FixedPort {
+			continue
+		}
+		attempts := 1
+		for fixedPorts[plans[i].Port] || acceptedAutoPorts[plans[i].Port] {
+			if attempts >= maxDistinctGroupPortAttempts {
+				return nil, fmt.Errorf("gohere error: could not choose a distinct auto port for %s after %d attempts", source(i), maxDistinctGroupPortAttempts)
+			}
+			plan, err := prepare(i)
+			if err != nil {
+				return nil, err
+			}
+			plans[i] = plan
+			attempts++
+		}
+		acceptedAutoPorts[plans[i].Port] = true
+	}
+	return plans, nil
+}
+
 type multiRunItem struct {
 	cmd    cli.Command
 	plan   RunPlan
@@ -573,7 +625,8 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 
 	var resolvedRouter runRouter
 	prepareHost := "127.0.0.1"
-	if detectWSLFunc() {
+	isWSL := detectWSLFunc()
+	if isWSL {
 		rr, err := ensureRunRouter()
 		if err != nil {
 			return err
@@ -584,24 +637,36 @@ func runMulti(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr i
 		}
 	}
 
-	for _, script := range cmd.Scripts {
+	plans, err := prepareDistinctGroupPlans(len(cmd.Scripts), func(i int) (RunPlan, error) {
+		script := cmd.Scripts[i]
 		itemCmd := cmd
 		itemCmd.Script = script
 		itemCmd.Scripts = nil
 		plan, err := prepareRunWithHost(itemCmd, cwd, prepareHost)
 		if err != nil {
-			return err
+			return RunPlan{}, err
 		}
 		if plan.Static {
-			return errors.New("gohere error: multiple projects only support package scripts")
+			return RunPlan{}, errors.New("gohere error: multiple projects only support package scripts")
 		}
 		plan.Host = multiScriptHost(script, plan.Host)
 		plan.Name = strings.TrimSuffix(plan.Host, ".localhost")
 		plan.Mode = "multi"
-		if detectWSLFunc() {
+		if isWSL {
 			applyRunRouter(&plan, resolvedRouter)
 		}
-		items = append(items, multiRunItem{cmd: itemCmd, plan: plan})
+		return plan, nil
+	}, func(i int) string {
+		return cmd.Scripts[i]
+	})
+	if err != nil {
+		return err
+	}
+	for i, script := range cmd.Scripts {
+		itemCmd := cmd
+		itemCmd.Script = script
+		itemCmd.Scripts = nil
+		items = append(items, multiRunItem{cmd: itemCmd, plan: plans[i]})
 	}
 	if !routerResolved {
 		rr, err := ensureRunRouter()
