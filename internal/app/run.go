@@ -377,6 +377,9 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		}
 		replayCapturedOutput(stderr, liveStdout.capture(), liveStderr.capture())
 		if errors.Is(err, runner.ErrProcessFinished) {
+			if cmd.ShareMode == "lan" {
+				return lanShareNoServerError(cmd)
+			}
 			fmt.Fprint(stdout, runFinishedOutput(cmd))
 			return nil
 		}
@@ -412,6 +415,7 @@ func shouldRunWorkspace(cmd cli.Command) bool {
 		!cmd.ExplicitScript &&
 		!cmd.Live &&
 		cmd.As == "" &&
+		cmd.ShareMode == "" &&
 		cmd.TargetPort == 0
 }
 

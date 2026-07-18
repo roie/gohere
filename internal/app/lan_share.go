@@ -41,6 +41,10 @@ func deleteLANShare(ctx context.Context, client adminClient, ref router.RouteRef
 	return lanClient.DeleteLANShare(ctx, ref)
 }
 
+func lanShareNoServerError(cmd cli.Command) error {
+	return fmt.Errorf("gohere error: %s did not open a server, so LAN sharing was not started", runName(cmd))
+}
+
 func printLANShare(output io.Writer, result *router.LANShareResult) {
 	if result == nil {
 		return

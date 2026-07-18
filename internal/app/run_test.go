@@ -1595,6 +1595,21 @@ func TestRunPlannedRollsBackReservationWhenActivationFails(t *testing.T) {
 	}
 }
 
+func TestRunLANShareFailsWhenLazyTaskDoesNotOpenServer(t *testing.T) {
+	oldDefaultAdminClient := defaultAdminClientFunc
+	oldStartRunner := startRunnerFunc
+	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
+	defaultAdminClientFunc = func() (adminClient, error) { return nil, errors.New("router should not be touched") }
+	startRunnerFunc = func(context.Context, runner.Config) (*runner.Result, error) {
+		return nil, runner.ErrProcessFinished
+	}
+	dir := tempProject(t, map[string]string{"package.json": `{"scripts":{"build":"vite build"}}`})
+	err := Run(t.Context(), cli.Command{Kind: cli.CommandRun, Script: "build", ExplicitScript: true, ShareMode: "lan"}, dir, io.Discard, io.Discard)
+	if err == nil || err.Error() != "gohere error: build did not open a server, so LAN sharing was not started" {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
 func TestRunLazyTaskDoesNotResolveRouterOrInjectRuntimeURL(t *testing.T) {
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc

@@ -132,6 +132,9 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 		}
 		replayCapturedOutput(stderr, liveStdout.capture(), liveStderr.capture())
 		if errors.Is(err, runner.ErrProcessFinished) {
+			if cmd.ShareMode == "lan" {
+				return lanShareNoServerError(cmd)
+			}
 			fmt.Fprint(stdout, runFinishedOutput(cmd))
 			return nil
 		}
