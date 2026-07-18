@@ -2,29 +2,31 @@ name: Native LAN mDNS
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Native fixture to run
+        required: true
+        default: windows
+        type: choice
+        options:
+          - windows
+          - linux
+          - macos
+          - all
 
 permissions:
   contents: read
 
 jobs:
-  unix-coexistence:
-    name: ${{ matrix.name }} coexistence
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux Avahi
-            runner: [self-hosted, linux]
-            service_check: systemctl is-active --quiet avahi-daemon
-          - name: macOS Bonjour
-            runner: [self-hosted, macos]
-            service_check: pgrep -x mDNSResponder
-    runs-on: ${{ matrix.runner }}
+  linux-coexistence:
+    name: Linux Avahi coexistence
+    if: inputs.target == 'linux' || inputs.target == 'all'
+    runs-on: [self-hosted, linux]
     timeout-minutes: 20
     env:
       GOHERE_NATIVE_MDNS_TEST: "1"
-      LAN_MDNS_INTERFACE_INDEX: ${{ vars.LAN_MDNS_INTERFACE_INDEX }}
-      LAN_MDNS_PREFIX: ${{ vars.LAN_MDNS_PREFIX }}
+      LAN_MDNS_INTERFACE_INDEX: ${{ vars.LAN_MDNS_LINUX_INTERFACE_INDEX }}
+      LAN_MDNS_PREFIX: ${{ vars.LAN_MDNS_LINUX_PREFIX }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -38,11 +40,43 @@ jobs:
           cache: false
 
       - name: Verify fixture
-        shell: bash
         run: |
           test -n "$LAN_MDNS_INTERFACE_INDEX"
           test -n "$LAN_MDNS_PREFIX"
-          ${{ matrix.service_check }}
+          systemctl is-active --quiet avahi-daemon
+
+      - name: Test selected-interface transport
+        run: go test ./internal/lanmdns -run UnixTransport -v -count=10
+
+      - name: Test responder end to end
+        run: go test ./internal/lanmdns -run NativeUnixResponder -v -count=10
+
+  macos-coexistence:
+    name: macOS Bonjour coexistence
+    if: inputs.target == 'macos' || inputs.target == 'all'
+    runs-on: [self-hosted, macos]
+    timeout-minutes: 20
+    env:
+      GOHERE_NATIVE_MDNS_TEST: "1"
+      LAN_MDNS_INTERFACE_INDEX: ${{ vars.LAN_MDNS_MACOS_INTERFACE_INDEX }}
+      LAN_MDNS_PREFIX: ${{ vars.LAN_MDNS_MACOS_PREFIX }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Verify fixture
+        run: |
+          test -n "$LAN_MDNS_INTERFACE_INDEX"
+          test -n "$LAN_MDNS_PREFIX"
+          pgrep -x mDNSResponder
 
       - name: Test selected-interface transport
         run: go test ./internal/lanmdns -run UnixTransport -v -count=10
@@ -52,12 +86,13 @@ jobs:
 
   windows-transport:
     name: Windows transport coexistence
+    if: inputs.target == 'windows' || inputs.target == 'all'
     runs-on: [self-hosted, windows]
     timeout-minutes: 15
     env:
       GOHERE_NATIVE_MDNS_TEST: "1"
-      LAN_MDNS_INTERFACE_INDEX: ${{ vars.LAN_MDNS_INTERFACE_INDEX }}
-      LAN_MDNS_PREFIX: ${{ vars.LAN_MDNS_PREFIX }}
+      LAN_MDNS_INTERFACE_INDEX: ${{ vars.LAN_MDNS_WINDOWS_INTERFACE_INDEX }}
+      LAN_MDNS_PREFIX: ${{ vars.LAN_MDNS_WINDOWS_PREFIX }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
