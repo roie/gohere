@@ -74,7 +74,7 @@ func TestNewRejectsInvalidInterfaceBeforeStartingTransport(t *testing.T) {
 }
 
 func TestRegisterReturnsStableDistinctHandlesForSharedClaim(t *testing.T) {
-	responder, err := New(context.Background(), testInterface(), immediateCoordinator{}, withTransport(newFakeTransport()))
+	responder, err := New(context.Background(), testInterface(), immediateCoordinator{}, withTransport(newFakeTransport()), withImmediateRegistration())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestRegisterReturnsStableDistinctHandlesForSharedClaim(t *testing.T) {
 }
 
 func TestClosingOneSharedHandleKeepsOtherUsable(t *testing.T) {
-	responder, err := New(context.Background(), testInterface(), immediateCoordinator{}, withTransport(newFakeTransport()))
+	responder, err := New(context.Background(), testInterface(), immediateCoordinator{}, withTransport(newFakeTransport()), withImmediateRegistration())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestClosingOneSharedHandleKeepsOtherUsable(t *testing.T) {
 
 func TestBlockedReadPumpDoesNotBlockRegistrationOrClose(t *testing.T) {
 	transport := newFakeTransport()
-	responder, err := New(context.Background(), testInterface(), immediateCoordinator{}, withTransport(transport))
+	responder, err := New(context.Background(), testInterface(), immediateCoordinator{}, withTransport(transport), withImmediateRegistration())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestBlockedReadPumpDoesNotBlockRegistrationOrClose(t *testing.T) {
 }
 
 func TestResponderCloseIsIdempotent(t *testing.T) {
-	responder, err := New(context.Background(), testInterface(), immediateCoordinator{}, withTransport(newFakeTransport()))
+	responder, err := New(context.Background(), testInterface(), immediateCoordinator{}, withTransport(newFakeTransport()), withImmediateRegistration())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -67,19 +67,37 @@ func goodbyeMessage(hostname string, addr netip.Addr) ([]byte, error) {
 }
 
 func responseMessage(query *dns.Msg, hostname string, addr netip.Addr, legacy bool) ([]byte, error) {
-	if query == nil || len(query.Question) != 1 {
-		return nil, fmt.Errorf("mDNS response requires exactly one question")
+	if query == nil || len(query.Question) == 0 {
+		return nil, fmt.Errorf("mDNS response requires a question")
 	}
 	hostname, err := canonicalHostname(hostname)
 	if err != nil {
 		return nil, err
 	}
-	question := query.Question[0]
-	if !strings.EqualFold(dns.Fqdn(question.Name), hostname) {
-		return nil, fmt.Errorf("mDNS question name %q does not match %q", question.Name, hostname)
+	wantA := false
+	wantNSEC := false
+	matched := false
+	for _, question := range query.Question {
+		if !strings.EqualFold(dns.Fqdn(question.Name), hostname) {
+			continue
+		}
+		class := question.Qclass &^ cacheFlushBit
+		if class != dns.ClassINET && class != dns.ClassANY {
+			continue
+		}
+		matched = true
+		switch question.Qtype {
+		case dns.TypeA:
+			wantA = true
+		case dns.TypeANY:
+			wantA = true
+			wantNSEC = true
+		default:
+			wantNSEC = true
+		}
 	}
-	if question.Qclass&^cacheFlushBit != dns.ClassINET && question.Qclass != dns.ClassANY {
-		return nil, fmt.Errorf("unsupported mDNS question class %d", question.Qclass)
+	if !matched {
+		return nil, fmt.Errorf("mDNS query does not ask for %q", hostname)
 	}
 
 	ttl := recordTTL
@@ -91,21 +109,15 @@ func responseMessage(query *dns.Msg, hostname string, addr netip.Addr, legacy bo
 		msg.SetReply(query)
 		msg.Authoritative = true
 	}
-
-	switch question.Qtype {
-	case dns.TypeA:
+	if wantA {
 		a, err := aRecord(hostname, addr, ttl, flush)
 		if err != nil {
 			return nil, err
 		}
-		msg.Answer = []dns.RR{a}
-	case dns.TypeANY:
-		msg.Answer, err = ownedRecords(hostname, addr, ttl, flush)
-		if err != nil {
-			return nil, err
-		}
-	default:
-		msg.Answer = []dns.RR{nsecRecord(hostname, ttl, flush)}
+		msg.Answer = append(msg.Answer, a)
+	}
+	if wantNSEC {
+		msg.Answer = append(msg.Answer, nsecRecord(hostname, ttl, flush))
 	}
 	return packMessage(msg)
 }

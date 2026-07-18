@@ -14,3 +14,38 @@ func (r *Responder) runReadPump() {
 		}
 	}
 }
+
+func (r *Responder) runWritePump() {
+	defer r.workers.Done()
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case request := <-r.outbound:
+			err := r.transport.WritePacket(r.ctx, request.packet)
+			select {
+			case r.writeResults <- writeResult{err: err, shutdown: request.shutdown}:
+			case <-r.ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+func (r *Responder) runCoordinatorPump() {
+	defer r.workers.Done()
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case request := <-r.coordinatorRequests:
+			err := r.coordinator.Prepare(r.ctx, request.change)
+			result := coordinatorResult{requested: request.requested, generation: request.generation, err: err}
+			select {
+			case r.coordinatorResults <- result:
+			case <-r.ctx.Done():
+				return
+			}
+		}
+	}
+}

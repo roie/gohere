@@ -4,13 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
 
 const (
-	commandQueueCapacity = 32
-	inboundQueueCapacity = 64
+	commandQueueCapacity     = 32
+	inboundQueueCapacity     = 64
+	outboundQueueCapacity    = 64
+	coordinatorQueueCapacity = 16
 )
 
 type transportFactory func(Interface) (transport, error)
@@ -18,6 +22,9 @@ type transportFactory func(Interface) (transport, error)
 type responderConfig struct {
 	transport        transport
 	transportFactory transportFactory
+	clock            actorClock
+	probeDelay       func(time.Duration) time.Duration
+	bypassProbing    bool
 }
 
 type Option func(*responderConfig)
@@ -30,16 +37,36 @@ func withTransportFactory(factory transportFactory) Option {
 	return func(cfg *responderConfig) { cfg.transportFactory = factory }
 }
 
+func withClock(value actorClock) Option {
+	return func(cfg *responderConfig) { cfg.clock = value }
+}
+
+func withProbeDelay(delay func(time.Duration) time.Duration) Option {
+	return func(cfg *responderConfig) { cfg.probeDelay = delay }
+}
+
+func withImmediateRegistration() Option {
+	return func(cfg *responderConfig) { cfg.bypassProbing = true }
+}
+
 type Responder struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	transport   transport
-	coordinator Coordinator
-	commands    chan any
-	inbound     chan packet
-	workers     sync.WaitGroup
-	closeOnce   sync.Once
-	closeErr    error
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	transport           transport
+	coordinator         Coordinator
+	iface               Interface
+	clock               actorClock
+	probeDelay          func(time.Duration) time.Duration
+	bypassProbing       bool
+	commands            chan any
+	inbound             chan packet
+	outbound            chan writeRequest
+	writeResults        chan writeResult
+	coordinatorRequests chan coordinatorRequest
+	coordinatorResults  chan coordinatorResult
+	workers             sync.WaitGroup
+	closeOnce           sync.Once
+	closeErr            error
 }
 
 func New(parent context.Context, iface Interface, coordinator Coordinator, options ...Option) (*Responder, error) {
@@ -52,7 +79,24 @@ func New(parent context.Context, iface Interface, coordinator Coordinator, optio
 	if coordinator == nil {
 		return nil, fmt.Errorf("LAN mDNS coordinator is required")
 	}
-	cfg := responderConfig{transportFactory: newPlatformTransport}
+	cfg := responderConfig{
+		transportFactory: newPlatformTransport,
+		clock:            realClock{},
+		probeDelay: func(max time.Duration) time.Duration {
+			if max <= 0 {
+				return 0
+			}
+			var value [8]byte
+			if _, err := rand.Read(value[:]); err != nil {
+				return 0
+			}
+			var number uint64
+			for _, b := range value {
+				number = number<<8 | uint64(b)
+			}
+			return time.Duration(number % uint64(max+1))
+		},
+	}
 	for _, option := range options {
 		option(&cfg)
 	}
@@ -66,16 +110,26 @@ func New(parent context.Context, iface Interface, coordinator Coordinator, optio
 	}
 	ctx, cancel := context.WithCancel(parent)
 	responder := &Responder{
-		ctx:         ctx,
-		cancel:      cancel,
-		transport:   selectedTransport,
-		coordinator: coordinator,
-		commands:    make(chan any, commandQueueCapacity),
-		inbound:     make(chan packet, inboundQueueCapacity),
+		ctx:                 ctx,
+		cancel:              cancel,
+		transport:           selectedTransport,
+		coordinator:         coordinator,
+		iface:               iface,
+		clock:               cfg.clock,
+		probeDelay:          cfg.probeDelay,
+		bypassProbing:       cfg.bypassProbing,
+		commands:            make(chan any, commandQueueCapacity),
+		inbound:             make(chan packet, inboundQueueCapacity),
+		outbound:            make(chan writeRequest, outboundQueueCapacity),
+		writeResults:        make(chan writeResult, outboundQueueCapacity),
+		coordinatorRequests: make(chan coordinatorRequest, coordinatorQueueCapacity),
+		coordinatorResults:  make(chan coordinatorResult, coordinatorQueueCapacity),
 	}
-	responder.workers.Add(2)
+	responder.workers.Add(4)
 	go responder.runActor()
 	go responder.runReadPump()
+	go responder.runWritePump()
+	go responder.runCoordinatorPump()
 	return responder, nil
 }
 
@@ -119,10 +173,52 @@ func (r *Responder) release(ctx context.Context, id RegistrationID) error {
 	}
 }
 
+func (r *Responder) enqueueWrite(packet outboundPacket) bool {
+	return r.enqueueWriteRequest(writeRequest{packet: packet})
+}
+
+func (r *Responder) enqueueShutdownWrite(packet outboundPacket) bool {
+	return r.enqueueWriteRequest(writeRequest{packet: packet, shutdown: true})
+}
+
+func (r *Responder) enqueueWriteRequest(request writeRequest) bool {
+	select {
+	case r.outbound <- request:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Responder) fail(error) {
+	r.cancel()
+}
+
 func (r *Responder) Close() error {
 	r.closeOnce.Do(func() {
+		if r.ctx.Err() == nil {
+			reply := make(chan error, 1)
+			select {
+			case r.commands <- shutdownCommand{reply: reply}:
+				timer := time.NewTimer(time.Second)
+				select {
+				case err := <-reply:
+					r.closeErr = err
+				case <-timer.C:
+					r.closeErr = fmt.Errorf("LAN mDNS shutdown goodbye budget expired")
+				case <-r.ctx.Done():
+				}
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			case <-r.ctx.Done():
+			}
+		}
 		r.cancel()
-		r.closeErr = r.transport.Close()
+		r.closeErr = errors.Join(r.closeErr, r.transport.Close())
 		r.workers.Wait()
 	})
 	return r.closeErr
