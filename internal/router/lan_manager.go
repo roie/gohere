@@ -19,6 +19,7 @@ import (
 	"time"
 
 	goherecert "github.com/roie/gohere/internal/cert"
+	"github.com/roie/gohere/internal/lanfirewall"
 	"github.com/roie/gohere/internal/laninterface"
 	"github.com/roie/gohere/internal/lanmdns"
 )
@@ -43,6 +44,7 @@ type lanManagerConfig struct {
 	selectInterface  func(context.Context) (laninterface.Candidate, error)
 	issueCertificate func(string, time.Time) (tls.Certificate, error)
 	prepareTrust     func(laninterface.Candidate, string) (lanTrustRegistration, error)
+	prepareFirewall  func(context.Context) error
 	startIngress     func(context.Context, *Server, string, string) (lanIngress, error)
 	newResponder     func(context.Context, lanmdns.Interface, lanmdns.Coordinator) (lanHostnameResponder, error)
 	now              func() time.Time
@@ -81,6 +83,7 @@ func NewLANManager(ctx context.Context, server *Server, stateDir string) *LANMan
 			return laninterface.DiscoverAndSelect(ctx, nil)
 		},
 		issueCertificate: certificateStore.IssueEphemeralLANHostCert,
+		prepareFirewall:  lanfirewall.Ensure,
 		prepareTrust: func(iface laninterface.Candidate, hostname string) (lanTrustRegistration, error) {
 			ca, err := certificateStore.EnsureCA()
 			if err != nil {
@@ -309,6 +312,11 @@ func (m *LANManager) ensureNetworkLocked(ctx context.Context) error {
 	iface, err := m.config.selectInterface(ctx)
 	if err != nil {
 		return err
+	}
+	if m.config.prepareFirewall != nil {
+		if err := m.config.prepareFirewall(ctx); err != nil {
+			return err
+		}
 	}
 	address := iface.Prefix.Addr().String()
 	ingress, err := m.config.startIngress(m.ctx, m.server, net.JoinHostPort(address, "80"), net.JoinHostPort(address, "443"))
