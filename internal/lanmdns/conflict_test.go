@@ -32,11 +32,11 @@ func TestConflictingResponseStopsAnswersAndReprobesSameName(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	clock.Advance(250 * time.Millisecond)
+	clock.AdvanceToTimer(t, 250*time.Millisecond)
 	assertProbeWrite(t, transport.writeCh)
-	clock.Advance(250 * time.Millisecond)
+	clock.AdvanceToTimer(t, 250*time.Millisecond)
 	assertProbeWrite(t, transport.writeCh)
-	clock.Advance(250 * time.Millisecond)
+	clock.AdvanceToTimer(t, 250*time.Millisecond)
 	assertAnnouncementWrite(t, transport.writeCh)
 }
 

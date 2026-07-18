@@ -2,6 +2,7 @@ package lanmdns
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -38,6 +39,27 @@ func (c *manualClock) NewTimer(duration time.Duration) actorTimer {
 	timer := &manualTimer{clock: c, channel: make(chan time.Time, 1), deadline: c.now.Add(duration), active: true}
 	c.timers = append(c.timers, timer)
 	return timer
+}
+
+func (c *manualClock) AdvanceToTimer(t testing.TB, duration time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		c.mu.Lock()
+		active := false
+		for _, timer := range c.timers {
+			active = active || timer.active
+		}
+		c.mu.Unlock()
+		if active {
+			c.Advance(duration)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("actor did not schedule its next timer")
+		}
+		runtime.Gosched()
+	}
 }
 
 func (c *manualClock) Advance(duration time.Duration) {
@@ -82,6 +104,26 @@ func (t *manualTimer) Reset(duration time.Duration) bool {
 	return wasActive
 }
 
+func TestManualClockAdvanceToTimerWaitsForTimerReset(t *testing.T) {
+	clock := newManualClock()
+	timer := clock.NewTimer(time.Hour)
+	clock.Advance(time.Hour)
+	<-timer.C()
+	reset := make(chan struct{})
+	go func() {
+		close(reset)
+		time.Sleep(10 * time.Millisecond)
+		timer.Reset(250 * time.Millisecond)
+	}()
+	<-reset
+	clock.AdvanceToTimer(t, 250*time.Millisecond)
+	select {
+	case <-timer.C():
+	case <-time.After(time.Second):
+		t.Fatal("reset timer did not fire")
+	}
+}
+
 func TestProbeSequenceIncludesFinalObservationWindow(t *testing.T) {
 	clock := newManualClock()
 	transport := newFakeTransport()
@@ -105,9 +147,9 @@ func TestProbeSequenceIncludesFinalObservationWindow(t *testing.T) {
 	}()
 
 	assertProbeWrite(t, transport.writeCh)
-	clock.Advance(250 * time.Millisecond)
+	clock.AdvanceToTimer(t, 250*time.Millisecond)
 	assertProbeWrite(t, transport.writeCh)
-	clock.Advance(250 * time.Millisecond)
+	clock.AdvanceToTimer(t, 250*time.Millisecond)
 	assertProbeWrite(t, transport.writeCh)
 
 	select {
@@ -118,9 +160,9 @@ func TestProbeSequenceIncludesFinalObservationWindow(t *testing.T) {
 	default:
 	}
 
-	clock.Advance(250 * time.Millisecond)
+	clock.AdvanceToTimer(t, 250*time.Millisecond)
 	assertAnnouncementWrite(t, transport.writeCh)
-	clock.Advance(time.Second)
+	clock.AdvanceToTimer(t, time.Second)
 	assertAnnouncementWrite(t, transport.writeCh)
 
 	select {

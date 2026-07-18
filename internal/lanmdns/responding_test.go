@@ -25,13 +25,13 @@ func activeTestResponder(t *testing.T) (*Responder, *manualClock, *fakeTransport
 		result <- registration
 	}()
 	assertProbeWrite(t, transport.writeCh)
-	clock.Advance(250 * time.Millisecond)
+	clock.AdvanceToTimer(t, 250*time.Millisecond)
 	assertProbeWrite(t, transport.writeCh)
-	clock.Advance(250 * time.Millisecond)
+	clock.AdvanceToTimer(t, 250*time.Millisecond)
 	assertProbeWrite(t, transport.writeCh)
-	clock.Advance(250 * time.Millisecond)
+	clock.AdvanceToTimer(t, 250*time.Millisecond)
 	assertAnnouncementWrite(t, transport.writeCh)
-	clock.Advance(time.Second)
+	clock.AdvanceToTimer(t, time.Second)
 	assertAnnouncementWrite(t, transport.writeCh)
 	select {
 	case registration := <-result:
@@ -119,7 +119,7 @@ func TestMulticastResponseWaitsForOneSecondRecordInterval(t *testing.T) {
 		t.Fatal("response ignored one-second multicast interval")
 	case <-time.After(50 * time.Millisecond):
 	}
-	clock.Advance(time.Second)
+	clock.AdvanceToTimer(t, time.Second)
 	msg := unpackTestMessage(t, readTestResponse(t, transport.writeCh).Payload)
 	assertARecord(t, msg.Answer[0], recordTTL, true)
 }
