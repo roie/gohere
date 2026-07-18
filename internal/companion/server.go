@@ -11,6 +11,11 @@ import (
 	"github.com/roie/gohere/internal/router"
 )
 
+type lanShareAuthority interface {
+	CreateLANShare(context.Context, router.RouteRef) (router.LANShareResult, error)
+	DeleteLANShare(context.Context, router.RouteRef) error
+}
+
 type Authority interface {
 	Info(context.Context) (Info, error)
 	ReadyInfo(context.Context) (Info, error)
@@ -193,6 +198,31 @@ func dispatch(ctx context.Context, authority Authority, request Request) Respons
 			return errorResponse("invalid_request", errors.New("delete-route-ref-v2 requires ref"))
 		}
 		if err := authority.DeleteRouteRef(ctx, *request.Ref); err != nil {
+			return authorityError(err)
+		}
+		return Response{OK: true}
+	case OperationCreateLANShare:
+		if request.Ref == nil {
+			return errorResponse("invalid_request", errors.New("create-lan-share-v1 requires ref"))
+		}
+		lanAuthority, ok := authority.(lanShareAuthority)
+		if !ok {
+			return errorResponse("unsupported_operation", errors.New("Windows authority does not support LAN sharing"))
+		}
+		result, err := lanAuthority.CreateLANShare(ctx, *request.Ref)
+		if err != nil {
+			return authorityError(err)
+		}
+		return Response{OK: true, LANShare: &result}
+	case OperationDeleteLANShare:
+		if request.Ref == nil {
+			return errorResponse("invalid_request", errors.New("delete-lan-share-v1 requires ref"))
+		}
+		lanAuthority, ok := authority.(lanShareAuthority)
+		if !ok {
+			return errorResponse("unsupported_operation", errors.New("Windows authority does not support LAN sharing"))
+		}
+		if err := lanAuthority.DeleteLANShare(ctx, *request.Ref); err != nil {
 			return authorityError(err)
 		}
 		return Response{OK: true}

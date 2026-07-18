@@ -14,6 +14,8 @@ const (
 	CapabilityReleaseRoutes  = "control.release-routes-v2"
 	CapabilityRenewRoutes    = "control.renew-routes-v2"
 	CapabilityDeleteRouteRef = "control.delete-route-ref-v2"
+	CapabilityCreateLANShare = "control.create-lan-share-v1"
+	CapabilityDeleteLANShare = "control.delete-lan-share-v1"
 )
 
 type Operation string
@@ -38,6 +40,8 @@ const (
 	OperationReleaseRoutes  Operation = "release-routes-v2"
 	OperationRenewRoutes    Operation = "renew-routes-v2"
 	OperationDeleteRouteRef Operation = "delete-route-ref-v2"
+	OperationCreateLANShare Operation = "create-lan-share-v1"
+	OperationDeleteLANShare Operation = "delete-lan-share-v1"
 )
 
 type Request struct {
@@ -67,6 +71,7 @@ type Response struct {
 	CACertificate   string                    `json:"caCertificate,omitempty"`
 	Reachable       *bool                     `json:"reachable,omitempty"`
 	Reservation     *router.ReservationResult `json:"reservation,omitempty"`
+	LANShare        *router.LANShareResult    `json:"lanShare,omitempty"`
 }
 
 type ProtocolError struct {

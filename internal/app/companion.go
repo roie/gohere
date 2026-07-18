@@ -154,6 +154,8 @@ func (a *companionAuthority) Info(ctx context.Context) (companion.Info, error) {
 		companion.CapabilityReleaseRoutes,
 		companion.CapabilityRenewRoutes,
 		companion.CapabilityDeleteRouteRef,
+		companion.CapabilityCreateLANShare,
+		companion.CapabilityDeleteLANShare,
 		"control.ready-info",
 		"control.route-statuses",
 		"control.routes",
@@ -337,6 +339,30 @@ func (a *companionAuthority) DeleteRoute(ctx context.Context, host string) error
 		return err
 	}
 	return client.DeleteRoute(ctx, host)
+}
+
+func (a *companionAuthority) CreateLANShare(ctx context.Context, ref router.RouteRef) (router.LANShareResult, error) {
+	client, err := a.client()
+	if err != nil {
+		return router.LANShareResult{}, err
+	}
+	lanClient, ok := client.(lanShareClient)
+	if !ok {
+		return router.LANShareResult{}, errors.New("Windows router does not support LAN sharing")
+	}
+	return lanClient.CreateLANShare(ctx, ref)
+}
+
+func (a *companionAuthority) DeleteLANShare(ctx context.Context, ref router.RouteRef) error {
+	client, err := a.client()
+	if err != nil {
+		return err
+	}
+	lanClient, ok := client.(lanShareClient)
+	if !ok {
+		return errors.New("Windows router does not support LAN sharing")
+	}
+	return lanClient.DeleteLANShare(ctx, ref)
 }
 
 func (a *companionAuthority) ProbeTarget(ctx context.Context, target string) (bool, error) {

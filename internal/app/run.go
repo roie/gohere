@@ -1166,6 +1166,9 @@ func resolveRunRouter(ctx context.Context, stderr io.Writer, cmd cli.Command) (r
 		companion.CapabilityRenewRoutes,
 		companion.CapabilityDeleteRouteRef,
 	}
+	if cmd.ShareMode == "lan" {
+		requiredCapabilities = append(requiredCapabilities, companion.CapabilityCreateLANShare, companion.CapabilityDeleteLANShare)
+	}
 	opened, err := openWindowsCompanion(ctx, requiredCapabilities...)
 	if err != nil {
 		return runRouter{}, err

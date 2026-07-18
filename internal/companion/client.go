@@ -205,6 +205,22 @@ func (c Client) StopRouter(ctx context.Context) (string, error) {
 	return response.Output, err
 }
 
+func (c Client) CreateLANShare(ctx context.Context, ref router.RouteRef) (router.LANShareResult, error) {
+	response, err := c.Call(ctx, Request{Operation: OperationCreateLANShare, Ref: &ref})
+	if err != nil {
+		return router.LANShareResult{}, err
+	}
+	if response.LANShare == nil {
+		return router.LANShareResult{}, errors.New("Windows authority returned no LAN share")
+	}
+	return *response.LANShare, nil
+}
+
+func (c Client) DeleteLANShare(ctx context.Context, ref router.RouteRef) error {
+	_, err := c.Call(ctx, Request{Operation: OperationDeleteLANShare, Ref: &ref})
+	return err
+}
+
 func (c Client) UpsertRoute(ctx context.Context, route router.Route) error {
 	_, err := c.Call(ctx, Request{Operation: OperationUpsertRoute, Route: &route})
 	return err
