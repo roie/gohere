@@ -116,7 +116,7 @@ func (s *Server) LANHandler() http.Handler {
 			http.NotFound(w, request)
 			return
 		}
-		forwarded := request.Clone(request.Context())
+		forwarded := request.Clone(withLANProxyContext(request.Context(), hostname, route.Host))
 		forwarded.Host = route.Host
 		loopbackHandler.ServeHTTP(w, forwarded)
 	})

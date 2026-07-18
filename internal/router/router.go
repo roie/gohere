@@ -602,6 +602,7 @@ func (s *Server) HTTPHandler() http.Handler {
 		}
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		proxy.Transport = s.proxyTransport
+		proxy.ModifyResponse = rewriteLANResponse
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 			if isUpgradeRequest(r) {
 				http.Error(w, "gohere websocket upstream unavailable", http.StatusBadGateway)
@@ -617,6 +618,7 @@ func (s *Server) HTTPHandler() http.Handler {
 		director := proxy.Director
 		proxy.Director = func(req *http.Request) {
 			director(req)
+			rewriteLANRequest(req, r)
 			setForwardedHeaders(req, r)
 			appendRouteHop(req, route.Host)
 		}
@@ -645,10 +647,20 @@ func (s *Server) handleRouterIdentity(w http.ResponseWriter, r *http.Request) {
 }
 
 func setForwardedHeaders(out, in *http.Request) {
-	out.Header.Del("Forwarded")
-	out.Header.Del("X-Forwarded-For")
-	out.Header.Set("X-Forwarded-Host", forwardedHost(in))
-	out.Header.Set("X-Forwarded-Proto", forwardedProto(in))
+	for name := range out.Header {
+		lower := strings.ToLower(name)
+		if lower == "forwarded" || strings.HasPrefix(lower, "x-forwarded-") {
+			out.Header.Del(name)
+		}
+	}
+	host := forwardedHost(in)
+	proto := forwardedProto(in)
+	if info, ok := lanProxyInfoFromContext(in.Context()); ok {
+		host = info.LANHost
+		proto = "https"
+	}
+	out.Header.Set("X-Forwarded-Host", host)
+	out.Header.Set("X-Forwarded-Proto", proto)
 }
 
 func forwardedHost(r *http.Request) string {
