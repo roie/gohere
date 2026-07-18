@@ -15,10 +15,11 @@ import (
 
 func TestFormatRoutesShowsCompactTable(t *testing.T) {
 	out := FormatRoutes([]RouteStatus{{
-		Route:  router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173", CWD: "/tmp/app", PID: 123},
+		Route: router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173", CWD: "/tmp/app", PID: 123,
+			LANShare: &router.LANShare{State: router.LANShareActive, Hostname: "app.local."}},
 		Status: RouteStatusUnknown,
 	}})
-	if !strings.Contains(out, "host") || !strings.Contains(out, "target") || !strings.Contains(out, "status") {
+	if !strings.Contains(out, "host") || !strings.Contains(out, "target") || !strings.Contains(out, "status") || !strings.Contains(out, "share") || !strings.Contains(out, "https://app.local") {
 		t.Fatalf("output = %q", out)
 	}
 	if !strings.Contains(out, "app.localhost") || !strings.Contains(out, "unknown") || strings.Contains(out, "dead") || strings.Contains(out, "cwd") || strings.Contains(out, "pid") {

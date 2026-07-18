@@ -76,6 +76,9 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 
 	if service.Reused {
 		if err := verifyPlannedTarget(ctx, client, route.Target, plan.OwnerEnv == "wsl"); err != nil {
+			if cmd.ShareMode != "" {
+				_ = deleteLANShare(ctx, client, route.Ref())
+			}
 			return err
 		}
 		lanShare, err = createLANShare(ctx, client, cmd, route.Ref())

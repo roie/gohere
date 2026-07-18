@@ -39,6 +39,13 @@ func TestLANHandlerRoutesOnlyRegisteredActiveShare(t *testing.T) {
 	if got := <-upstreamHost; got != "shop.localhost" {
 		t.Fatalf("upstream Host = %q", got)
 	}
+	stored, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored[0].LANShare.LastConnectedAt.IsZero() {
+		t.Fatal("LAN connection time was not recorded")
+	}
 }
 
 func TestLANHandlerRejectsUnsharedLocalhostUnknownAndMismatch(t *testing.T) {

@@ -4709,6 +4709,9 @@ func TestListJSONOutput(t *testing.T) {
 		ProjectName:    "vibe",
 		Name:           "vibe-oke",
 		StartedAt:      time.Date(2026, 5, 28, 1, 2, 3, 0, time.UTC),
+		LANShare: &router.LANShare{
+			State: router.LANShareSuspended, Hostname: "vibe.local.", InterfaceName: "Wi-Fi", Address: "192.168.1.42", SuspendedReason: "network changed",
+		},
 	}})
 	var out strings.Builder
 
@@ -4739,7 +4742,12 @@ func TestListJSONOutput(t *testing.T) {
 		route.LeaseExpiresAt != "2026-05-28T01:03:33Z" ||
 		route.ProjectName != "vibe" ||
 		route.Name != "vibe-oke" ||
-		route.StartedAt != "2026-05-28T01:02:03Z" {
+		route.StartedAt != "2026-05-28T01:02:03Z" ||
+		route.ShareURL != "https://vibe.local" ||
+		route.ShareState != "suspended" ||
+		route.LANInterface != "Wi-Fi" ||
+		route.LANAddress != "192.168.1.42" ||
+		route.LANSuspendedReason != "network changed" {
 		t.Fatalf("route = %#v", route)
 	}
 	if route.CanStop {

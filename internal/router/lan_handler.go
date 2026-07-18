@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type lanRouteBinding struct {
@@ -131,6 +132,7 @@ func (s *Server) LANHandler() http.Handler {
 			http.NotFound(w, request)
 			return
 		}
+		_ = MarkLANShareConnected(s.store, route.Ref(), time.Now())
 		forwarded := request.Clone(withLANProxyContext(request.Context(), hostname, route.Host))
 		forwarded.Host = route.Host
 		loopbackHandler.ServeHTTP(w, forwarded)

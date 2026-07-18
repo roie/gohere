@@ -122,6 +122,24 @@ func ActivateLANShare(store Store, ref RouteRef, activation LANActivation) error
 	})
 }
 
+func MarkLANShareConnected(store Store, ref RouteRef, now time.Time) error {
+	return UpdateStore(store, func(routes []Route) ([]Route, error) {
+		index := routeRefIndex(routes, ref)
+		if index < 0 {
+			return nil, ErrRouteRefMismatch
+		}
+		share := routes[index].LANShare
+		if share == nil || share.State != LANShareActive {
+			return routes, nil
+		}
+		now = now.UTC()
+		if share.LastConnectedAt.IsZero() || now.Sub(share.LastConnectedAt) >= time.Minute {
+			share.LastConnectedAt = now
+		}
+		return routes, nil
+	})
+}
+
 func SuspendLANShare(store Store, ref RouteRef, reason string) error {
 	return UpdateStore(store, func(routes []Route) ([]Route, error) {
 		index := routeRefIndex(routes, ref)

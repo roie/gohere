@@ -1970,32 +1970,38 @@ type ListOptions struct {
 }
 
 type listRoute struct {
-	ID             string `json:"id,omitempty"`
-	Generation     uint64 `json:"generation,omitempty"`
-	State          string `json:"state"`
-	Service        string `json:"service,omitempty"`
-	PreferredURL   string `json:"preferredUrl"`
-	Port           int    `json:"port,omitempty"`
-	Host           string `json:"host"`
-	Target         string `json:"target"`
-	Status         string `json:"status"`
-	PID            int    `json:"pid"`
-	CWD            string `json:"cwd"`
-	Name           string `json:"name,omitempty"`
-	Mode           string `json:"mode"`
-	Source         string `json:"source"`
-	OwnerEnv       string `json:"ownerEnv"`
-	OwnerInstance  string `json:"ownerInstance,omitempty"`
-	Distro         string `json:"distro,omitempty"`
-	LinuxUser      string `json:"linuxUser,omitempty"`
-	RunnerID       string `json:"runnerId,omitempty"`
-	ListenTarget   string `json:"listenTarget,omitempty"`
-	LeaseExpiresAt string `json:"leaseExpiresAt,omitempty"`
-	ProjectRoot    string `json:"projectRoot,omitempty"`
-	ProjectName    string `json:"projectName,omitempty"`
-	StartedAt      string `json:"startedAt,omitempty"`
-	CanStop        bool   `json:"canStop"`
-	StopReason     string `json:"stopReason,omitempty"`
+	ID                 string `json:"id,omitempty"`
+	Generation         uint64 `json:"generation,omitempty"`
+	State              string `json:"state"`
+	Service            string `json:"service,omitempty"`
+	PreferredURL       string `json:"preferredUrl"`
+	Port               int    `json:"port,omitempty"`
+	Host               string `json:"host"`
+	Target             string `json:"target"`
+	Status             string `json:"status"`
+	PID                int    `json:"pid"`
+	CWD                string `json:"cwd"`
+	Name               string `json:"name,omitempty"`
+	Mode               string `json:"mode"`
+	Source             string `json:"source"`
+	OwnerEnv           string `json:"ownerEnv"`
+	OwnerInstance      string `json:"ownerInstance,omitempty"`
+	Distro             string `json:"distro,omitempty"`
+	LinuxUser          string `json:"linuxUser,omitempty"`
+	RunnerID           string `json:"runnerId,omitempty"`
+	ListenTarget       string `json:"listenTarget,omitempty"`
+	LeaseExpiresAt     string `json:"leaseExpiresAt,omitempty"`
+	ProjectRoot        string `json:"projectRoot,omitempty"`
+	ProjectName        string `json:"projectName,omitempty"`
+	StartedAt          string `json:"startedAt,omitempty"`
+	ShareURL           string `json:"shareUrl,omitempty"`
+	ShareState         string `json:"shareState,omitempty"`
+	LANInterface       string `json:"lanInterface,omitempty"`
+	LANAddress         string `json:"lanAddress,omitempty"`
+	LANSuspendedReason string `json:"lanSuspendedReason,omitempty"`
+	LastLANConnection  string `json:"lastLanConnection,omitempty"`
+	CanStop            bool   `json:"canStop"`
+	StopReason         string `json:"stopReason,omitempty"`
 }
 
 func List(ctx context.Context, stdout io.Writer, verbose bool) error {
@@ -2082,38 +2088,62 @@ func printRouteStatusesJSON(stdout io.Writer, statuses []lifecycle.RouteStatus) 
 		if value, ok := routeTargetPort(target); ok {
 			port, _ = strconv.Atoi(value)
 		}
+		shareURL, shareState, lanInterface, lanAddress, suspendedReason, lastConnection := listLANShare(route)
 		routes = append(routes, listRoute{
-			ID:             route.ID,
-			Generation:     route.Generation,
-			State:          string(route.EffectiveState()),
-			Service:        route.Service,
-			PreferredURL:   publicRouteURLForScheme(route.PreferredScheme, route.Host, route.URLPath),
-			Port:           port,
-			Host:           route.Host,
-			Target:         target,
-			Status:         string(status.Status),
-			PID:            route.PID,
-			CWD:            route.CWD,
-			Name:           route.Name,
-			Mode:           lifecycle.RouteMode(route),
-			Source:         lifecycle.RouteSource(route),
-			OwnerEnv:       lifecycle.RouteOwner(route),
-			OwnerInstance:  route.OwnerInstance,
-			Distro:         route.Distro,
-			LinuxUser:      route.LinuxUser,
-			RunnerID:       route.RunnerID,
-			ListenTarget:   route.ListenTarget,
-			LeaseExpiresAt: timeJSON(route.LeaseExpiresAt),
-			ProjectRoot:    route.ProjectRoot,
-			ProjectName:    route.ProjectName,
-			StartedAt:      startedAtJSON(route),
-			CanStop:        canStop,
-			StopReason:     stopReason,
+			ID:                 route.ID,
+			Generation:         route.Generation,
+			State:              string(route.EffectiveState()),
+			Service:            route.Service,
+			PreferredURL:       publicRouteURLForScheme(route.PreferredScheme, route.Host, route.URLPath),
+			Port:               port,
+			Host:               route.Host,
+			Target:             target,
+			Status:             string(status.Status),
+			PID:                route.PID,
+			CWD:                route.CWD,
+			Name:               route.Name,
+			Mode:               lifecycle.RouteMode(route),
+			Source:             lifecycle.RouteSource(route),
+			OwnerEnv:           lifecycle.RouteOwner(route),
+			OwnerInstance:      route.OwnerInstance,
+			Distro:             route.Distro,
+			LinuxUser:          route.LinuxUser,
+			RunnerID:           route.RunnerID,
+			ListenTarget:       route.ListenTarget,
+			LeaseExpiresAt:     timeJSON(route.LeaseExpiresAt),
+			ProjectRoot:        route.ProjectRoot,
+			ProjectName:        route.ProjectName,
+			StartedAt:          startedAtJSON(route),
+			ShareURL:           shareURL,
+			ShareState:         shareState,
+			LANInterface:       lanInterface,
+			LANAddress:         lanAddress,
+			LANSuspendedReason: suspendedReason,
+			LastLANConnection:  lastConnection,
+			CanStop:            canStop,
+			StopReason:         stopReason,
 		})
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(routes)
+}
+
+func listLANShare(route router.Route) (shareURL, state, iface, address, reason, lastConnection string) {
+	if route.LANShare == nil {
+		return "", "", "", "", "", ""
+	}
+	hostname := route.LANShare.Hostname
+	if hostname == "" {
+		hostname = route.LANShare.RequestedHostname
+	}
+	if hostname != "" {
+		shareURL = "https://" + strings.TrimSuffix(hostname, ".")
+	}
+	if !route.LANShare.LastConnectedAt.IsZero() {
+		lastConnection = route.LANShare.LastConnectedAt.UTC().Format(time.RFC3339)
+	}
+	return shareURL, string(route.LANShare.State), route.LANShare.InterfaceName, route.LANShare.Address, route.LANShare.SuspendedReason, lastConnection
 }
 
 func startedAtJSON(route router.Route) string {

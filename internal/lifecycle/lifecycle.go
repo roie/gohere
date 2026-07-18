@@ -59,9 +59,9 @@ func FormatRoutes(statuses []RouteStatus) string {
 	}
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "%-28s %-25s %s\n", "host", "target", "status")
+	fmt.Fprintf(&out, "%-28s %-25s %-8s %s\n", "host", "target", "status", "share")
 	for _, status := range statuses {
-		fmt.Fprintf(&out, "%-28s %-25s %s\n", status.Route.Host, status.Route.EffectiveTarget(), status.Status)
+		fmt.Fprintf(&out, "%-28s %-25s %-8s %s\n", status.Route.Host, status.Route.EffectiveTarget(), status.Status, routeLANShareLabel(status.Route))
 	}
 	return out.String()
 }
@@ -72,13 +72,13 @@ func FormatRoutesVerbose(statuses []RouteStatus) string {
 	}
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "%-28s %-25s %-7s %-8s %-8s %-8s %-6s %-20s %-36s %s\n", "host", "target", "status", "mode", "source", "owner", "pid", "started", "stop", "cwd")
+	fmt.Fprintf(&out, "%-28s %-25s %-7s %-8s %-8s %-8s %-6s %-20s %-36s %-30s %s\n", "host", "target", "status", "mode", "source", "owner", "pid", "started", "stop", "share", "cwd")
 	for _, status := range statuses {
 		_, stopReason := RouteStopInfo(status)
 		if stopReason == "" {
 			stopReason = "ok"
 		}
-		fmt.Fprintf(&out, "%-28s %-25s %-7s %-8s %-8s %-8s %-6d %-20s %-36s %s\n",
+		fmt.Fprintf(&out, "%-28s %-25s %-7s %-8s %-8s %-8s %-6d %-20s %-36s %-30s %s\n",
 			status.Route.Host,
 			status.Route.EffectiveTarget(),
 			status.Status,
@@ -88,9 +88,25 @@ func FormatRoutesVerbose(statuses []RouteStatus) string {
 			status.Route.PID,
 			RouteStartedAt(status.Route),
 			stopReason,
+			routeLANShareLabel(status.Route),
 			status.Route.CWD)
 	}
 	return out.String()
+}
+
+func routeLANShareLabel(route router.Route) string {
+	if route.LANShare == nil {
+		return "-"
+	}
+	hostname := route.LANShare.Hostname
+	if hostname == "" {
+		hostname = route.LANShare.RequestedHostname
+	}
+	url := "https://" + strings.TrimSuffix(hostname, ".")
+	if route.LANShare.State == router.LANShareActive {
+		return url
+	}
+	return string(route.LANShare.State) + ":" + url
 }
 
 func RouteMode(route router.Route) string {

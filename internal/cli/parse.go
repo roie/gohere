@@ -237,6 +237,9 @@ func validateMultiRun(cmd Command) error {
 	if cmd.TargetPort != 0 {
 		return parseError("--target can only be used with one project")
 	}
+	if cmd.ShareMode != "" {
+		return parseError("--share=lan can only be used with one project")
+	}
 	return nil
 }
 

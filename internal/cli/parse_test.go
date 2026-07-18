@@ -624,6 +624,13 @@ func TestParseShareLAN(t *testing.T) {
 	}
 }
 
+func TestParseRejectsLANShareForMultipleScripts(t *testing.T) {
+	_, err := Parse([]string{"gohere", "dev:web", "dev:api", "--share=lan"})
+	if err == nil || err.Error() != "gohere error: --share=lan can only be used with one project" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestParseRejectsInvalidShareMode(t *testing.T) {
 	tests := []struct {
 		args []string
