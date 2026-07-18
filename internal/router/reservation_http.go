@@ -93,6 +93,11 @@ func (s *Server) handleRouteReservation(w http.ResponseWriter, r *http.Request) 
 			writeReservationError(w, err)
 			return
 		}
+		if s.lanManager != nil {
+			for _, ref := range request.Refs {
+				_ = s.lanManager.RecoverVerified(r.Context(), ref)
+			}
+		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "unknown reservation action", http.StatusNotFound)

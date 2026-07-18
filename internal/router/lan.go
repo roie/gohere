@@ -122,6 +122,25 @@ func ActivateLANShare(store Store, ref RouteRef, activation LANActivation) error
 	})
 }
 
+func SuspendLANShare(store Store, ref RouteRef, reason string) error {
+	return UpdateStore(store, func(routes []Route) ([]Route, error) {
+		index := routeRefIndex(routes, ref)
+		if index < 0 {
+			return nil, ErrRouteRefMismatch
+		}
+		share := routes[index].LANShare
+		if share == nil {
+			return routes, nil
+		}
+		if share.State != LANShareSuspended && !validLANShareTransition(share.State, LANShareSuspended) {
+			return nil, fmt.Errorf("invalid LAN share transition %s to %s", share.State, LANShareSuspended)
+		}
+		share.State = LANShareSuspended
+		share.SuspendedReason = reason
+		return routes, nil
+	})
+}
+
 func RemoveLANShare(store Store, ref RouteRef) error {
 	return UpdateStore(store, func(routes []Route) ([]Route, error) {
 		index := routeRefIndex(routes, ref)

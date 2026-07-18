@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -40,14 +41,18 @@ type lanTrustRegistration struct {
 }
 
 type lanManagerConfig struct {
-	store            Store
-	selectInterface  func(context.Context) (laninterface.Candidate, error)
-	issueCertificate func(string, time.Time) (tls.Certificate, error)
-	prepareTrust     func(laninterface.Candidate, string) (lanTrustRegistration, error)
-	prepareFirewall  func(context.Context) error
-	startIngress     func(context.Context, *Server, string, string) (lanIngress, error)
-	newResponder     func(context.Context, lanmdns.Interface, lanmdns.Coordinator) (lanHostnameResponder, error)
-	now              func() time.Time
+	store              Store
+	selectInterface    func(context.Context) (laninterface.Candidate, error)
+	issueCertificate   func(string, time.Time) (tls.Certificate, error)
+	prepareTrust       func(laninterface.Candidate, string) (lanTrustRegistration, error)
+	prepareFirewall    func(context.Context) error
+	startIngress       func(context.Context, *Server, string, string) (lanIngress, error)
+	newResponder       func(context.Context, lanmdns.Interface, lanmdns.Coordinator) (lanHostnameResponder, error)
+	routeOwnerVerified func(Route) bool
+	targetReachable    func(Route) bool
+	networkStillValid  func(context.Context, laninterface.Candidate) bool
+	monitorInterval    time.Duration
+	now                func() time.Time
 }
 
 type LANShareResult struct {
@@ -60,6 +65,7 @@ type LANShareResult struct {
 
 type LANManager struct {
 	ctx    context.Context
+	cancel context.CancelFunc
 	server *Server
 	config lanManagerConfig
 
@@ -71,11 +77,12 @@ type LANManager struct {
 	registrations    map[RouteRef]lanmdns.Registration
 	registrationRefs map[lanmdns.RegistrationID]RouteRef
 	trust            map[RouteRef]lanTrustRegistration
+	monitorStarted   bool
 	closeOnce        sync.Once
 	closeErr         error
 }
 
-func NewLANManager(ctx context.Context, server *Server, stateDir string) *LANManager {
+func NewLANManager(ctx context.Context, server *Server, stateDir string, routeOwnerVerified func(Route) bool) *LANManager {
 	certificateStore := goherecert.Store{StateDir: stateDir}
 	return newLANManager(ctx, server, lanManagerConfig{
 		store: server.store,
@@ -109,7 +116,25 @@ func NewLANManager(ctx context.Context, server *Server, stateDir string) *LANMan
 		newResponder: func(ctx context.Context, iface lanmdns.Interface, coordinator lanmdns.Coordinator) (lanHostnameResponder, error) {
 			return lanmdns.New(ctx, iface, coordinator)
 		},
-		now: time.Now,
+		routeOwnerVerified: routeOwnerVerified,
+		targetReachable: func(route Route) bool {
+			target, err := url.Parse(route.Target)
+			return err == nil && validateRouteTarget(target) == nil && probeTargetReachable(target)
+		},
+		networkStillValid: func(ctx context.Context, selected laninterface.Candidate) bool {
+			candidates, err := laninterface.Discover(ctx)
+			if err != nil {
+				return false
+			}
+			for _, candidate := range candidates {
+				if candidate.Index == selected.Index && candidate.Prefix == selected.Prefix {
+					return true
+				}
+			}
+			return false
+		},
+		monitorInterval: 10 * time.Second,
+		now:             time.Now,
 	})
 }
 
@@ -117,11 +142,66 @@ func newLANManager(ctx context.Context, server *Server, config lanManagerConfig)
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	managerCtx, cancel := context.WithCancel(ctx)
 	return &LANManager{
-		ctx: ctx, server: server, config: config,
+		ctx: managerCtx, cancel: cancel, server: server, config: config,
 		pending: make(map[string]RouteRef), registrations: make(map[RouteRef]lanmdns.Registration),
 		registrationRefs: make(map[lanmdns.RegistrationID]RouteRef), trust: make(map[RouteRef]lanTrustRegistration),
 	}
+}
+
+func (m *LANManager) Recover(ctx context.Context) error {
+	routes, err := m.config.store.Load()
+	if err != nil {
+		return err
+	}
+	for _, route := range routes {
+		if route.LANShare == nil {
+			continue
+		}
+		if route.LANShare.State == LANShareRemoving {
+			_ = RemoveLANShare(m.config.store, route.Ref())
+			continue
+		}
+		reason := ""
+		switch {
+		case route.EffectiveState() != RouteStateActive:
+			reason = "route is not active"
+		case RouteLeaseExpired(route, m.config.now()):
+			reason = "route owner lease expired"
+		case m.config.routeOwnerVerified == nil || !m.config.routeOwnerVerified(route):
+			reason = "route ownership could not be verified"
+		case m.config.targetReachable == nil || !m.config.targetReachable(route):
+			reason = "route target is unreachable"
+		}
+		if reason != "" {
+			_ = SuspendLANShare(m.config.store, route.Ref(), reason)
+			continue
+		}
+		if _, err := m.Create(ctx, route.Ref()); err != nil {
+			_ = SuspendLANShare(m.config.store, route.Ref(), err.Error())
+		}
+	}
+	return nil
+}
+
+func (m *LANManager) RecoverVerified(ctx context.Context, ref RouteRef) error {
+	route, err := routeForRef(m.config.store, ref)
+	if err != nil || route.LANShare == nil {
+		return err
+	}
+	if route.EffectiveState() != RouteStateActive {
+		return errors.New("LAN sharing requires an active route")
+	}
+	if m.config.targetReachable == nil || !m.config.targetReachable(route) {
+		_ = SuspendLANShare(m.config.store, ref, "route target is unreachable")
+		return errors.New("LAN route target is unreachable")
+	}
+	_, err = m.Create(ctx, ref)
+	if err != nil {
+		_ = SuspendLANShare(m.config.store, ref, err.Error())
+	}
+	return err
 }
 
 func (m *LANManager) Create(ctx context.Context, ref RouteRef) (LANShareResult, error) {
@@ -273,6 +353,7 @@ func (m *LANManager) Close() error {
 		return nil
 	}
 	m.closeOnce.Do(func() {
+		m.cancel()
 		m.mu.Lock()
 		registrations := m.registrations
 		trust := m.trust
@@ -331,7 +412,68 @@ func (m *LANManager) ensureNetworkLocked(ctx context.Context) error {
 	m.iface = iface
 	m.ingress = ingress
 	m.responder = responder
+	if !m.monitorStarted && m.config.monitorInterval > 0 {
+		m.monitorStarted = true
+		go m.monitorNetwork()
+	}
 	return nil
+}
+
+func (m *LANManager) monitorNetwork() {
+	ticker := time.NewTicker(m.config.monitorInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			m.reconcileNetwork(m.ctx)
+		}
+	}
+}
+
+func (m *LANManager) reconcileNetwork(ctx context.Context) {
+	m.mu.Lock()
+	iface := m.iface
+	validator := m.config.networkStillValid
+	active := m.responder != nil
+	m.mu.Unlock()
+	if !active || validator == nil || validator(ctx, iface) {
+		return
+	}
+	m.mu.Lock()
+	if m.responder == nil || m.iface.Index != iface.Index || m.iface.Prefix != iface.Prefix {
+		m.mu.Unlock()
+		return
+	}
+	registrations := m.registrations
+	trust := m.trust
+	responder, ingress := m.responder, m.ingress
+	m.registrations = make(map[RouteRef]lanmdns.Registration)
+	m.registrationRefs = make(map[lanmdns.RegistrationID]RouteRef)
+	m.pending = make(map[string]RouteRef)
+	m.trust = make(map[RouteRef]lanTrustRegistration)
+	m.responder, m.ingress = nil, nil
+	m.iface = laninterface.Candidate{}
+	m.mu.Unlock()
+
+	for ref, registration := range registrations {
+		_ = registration.Close(ctx)
+		m.server.RemoveLANRoute(ref)
+		if trust := trust[ref]; trust.token != "" {
+			m.server.ClearLANTrust(trust.token)
+		}
+		_ = SuspendLANShare(m.config.store, ref, "selected LAN interface or address changed")
+	}
+	if responder != nil {
+		_ = responder.Close()
+	}
+	if ingress != nil {
+		_ = ingress.Close()
+	}
+	for ref := range registrations {
+		_ = m.RecoverVerified(ctx, ref)
+	}
 }
 
 func (m *LANManager) rollbackCreate(ref RouteRef, requested string) {

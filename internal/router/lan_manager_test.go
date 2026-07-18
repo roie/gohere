@@ -97,6 +97,78 @@ func TestLANManagerRollsBackCoordinatorFailure(t *testing.T) {
 	}
 }
 
+func TestLANManagerRecoversOnlyVerifiedReachableRoute(t *testing.T) {
+	store, server, route := lanManagerFixture(t)
+	route.LANShare = &LANShare{State: LANShareActive, RequestedHostname: "shop.local.", Hostname: "shop.local.", CreatedAt: time.Now()}
+	if err := store.Save([]Route{route}); err != nil {
+		t.Fatal(err)
+	}
+	var responder *fakeLANHostnameResponder
+	manager := newTestLANManager(t, store, server, func(value *fakeLANHostnameResponder) { responder = value })
+	manager.config.routeOwnerVerified = func(Route) bool { return true }
+	manager.config.targetReachable = func(Route) bool { return true }
+	if err := manager.Recover(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := store.Load()
+	if responder == nil || stored[0].LANShare == nil || stored[0].LANShare.State != LANShareActive {
+		t.Fatalf("recovery responder=%#v share=%#v", responder, stored[0].LANShare)
+	}
+}
+
+func TestLANManagerRecoversRouteAfterAuthenticatedLeaseRenewal(t *testing.T) {
+	store, server, route := lanManagerFixture(t)
+	route.LANShare = &LANShare{State: LANShareSuspended, RequestedHostname: "shop.local.", Hostname: "shop.local.", CreatedAt: time.Now()}
+	if err := store.Save([]Route{route}); err != nil {
+		t.Fatal(err)
+	}
+	var responder *fakeLANHostnameResponder
+	manager := newTestLANManager(t, store, server, func(value *fakeLANHostnameResponder) { responder = value })
+	manager.config.targetReachable = func(Route) bool { return true }
+	if err := manager.RecoverVerified(t.Context(), route.Ref()); err != nil {
+		t.Fatal(err)
+	}
+	if responder == nil {
+		t.Fatal("authenticated renewal did not recover LAN share")
+	}
+}
+
+func TestLANManagerSuspendsUnverifiedRouteWithoutExposure(t *testing.T) {
+	store, server, route := lanManagerFixture(t)
+	route.LANShare = &LANShare{State: LANShareActive, RequestedHostname: "shop.local.", Hostname: "shop.local.", CreatedAt: time.Now()}
+	if err := store.Save([]Route{route}); err != nil {
+		t.Fatal(err)
+	}
+	manager := newTestLANManager(t, store, server, func(*fakeLANHostnameResponder) { t.Fatal("unverified route started responder") })
+	manager.config.routeOwnerVerified = func(Route) bool { return false }
+	manager.config.targetReachable = func(Route) bool { return true }
+	if err := manager.Recover(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := store.Load()
+	if stored[0].LANShare == nil || stored[0].LANShare.State != LANShareSuspended || stored[0].LANShare.SuspendedReason == "" {
+		t.Fatalf("suspended share = %#v", stored[0].LANShare)
+	}
+}
+
+func TestLANManagerSuspendsAndWithdrawsWhenSelectedNetworkDisappears(t *testing.T) {
+	store, server, route := lanManagerFixture(t)
+	var responder *fakeLANHostnameResponder
+	manager := newTestLANManager(t, store, server, func(value *fakeLANHostnameResponder) { responder = value })
+	if _, err := manager.Create(t.Context(), route.Ref()); err != nil {
+		t.Fatal(err)
+	}
+	manager.config.networkStillValid = func(context.Context, laninterface.Candidate) bool { return false }
+	manager.config.selectInterface = func(context.Context) (laninterface.Candidate, error) {
+		return laninterface.Candidate{}, laninterface.ErrNoPrivateNetwork
+	}
+	manager.reconcileNetwork(t.Context())
+	stored, _ := store.Load()
+	if responder == nil || !responder.registration.closed || stored[0].LANShare.State != LANShareSuspended {
+		t.Fatalf("network loss responder=%#v share=%#v", responder, stored[0].LANShare)
+	}
+}
+
 func TestLANShareAdminHandlerCreatesAndRemovesShare(t *testing.T) {
 	store, server, route := lanManagerFixture(t)
 	server.token = "secret"

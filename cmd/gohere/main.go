@@ -12,6 +12,7 @@ import (
 	"github.com/roie/gohere/internal/cli"
 	"github.com/roie/gohere/internal/companion"
 	appconfig "github.com/roie/gohere/internal/config"
+	"github.com/roie/gohere/internal/lifecycle"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/tunnel"
 	"github.com/roie/gohere/internal/wsledge"
@@ -138,13 +139,12 @@ func main() {
 
 func routerStartConfig() router.StartConfig {
 	stateDir := router.DefaultStateDir()
+	startConfig := router.StartConfig{RouteOwnerVerified: lifecycle.RouteProcessVerified}
 	cfg, err := appconfig.Load(stateDir)
-	if err != nil || !cfg.HTTPS {
-		return router.StartConfig{}
+	if err == nil && cfg.HTTPS {
+		startConfig.TLSConfig = localcert.Store{StateDir: stateDir}.TLSConfig()
 	}
-	return router.StartConfig{
-		TLSConfig: localcert.Store{StateDir: stateDir}.TLSConfig(),
-	}
+	return startConfig
 }
 
 func waitForRouter(ctx context.Context, done <-chan struct{}) {

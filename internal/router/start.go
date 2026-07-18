@@ -21,12 +21,13 @@ import (
 )
 
 type StartConfig struct {
-	HTTPAddr  string
-	HTTPSAddr string
-	AdminAddr string
-	StateDir  string
-	LogPath   string
-	TLSConfig *tls.Config
+	HTTPAddr           string
+	HTTPSAddr          string
+	AdminAddr          string
+	StateDir           string
+	LogPath            string
+	TLSConfig          *tls.Config
+	RouteOwnerVerified func(Route) bool
 }
 
 type Running struct {
@@ -102,7 +103,7 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 			running.Close()
 		}
 	}})
-	lanManager := NewLANManager(ctx, server, cfg.StateDir)
+	lanManager := NewLANManager(ctx, server, cfg.StateDir, cfg.RouteOwnerVerified)
 	server.lanManager = lanManager
 
 	httpLn, err := listenHTTPForGOOS(runtime.GOOS, cfg.HTTPAddr)
@@ -193,6 +194,7 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		go running.httpsServer.Serve(tls.NewListener(httpsLn, running.httpsServer.TLSConfig))
 	}
 	go running.adminServer.Serve(adminLn)
+	go func() { _ = lanManager.Recover(ctx) }()
 	go func() {
 		<-ctx.Done()
 		running.Close()
