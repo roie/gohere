@@ -92,6 +92,8 @@ type registerResult struct {
 	err          error
 }
 
+type cancelRegisterCommand struct{ reply chan registerResult }
+
 type releaseCommand struct {
 	id    RegistrationID
 	reply chan error
@@ -444,6 +446,22 @@ func (r *Responder) runActor() {
 					command.reply <- registerResult{registration: handle}
 				} else {
 					entry.pending = append(entry.pending, pendingRegistration{handle: handle, reply: command.reply})
+				}
+				reschedule()
+			case cancelRegisterCommand:
+				for requested, entry := range claims {
+					for index, pending := range entry.pending {
+						if pending.reply != command.reply {
+							continue
+						}
+						delete(entry.refs, pending.handle.id)
+						delete(registrations, pending.handle.id)
+						entry.pending = append(entry.pending[:index], entry.pending[index+1:]...)
+						if len(entry.refs) == 0 {
+							delete(claims, requested)
+						}
+						break
+					}
 				}
 				reschedule()
 			case releaseCommand:

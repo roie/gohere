@@ -147,9 +147,17 @@ func (r *Responder) Register(ctx context.Context, hostname string) (Registration
 	case result := <-reply:
 		return result.registration, result.err
 	case <-ctx.Done():
+		r.cancelRegistration(reply)
 		return nil, ctx.Err()
 	case <-r.ctx.Done():
 		return nil, context.Canceled
+	}
+}
+
+func (r *Responder) cancelRegistration(reply chan registerResult) {
+	select {
+	case r.commands <- cancelRegisterCommand{reply: reply}:
+	case <-r.ctx.Done():
 	}
 }
 
