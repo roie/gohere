@@ -5,6 +5,7 @@ package lanmdns
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"os"
 	"strconv"
@@ -26,6 +27,47 @@ func windowsNativeInterface(t *testing.T) Interface {
 		t.Fatalf("LAN_MDNS_PREFIX: %v", err)
 	}
 	return Interface{Index: index, Name: "native-test", Prefix: prefix}
+}
+
+func TestWindowsTransportHostedSmoke(t *testing.T) {
+	if os.Getenv("GOHERE_WINDOWS_MDNS_SMOKE") != "1" {
+		t.Skip("set GOHERE_WINDOWS_MDNS_SMOKE=1 on a hosted Windows runner")
+	}
+	connection, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 53})
+	if err != nil {
+		t.Fatal(err)
+	}
+	localIP := connection.LocalAddr().(*net.UDPAddr).IP
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagMulticast == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			prefix, err := netip.ParsePrefix(address.String())
+			if err != nil || !prefix.Addr().Is4() || prefix.Addr().String() != localIP.String() {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			err = RunWindowsTransportSpike(ctx, Interface{Index: iface.Index, Name: iface.Name, Prefix: prefix})
+			cancel()
+			if err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+	t.Fatalf("default-route interface for %s was not found", localIP)
 }
 
 func TestWindowsTransportCloseUnblocksRead(t *testing.T) {

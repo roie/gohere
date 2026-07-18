@@ -37,6 +37,12 @@ jobs:
         if: runner.os == 'Windows'
         run: go build ./cmd/lanmdns-spike
 
+      - name: Smoke test Windows LAN mDNS coexistence
+        if: runner.os == 'Windows'
+        env:
+          GOHERE_WINDOWS_MDNS_SMOKE: "1"
+        run: go test ./internal/lanmdns -run TestWindowsTransportHostedSmoke -v
+
       - name: Vet
         run: go vet ./...
 
