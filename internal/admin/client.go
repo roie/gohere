@@ -113,7 +113,11 @@ func (c *Client) CreateLANShare(ctx context.Context, ref router.RouteRef) (route
 	if err != nil {
 		return router.LANShareResult{}, err
 	}
-	response, err := c.http.Do(request)
+	client := *c.http
+	if client.Timeout > 0 && client.Timeout < 2*time.Minute {
+		client.Timeout = 2 * time.Minute
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return router.LANShareResult{}, err
 	}

@@ -81,7 +81,7 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 			}
 			return err
 		}
-		lanShare, err = createLANShare(ctx, client, cmd, route.Ref())
+		lanShare, err = createLANShare(ctx, client, cmd, route.Ref(), stderr)
 		if err != nil {
 			return err
 		}
@@ -110,7 +110,7 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 		activated = true
 		stopLease := startReservationLease(ctx, lifecycleClient, runID, pendingRefs, stderr)
 		defer stopLease()
-		lanShare, err = createLANShare(ctx, client, cmd, route.Ref())
+		lanShare, err = createLANShare(ctx, client, cmd, route.Ref(), stderr)
 		if err != nil {
 			return err
 		}
@@ -153,7 +153,7 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 	activated = true
 	stopLease := startReservationLease(ctx, lifecycleClient, runID, pendingRefs, stderr)
 	defer stopLease()
-	lanShare, err = createLANShare(ctx, client, cmd, route.Ref())
+	lanShare, err = createLANShare(ctx, client, cmd, route.Ref(), stderr)
 	if err != nil {
 		return err
 	}

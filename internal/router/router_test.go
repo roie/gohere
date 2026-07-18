@@ -344,6 +344,52 @@ func TestRouteStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRouteStoreLoadWaitsForWindowsReplacementGap(t *testing.T) {
+	store := NewRouteStore(filepath.Join(t.TempDir(), RoutesFilename))
+	want := Route{Host: "shop.localhost", Target: "http://127.0.0.1:5173"}
+	if err := store.Save([]Route{want}); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := store.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup := store.path + ".replacement-gap"
+	if err := os.Rename(store.path, backup); err != nil {
+		unlock()
+		t.Fatal(err)
+	}
+
+	type result struct {
+		routes []Route
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		routes, err := store.Load()
+		done <- result{routes: routes, err: err}
+	}()
+	select {
+	case got := <-done:
+		unlock()
+		t.Fatalf("Load completed during replacement gap: %#v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := os.Rename(backup, store.path); err != nil {
+		unlock()
+		t.Fatal(err)
+	}
+	unlock()
+	select {
+	case got := <-done:
+		if got.err != nil || len(got.routes) != 1 || got.routes[0].Host != want.Host {
+			t.Fatalf("Load after replacement = %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Load did not finish after replacement completed")
+	}
+}
+
 func TestSortRoutesCaseInsensitive(t *testing.T) {
 	routes := []Route{
 		{Host: "c.localhost"},

@@ -73,7 +73,7 @@ func registerDetectedRouteLifecycle(ctx context.Context, adminClient adminClient
 	plan.Name = route.Name
 	service := resolvedService{Plan: plan, Route: route, Ref: route.Ref(), ServiceKey: serviceDiscoveryEnvKey(plan.Name), PublicURL: resolvedPublicURL(plan, route)}
 	stopLease := startReservationLease(ctx, lifecycleClient, runID, refs, stderr)
-	lanShare, err := createLANShare(ctx, adminClient, cmd, route.Ref())
+	lanShare, err := createLANShare(ctx, adminClient, cmd, route.Ref(), stderr)
 	if err != nil {
 		stopLease()
 		_ = deleteRouteRefs(ctx, lifecycleClient, refs)

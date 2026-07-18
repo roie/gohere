@@ -53,7 +53,7 @@ const (
 	proxyReadHeaderTimeout = 5 * time.Second
 	adminReadHeaderTimeout = 5 * time.Second
 	adminReadTimeout       = 10 * time.Second
-	adminWriteTimeout      = 10 * time.Second
+	adminWriteTimeout      = 2 * time.Minute
 	adminIdleTimeout       = 60 * time.Second
 )
 

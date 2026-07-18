@@ -12,6 +12,12 @@ import (
 	goherecert "github.com/roie/gohere/internal/cert"
 )
 
+func TestAdminWriteTimeoutAllowsWindowsFirewallApproval(t *testing.T) {
+	if adminWriteTimeout < 2*time.Minute {
+		t.Fatalf("admin write timeout = %s, want at least 2m for Windows firewall approval", adminWriteTimeout)
+	}
+}
+
 func TestStartLANIngressServesSharedHTTPAndHTTPSListeners(t *testing.T) {
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	upstreamServer := &http.Server{Handler: upstream}

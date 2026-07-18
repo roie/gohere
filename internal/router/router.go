@@ -379,6 +379,15 @@ func NewRouteStore(path string) *RouteStore {
 }
 
 func (s *RouteStore) Load() ([]Route, error) {
+	routes, err := s.load()
+	if err != nil || routes != nil {
+		return routes, err
+	}
+	unlock, err := s.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	return s.load()
 }
 

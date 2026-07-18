@@ -166,6 +166,24 @@ func TestReserveRoutesAddsLANIntentWhenReusingRoute(t *testing.T) {
 	}
 }
 
+func TestMarkLANShareConnectedDoesNotRewriteFreshTimestamp(t *testing.T) {
+	now := time.Date(2026, 7, 18, 20, 0, 0, 0, time.UTC)
+	route := Route{ID: "route-1", Generation: 1, LANShare: &LANShare{State: LANShareActive, LastConnectedAt: now}}
+	store := &countingLANStore{routes: []Route{route}}
+	if err := MarkLANShareConnected(store, route.Ref(), now.Add(30*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if store.writes != 0 {
+		t.Fatalf("fresh connection timestamp caused %d writes", store.writes)
+	}
+	if err := MarkLANShareConnected(store, route.Ref(), now.Add(61*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if store.writes != 1 {
+		t.Fatalf("stale connection timestamp caused %d writes, want 1", store.writes)
+	}
+}
+
 func TestLANShareRoundTripsWithRouteState(t *testing.T) {
 	route := Route{Host: "shop.localhost", LANShare: &LANShare{State: LANShareSuspended, RequestedHostname: "shop.local.", Hostname: "shop-2.local.", InterfaceIndex: 7, Address: "192.168.1.42", Prefix: "192.168.1.42/24"}}
 	payload, err := json.Marshal(route)
@@ -179,4 +197,29 @@ func TestLANShareRoundTripsWithRouteState(t *testing.T) {
 	if decoded.LANShare == nil || *decoded.LANShare != *route.LANShare {
 		t.Fatalf("decoded LAN share = %#v", decoded.LANShare)
 	}
+}
+
+type countingLANStore struct {
+	routes []Route
+	writes int
+}
+
+func (s *countingLANStore) Load() ([]Route, error) {
+	return append([]Route(nil), s.routes...), nil
+}
+
+func (s *countingLANStore) Save(routes []Route) error {
+	s.routes = append([]Route(nil), routes...)
+	s.writes++
+	return nil
+}
+
+func (s *countingLANStore) Update(update func([]Route) ([]Route, error)) error {
+	routes, err := update(append([]Route(nil), s.routes...))
+	if err != nil {
+		return err
+	}
+	s.routes = append([]Route(nil), routes...)
+	s.writes++
+	return nil
 }

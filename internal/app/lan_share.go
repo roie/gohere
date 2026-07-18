@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/roie/gohere/internal/cli"
 	"github.com/roie/gohere/internal/router"
@@ -15,7 +16,7 @@ type lanShareClient interface {
 	DeleteLANShare(context.Context, router.RouteRef) error
 }
 
-func createLANShare(ctx context.Context, client adminClient, cmd cli.Command, ref router.RouteRef) (*router.LANShareResult, error) {
+func createLANShare(ctx context.Context, client adminClient, cmd cli.Command, ref router.RouteRef, progress io.Writer) (*router.LANShareResult, error) {
 	if cmd.ShareMode == "" {
 		return nil, nil
 	}
@@ -26,8 +27,14 @@ func createLANShare(ctx context.Context, client adminClient, cmd cli.Command, re
 	if !ok {
 		return nil, errors.New("router control does not support LAN sharing; update gohere")
 	}
+	if progress != nil {
+		fmt.Fprintln(progress, "Preparing LAN access… approve the Windows firewall prompt if asked.")
+	}
 	result, err := lanClient.CreateLANShare(ctx, ref)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout exceeded") {
+			return nil, errors.New("gohere error: LAN setup timed out while waiting for Windows firewall approval; approve the Windows prompt, then run the command again")
+		}
 		return nil, err
 	}
 	return &result, nil

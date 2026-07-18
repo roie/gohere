@@ -2,6 +2,7 @@ package admin
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -149,6 +150,25 @@ func TestClientCreatesAndDeletesLANShare(t *testing.T) {
 	}
 	if requests != 2 {
 		t.Fatalf("requests = %d", requests)
+	}
+}
+
+func TestClientAllowsSlowFirstTimeLANFirewallSetup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		time.Sleep(25 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"hostname":"shop.local.","url":"https://shop.local"}`)
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "secret")
+	client.http.Timeout = 5 * time.Millisecond
+
+	result, err := client.CreateLANShare(t.Context(), router.RouteRef{ID: "route-1", Generation: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.URL != "https://shop.local" {
+		t.Fatalf("result = %#v", result)
 	}
 }
 

@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/roie/gohere/internal/cli"
@@ -23,9 +25,13 @@ func TestCreateAndPrintLANShare(t *testing.T) {
 		Hostname: "shop.local.", URL: "https://shop.local", SetupURL: "http://192.168.1.42/__gohere/trust/token", Fingerprint: "AA:BB",
 	}}
 	ref := router.RouteRef{ID: "route-1", Generation: 1}
-	result, err := createLANShare(t.Context(), client, cli.Command{ShareMode: "lan"}, ref)
+	var progress bytes.Buffer
+	result, err := createLANShare(t.Context(), client, cli.Command{ShareMode: "lan"}, ref, &progress)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(progress.String(), "approve the Windows firewall prompt") {
+		t.Fatalf("progress = %q", progress.String())
 	}
 	if client.created != ref || result.URL != "https://shop.local" {
 		t.Fatalf("created = %#v, result = %#v", client.created, result)
@@ -44,10 +50,19 @@ func TestCreateAndPrintLANShare(t *testing.T) {
 	}
 }
 
+func TestCreateLANShareExplainsWindowsFirewallTimeout(t *testing.T) {
+	client := &fakeLANShareClient{createErr: errors.New(`companion authority_error: Post "http://127.0.0.1:39399/v2/lan-shares": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`)}
+	_, err := createLANShare(t.Context(), client, cli.Command{ShareMode: "lan"}, router.RouteRef{ID: "route-1", Generation: 1}, nil)
+	if err == nil || !strings.Contains(err.Error(), "Windows firewall approval") || strings.Contains(err.Error(), "127.0.0.1:39399") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 type fakeLANShareClient struct {
-	result  router.LANShareResult
-	created router.RouteRef
-	deleted router.RouteRef
+	result    router.LANShareResult
+	createErr error
+	created   router.RouteRef
+	deleted   router.RouteRef
 }
 
 func (*fakeLANShareClient) Health(context.Context) error                    { return nil }
@@ -56,7 +71,7 @@ func (*fakeLANShareClient) UpsertRoute(context.Context, router.Route) error { re
 func (*fakeLANShareClient) DeleteRoute(context.Context, string) error       { return nil }
 func (c *fakeLANShareClient) CreateLANShare(_ context.Context, ref router.RouteRef) (router.LANShareResult, error) {
 	c.created = ref
-	return c.result, nil
+	return c.result, c.createErr
 }
 func (c *fakeLANShareClient) DeleteLANShare(_ context.Context, ref router.RouteRef) error {
 	c.deleted = ref

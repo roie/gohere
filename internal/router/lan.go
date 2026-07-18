@@ -10,6 +10,8 @@ import (
 
 type LANShareState string
 
+var errLANConnectionTimestampFresh = errors.New("LAN connection timestamp is fresh")
+
 const (
 	LANShareRequested LANShareState = "requested"
 	LANShareActive    LANShareState = "active"
@@ -123,21 +125,26 @@ func ActivateLANShare(store Store, ref RouteRef, activation LANActivation) error
 }
 
 func MarkLANShareConnected(store Store, ref RouteRef, now time.Time) error {
-	return UpdateStore(store, func(routes []Route) ([]Route, error) {
+	err := UpdateStore(store, func(routes []Route) ([]Route, error) {
 		index := routeRefIndex(routes, ref)
 		if index < 0 {
 			return nil, ErrRouteRefMismatch
 		}
 		share := routes[index].LANShare
 		if share == nil || share.State != LANShareActive {
-			return routes, nil
+			return nil, errLANConnectionTimestampFresh
 		}
 		now = now.UTC()
-		if share.LastConnectedAt.IsZero() || now.Sub(share.LastConnectedAt) >= time.Minute {
-			share.LastConnectedAt = now
+		if !share.LastConnectedAt.IsZero() && now.Sub(share.LastConnectedAt) < time.Minute {
+			return nil, errLANConnectionTimestampFresh
 		}
+		share.LastConnectedAt = now
 		return routes, nil
 	})
+	if errors.Is(err, errLANConnectionTimestampFresh) {
+		return nil
+	}
+	return err
 }
 
 func SuspendLANShare(store Store, ref RouteRef, reason string) error {
