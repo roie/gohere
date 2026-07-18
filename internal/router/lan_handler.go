@@ -85,6 +85,9 @@ func (s *Server) LANTLSConfig() *tls.Config {
 
 func (s *Server) LANHTTPHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if s.serveLANTrust(w, request) {
+			return
+		}
 		hostname, err := normalizeLANHostname(request.Host)
 		if err != nil {
 			http.NotFound(w, request)

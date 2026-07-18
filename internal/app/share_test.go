@@ -19,7 +19,9 @@ func TestRouteReservationCarriesLANShareIntent(t *testing.T) {
 }
 
 func TestCreateAndPrintLANShare(t *testing.T) {
-	client := &fakeLANShareClient{result: router.LANShareResult{Hostname: "shop.local.", URL: "https://shop.local"}}
+	client := &fakeLANShareClient{result: router.LANShareResult{
+		Hostname: "shop.local.", URL: "https://shop.local", SetupURL: "http://192.168.1.42/__gohere/trust/token", Fingerprint: "AA:BB",
+	}}
 	ref := router.RouteRef{ID: "route-1", Generation: 1}
 	result, err := createLANShare(t.Context(), client, cli.Command{ShareMode: "lan"}, ref)
 	if err != nil {
@@ -30,7 +32,8 @@ func TestCreateAndPrintLANShare(t *testing.T) {
 	}
 	var output bytes.Buffer
 	printLANShare(&output, result)
-	if output.String() != "share  → https://shop.local\n" {
+	wantOutput := "share  → https://shop.local\nsetup  → http://192.168.1.42/__gohere/trust/token\nCA fingerprint: AA:BB\nOnly install this certificate on devices you control. Verify the fingerprint before enabling trust.\n"
+	if output.String() != wantOutput {
 		t.Fatalf("output = %q", output.String())
 	}
 	if err := deleteLANShare(t.Context(), client, ref); err != nil {

@@ -2,14 +2,19 @@ package router
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,19 +32,28 @@ type lanHostnameResponder interface {
 	Close() error
 }
 
+type lanTrustRegistration struct {
+	token       string
+	setupURL    string
+	fingerprint string
+}
+
 type lanManagerConfig struct {
 	store            Store
 	selectInterface  func(context.Context) (laninterface.Candidate, error)
 	issueCertificate func(string, time.Time) (tls.Certificate, error)
+	prepareTrust     func(laninterface.Candidate, string) (lanTrustRegistration, error)
 	startIngress     func(context.Context, *Server, string, string) (lanIngress, error)
 	newResponder     func(context.Context, lanmdns.Interface, lanmdns.Coordinator) (lanHostnameResponder, error)
 	now              func() time.Time
 }
 
 type LANShareResult struct {
-	Hostname string     `json:"hostname"`
-	URL      string     `json:"url"`
-	Address  netip.Addr `json:"address"`
+	Hostname    string     `json:"hostname"`
+	URL         string     `json:"url"`
+	Address     netip.Addr `json:"address"`
+	SetupURL    string     `json:"setupUrl"`
+	Fingerprint string     `json:"fingerprint"`
 }
 
 type LANManager struct {
@@ -54,6 +68,7 @@ type LANManager struct {
 	pending          map[string]RouteRef
 	registrations    map[RouteRef]lanmdns.Registration
 	registrationRefs map[lanmdns.RegistrationID]RouteRef
+	trust            map[RouteRef]lanTrustRegistration
 	closeOnce        sync.Once
 	closeErr         error
 }
@@ -66,6 +81,25 @@ func NewLANManager(ctx context.Context, server *Server, stateDir string) *LANMan
 			return laninterface.DiscoverAndSelect(ctx, nil)
 		},
 		issueCertificate: certificateStore.IssueEphemeralLANHostCert,
+		prepareTrust: func(iface laninterface.Candidate, hostname string) (lanTrustRegistration, error) {
+			ca, err := certificateStore.EnsureCA()
+			if err != nil {
+				return lanTrustRegistration{}, err
+			}
+			token, err := newLANTrustToken()
+			if err != nil {
+				return lanTrustRegistration{}, err
+			}
+			fingerprint := formatLANFingerprint(ca.Cert.Raw)
+			server.ConfigureLANTrust(LANTrustSession{
+				Address: iface.Prefix.Addr().String(), Token: token, Hostname: hostname, Fingerprint: fingerprint,
+				CACertificatePEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Cert.Raw}),
+			})
+			return lanTrustRegistration{
+				token: token, fingerprint: fingerprint,
+				setupURL: "http://" + iface.Prefix.Addr().String() + lanTrustPathPrefix + token,
+			}, nil
+		},
 		startIngress: func(ctx context.Context, server *Server, httpAddr, httpsAddr string) (lanIngress, error) {
 			return StartLANIngress(ctx, server, httpAddr, httpsAddr)
 		},
@@ -83,7 +117,7 @@ func newLANManager(ctx context.Context, server *Server, config lanManagerConfig)
 	return &LANManager{
 		ctx: ctx, server: server, config: config,
 		pending: make(map[string]RouteRef), registrations: make(map[RouteRef]lanmdns.Registration),
-		registrationRefs: make(map[lanmdns.RegistrationID]RouteRef),
+		registrationRefs: make(map[lanmdns.RegistrationID]RouteRef), trust: make(map[RouteRef]lanTrustRegistration),
 	}
 }
 
@@ -92,7 +126,7 @@ func (m *LANManager) Create(ctx context.Context, ref RouteRef) (LANShareResult, 
 	if registration, ok := m.registrations[ref]; ok {
 		hostname := registration.CurrentHostname()
 		m.mu.Unlock()
-		return m.resultFor(hostname), nil
+		return m.resultFor(ref, hostname), nil
 	}
 	m.mu.Unlock()
 
@@ -132,7 +166,7 @@ func (m *LANManager) Create(ctx context.Context, ref RouteRef) (LANShareResult, 
 	m.registrations[ref] = registration
 	m.registrationRefs[registration.ID()] = ref
 	m.mu.Unlock()
-	return m.resultFor(registration.CurrentHostname()), nil
+	return m.resultFor(ref, registration.CurrentHostname()), nil
 }
 
 func (m *LANManager) Prepare(_ context.Context, change lanmdns.Change) error {
@@ -150,7 +184,17 @@ func (m *LANManager) Prepare(_ context.Context, change lanmdns.Change) error {
 	if err != nil {
 		return err
 	}
+	var trust lanTrustRegistration
+	if m.config.prepareTrust != nil {
+		trust, err = m.config.prepareTrust(iface, change.Proposed)
+		if err != nil {
+			return err
+		}
+	}
 	if err := m.server.RegisterLANRoute(ref, change.Proposed, certificate); err != nil {
+		if trust.token != "" {
+			m.server.ClearLANTrust(trust.token)
+		}
 		return err
 	}
 	activation := LANActivation{
@@ -159,7 +203,19 @@ func (m *LANManager) Prepare(_ context.Context, change lanmdns.Change) error {
 	}
 	if err := ActivateLANShare(m.config.store, ref, activation); err != nil {
 		m.server.RemoveLANHostname(ref, change.Proposed)
+		if trust.token != "" {
+			m.server.ClearLANTrust(trust.token)
+		}
 		return err
+	}
+	m.mu.Lock()
+	previousTrust := m.trust[ref]
+	if trust.token != "" {
+		m.trust[ref] = trust
+	}
+	m.mu.Unlock()
+	if previousTrust.token != "" && previousTrust.token != trust.token {
+		m.server.ClearLANTrust(previousTrust.token)
 	}
 	if change.Previous != "" && change.Previous != change.Proposed {
 		m.server.RemoveLANHostname(ref, change.Previous)
@@ -170,6 +226,8 @@ func (m *LANManager) Prepare(_ context.Context, change lanmdns.Change) error {
 func (m *LANManager) Remove(ctx context.Context, ref RouteRef) error {
 	m.mu.Lock()
 	registration := m.registrations[ref]
+	trust := m.trust[ref]
+	delete(m.trust, ref)
 	if registration != nil {
 		delete(m.registrations, ref)
 		delete(m.registrationRefs, registration.ID())
@@ -190,6 +248,9 @@ func (m *LANManager) Remove(ctx context.Context, ref RouteRef) error {
 		result = registration.Close(ctx)
 	}
 	m.server.RemoveLANRoute(ref)
+	if trust.token != "" {
+		m.server.ClearLANTrust(trust.token)
+	}
 	if err := RemoveLANShare(m.config.store, ref); err != nil && !errors.Is(err, ErrRouteRefMismatch) {
 		result = errors.Join(result, err)
 	}
@@ -211,7 +272,9 @@ func (m *LANManager) Close() error {
 	m.closeOnce.Do(func() {
 		m.mu.Lock()
 		registrations := m.registrations
+		trust := m.trust
 		m.registrations = make(map[RouteRef]lanmdns.Registration)
+		m.trust = make(map[RouteRef]lanTrustRegistration)
 		m.registrationRefs = make(map[lanmdns.RegistrationID]RouteRef)
 		m.pending = make(map[string]RouteRef)
 		responder, ingress := m.responder, m.ingress
@@ -223,6 +286,9 @@ func (m *LANManager) Close() error {
 		defer cancel()
 		for ref, registration := range registrations {
 			m.closeErr = errors.Join(m.closeErr, registration.Close(ctx))
+			if registration := trust[ref]; registration.token != "" {
+				m.server.ClearLANTrust(registration.token)
+			}
 			m.server.RemoveLANRoute(ref)
 			m.closeErr = errors.Join(m.closeErr, SetLANShareState(m.config.store, ref, LANShareSuspended))
 		}
@@ -264,12 +330,17 @@ func (m *LANManager) rollbackCreate(ref RouteRef, requested string) {
 	m.server.RemoveLANRoute(ref)
 	_ = RemoveLANShare(m.config.store, ref)
 	m.mu.Lock()
+	trust := m.trust[ref]
+	delete(m.trust, ref)
 	delete(m.pending, requested)
 	if len(m.registrations) == 0 {
 		responder, ingress := m.responder, m.ingress
 		m.responder, m.ingress = nil, nil
 		m.iface = laninterface.Candidate{}
 		m.mu.Unlock()
+		if trust.token != "" {
+			m.server.ClearLANTrust(trust.token)
+		}
 		if responder != nil {
 			_ = responder.Close()
 		}
@@ -281,12 +352,14 @@ func (m *LANManager) rollbackCreate(ref RouteRef, requested string) {
 	m.mu.Unlock()
 }
 
-func (m *LANManager) resultFor(hostname string) LANShareResult {
+func (m *LANManager) resultFor(ref RouteRef, hostname string) LANShareResult {
 	m.mu.Lock()
 	address := m.iface.Prefix.Addr()
+	trust := m.trust[ref]
 	m.mu.Unlock()
 	return LANShareResult{
 		Hostname: hostname, URL: "https://" + stringsTrimFinalDot(hostname), Address: address,
+		SetupURL: trust.setupURL, Fingerprint: trust.fingerprint,
 	}
 }
 
@@ -334,6 +407,24 @@ func routeForRef(store Store, ref RouteRef) (Route, error) {
 		return Route{}, ErrRouteRefMismatch
 	}
 	return routes[index], nil
+}
+
+func newLANTrustToken() (string, error) {
+	value := make([]byte, 32)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(value), nil
+}
+
+func formatLANFingerprint(der []byte) string {
+	sum := sha256.Sum256(der)
+	encoded := strings.ToUpper(hex.EncodeToString(sum[:]))
+	parts := make([]string, 0, len(encoded)/2)
+	for index := 0; index < len(encoded); index += 2 {
+		parts = append(parts, encoded[index:index+2])
+	}
+	return strings.Join(parts, ":")
 }
 
 func stringsTrimFinalDot(value string) string {

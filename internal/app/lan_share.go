@@ -42,7 +42,16 @@ func deleteLANShare(ctx context.Context, client adminClient, ref router.RouteRef
 }
 
 func printLANShare(output io.Writer, result *router.LANShareResult) {
-	if result != nil {
-		fmt.Fprintf(output, "share  → %s\n", result.URL)
+	if result == nil {
+		return
 	}
+	fmt.Fprintf(output, "share  → %s\n", result.URL)
+	if result.SetupURL != "" {
+		fmt.Fprintf(output, "setup  → %s\n", result.SetupURL)
+	}
+	if result.Fingerprint != "" {
+		fmt.Fprintf(output, "CA fingerprint: %s\n", result.Fingerprint)
+		fmt.Fprintln(output, "Only install this certificate on devices you control. Verify the fingerprint before enabling trust.")
+	}
+	maybePrintLANSetupQR(output, result.SetupURL)
 }

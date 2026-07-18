@@ -27,7 +27,10 @@ func TestLANManagerCoordinatesRouteBeforeMDNSActivationAndRemovesIt(t *testing.T
 			return laninterface.Candidate{Index: 7, Name: "Wi-Fi", Prefix: netip.MustParsePrefix("192.168.1.42/24"), Flags: net.FlagUp | net.FlagMulticast}, nil
 		},
 		issueCertificate: func(string, time.Time) (tls.Certificate, error) { return tls.Certificate{}, nil },
-		startIngress:     func(context.Context, *Server, string, string) (lanIngress, error) { return fakeIngress, nil },
+		prepareTrust: func(laninterface.Candidate, string) (lanTrustRegistration, error) {
+			return lanTrustRegistration{token: "token", setupURL: "http://192.168.1.42/__gohere/trust/token", fingerprint: "AA:BB"}, nil
+		},
+		startIngress: func(context.Context, *Server, string, string) (lanIngress, error) { return fakeIngress, nil },
 		newResponder: func(_ context.Context, _ lanmdns.Interface, coordinator lanmdns.Coordinator) (lanHostnameResponder, error) {
 			responder = &fakeLANHostnameResponder{coordinator: coordinator}
 			return responder, nil
@@ -39,7 +42,7 @@ func TestLANManagerCoordinatesRouteBeforeMDNSActivationAndRemovesIt(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Hostname != "shop.local." || result.URL != "https://shop.local" {
+	if result.Hostname != "shop.local." || result.URL != "https://shop.local" || result.SetupURL != "http://192.168.1.42/__gohere/trust/token" || result.Fingerprint != "AA:BB" {
 		t.Fatalf("result = %#v", result)
 	}
 	stored, err := store.Load()

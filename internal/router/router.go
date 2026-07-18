@@ -154,22 +154,26 @@ type Config struct {
 }
 
 type Server struct {
-	token          string
-	instanceID     string
-	store          Store
-	shutdown       func()
-	shutdownOnce   sync.Once
-	storeMu        sync.RWMutex
-	lanMu          sync.RWMutex
-	lanRoutes      map[string]lanRouteBinding
-	lanManager     *LANManager
-	proxyTransport *http.Transport
+	token            string
+	instanceID       string
+	store            Store
+	shutdown         func()
+	shutdownOnce     sync.Once
+	storeMu          sync.RWMutex
+	lanMu            sync.RWMutex
+	lanRoutes        map[string]lanRouteBinding
+	lanTrustMu       sync.Mutex
+	lanTrustSessions map[string]LANTrustSession
+	lanTrustAttempts map[string]lanTrustAttempt
+	lanManager       *LANManager
+	proxyTransport   *http.Transport
 }
 
 func NewServer(cfg Config) *Server {
 	return &Server{
 		token: cfg.Token, instanceID: cfg.InstanceID, store: cfg.Store, shutdown: cfg.Shutdown,
-		lanRoutes: make(map[string]lanRouteBinding), proxyTransport: newProxyTransport(),
+		lanRoutes: make(map[string]lanRouteBinding), lanTrustSessions: make(map[string]LANTrustSession),
+		lanTrustAttempts: make(map[string]lanTrustAttempt), proxyTransport: newProxyTransport(),
 	}
 }
 

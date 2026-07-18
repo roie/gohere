@@ -6,6 +6,7 @@ require (
 	github.com/gofrs/flock v0.13.0
 	github.com/libp2p/go-yamux/v5 v5.1.0
 	github.com/miekg/dns v1.1.72
+	github.com/piglig/go-qr v1.1.0
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.46.0
 )
