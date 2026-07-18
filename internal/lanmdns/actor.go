@@ -14,6 +14,7 @@ type RegistrationID string
 
 type Change struct {
 	Registration RegistrationID
+	Requested    string
 	Previous     string
 	Proposed     string
 }
@@ -382,7 +383,7 @@ func (r *Responder) runActor() {
 					request := coordinatorRequest{
 						requested:  entry.requested,
 						generation: entry.generation,
-						change:     Change{Registration: registrationID, Previous: entry.current, Proposed: entry.candidate},
+						change:     Change{Registration: registrationID, Requested: entry.requested, Previous: entry.current, Proposed: entry.candidate},
 					}
 					select {
 					case r.coordinatorRequests <- request:

@@ -104,6 +104,56 @@ func (c *Client) RouteStatuses(ctx context.Context) ([]router.RouteStatus, error
 	return statuses, nil
 }
 
+func (c *Client) CreateLANShare(ctx context.Context, ref router.RouteRef) (router.LANShareResult, error) {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(ref); err != nil {
+		return router.LANShareResult{}, err
+	}
+	request, err := c.authedRequest(ctx, http.MethodPost, "/v2/lan-shares", &body)
+	if err != nil {
+		return router.LANShareResult{}, err
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return router.LANShareResult{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusUnauthorized {
+		return router.LANShareResult{}, ErrUnauthorized
+	}
+	if response.StatusCode != http.StatusOK {
+		return router.LANShareResult{}, responseStatusError("POST", "/v2/lan-shares", response)
+	}
+	var result router.LANShareResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return router.LANShareResult{}, err
+	}
+	return result, nil
+}
+
+func (c *Client) DeleteLANShare(ctx context.Context, ref router.RouteRef) error {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(ref); err != nil {
+		return err
+	}
+	request, err := c.authedRequest(ctx, http.MethodDelete, "/v2/lan-shares", &body)
+	if err != nil {
+		return err
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusUnauthorized {
+		return ErrUnauthorized
+	}
+	if response.StatusCode != http.StatusNoContent {
+		return responseStatusError("DELETE", "/v2/lan-shares", response)
+	}
+	return nil
+}
+
 func (c *Client) UpsertRoute(ctx context.Context, route router.Route) error {
 	var body bytes.Buffer
 	if err := json.NewEncoder(&body).Encode(route); err != nil {

@@ -51,6 +51,7 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 	pendingRefs := reservation.PendingRefs()
 	activated := false
 	released := false
+	var lanShare *router.LANShareResult
 	release := func() {
 		if released || len(pendingRefs) == 0 {
 			return
@@ -59,10 +60,13 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		var err error
+		if lanShare != nil {
+			err = deleteLANShare(cleanupCtx, client, route.Ref())
+		}
 		if activated {
-			err = deleteRouteRefs(cleanupCtx, lifecycleClient, pendingRefs)
+			err = errors.Join(err, deleteRouteRefs(cleanupCtx, lifecycleClient, pendingRefs))
 		} else {
-			err = lifecycleClient.ReleaseRoutes(cleanupCtx, runID, pendingRefs)
+			err = errors.Join(err, lifecycleClient.ReleaseRoutes(cleanupCtx, runID, pendingRefs))
 		}
 		if err != nil && stderr != nil {
 			fmt.Fprintln(stderr, routeCleanupWarning(route.Host, err))
@@ -74,7 +78,15 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 		if err := verifyPlannedTarget(ctx, client, route.Target, plan.OwnerEnv == "wsl"); err != nil {
 			return err
 		}
-		return announceResolvedService(ctx, cmd, service, stdout, stderr)
+		lanShare, err = createLANShare(ctx, client, cmd, route.Ref())
+		if err != nil {
+			return err
+		}
+		if err := announceResolvedService(ctx, cmd, service, stdout, stderr); err != nil {
+			return err
+		}
+		printLANShare(stdout, lanShare)
+		return nil
 	}
 
 	if plan.Static {
@@ -95,9 +107,14 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 		activated = true
 		stopLease := startReservationLease(ctx, lifecycleClient, runID, pendingRefs, stderr)
 		defer stopLease()
+		lanShare, err = createLANShare(ctx, client, cmd, route.Ref())
+		if err != nil {
+			return err
+		}
 		if err := announceResolvedService(ctx, cmd, service, stdout, stderr); err != nil {
 			return err
 		}
+		printLANShare(stdout, lanShare)
 		<-ctx.Done()
 		return nil
 	}
@@ -130,9 +147,14 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 	activated = true
 	stopLease := startReservationLease(ctx, lifecycleClient, runID, pendingRefs, stderr)
 	defer stopLease()
+	lanShare, err = createLANShare(ctx, client, cmd, route.Ref())
+	if err != nil {
+		return err
+	}
 	if err := announceResolvedService(ctx, cmd, service, stdout, stderr); err != nil {
 		return err
 	}
+	printLANShare(stdout, lanShare)
 	startLiveOutput(liveStdout, liveStderr, cmd.Verbose)
 	return result.Wait()
 }

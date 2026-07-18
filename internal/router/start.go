@@ -37,6 +37,7 @@ type Running struct {
 	httpServer   *http.Server
 	httpsServer  *http.Server
 	adminServer  *http.Server
+	lanManager   *LANManager
 	httpLn       net.Listener
 	httpsLn      net.Listener
 	adminLn      net.Listener
@@ -101,6 +102,8 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 			running.Close()
 		}
 	}})
+	lanManager := NewLANManager(ctx, server, cfg.StateDir)
+	server.lanManager = lanManager
 
 	httpLn, err := listenHTTPForGOOS(runtime.GOOS, cfg.HTTPAddr)
 	if err != nil {
@@ -172,6 +175,7 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		httpLn:       httpLn,
 		httpsLn:      httpsLn,
 		adminLn:      adminLn,
+		lanManager:   lanManager,
 		pidPath:      pidPath,
 		instancePath: instancePath,
 		logFile:      logFile,
@@ -311,6 +315,11 @@ func (r *Running) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var firstErr error
+	if r.lanManager != nil {
+		if err := r.lanManager.Close(); err != nil {
+			firstErr = err
+		}
+	}
 	if r.httpServer != nil {
 		if err := r.httpServer.Shutdown(ctx); err != nil {
 			firstErr = err

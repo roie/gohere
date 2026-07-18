@@ -123,7 +123,14 @@ func (s *Server) handleRouteRef(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid route generation", http.StatusBadRequest)
 		return
 	}
-	if err := DeleteRouteRef(s.store, RouteRef{ID: id, Generation: generation}); err != nil {
+	ref := RouteRef{ID: id, Generation: generation}
+	if s.lanManager != nil {
+		if err := s.lanManager.Remove(r.Context(), ref); err != nil {
+			writeReservationError(w, err)
+			return
+		}
+	}
+	if err := DeleteRouteRef(s.store, ref); err != nil {
 		writeReservationError(w, err)
 		return
 	}

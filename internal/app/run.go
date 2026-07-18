@@ -289,9 +289,6 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if cmd.ShareMode == "lan" {
-		return errors.New("gohere error: LAN sharing is not available yet")
-	}
 	if cmd.Kind == cli.CommandRun && cmd.TargetPath != "" {
 		targetPath, info, err := resolvePathTarget(cwd, cmd.TargetPath)
 		if err != nil {
@@ -861,6 +858,9 @@ func registerRoute(ctx context.Context, adminClient adminClient, cmd cli.Command
 }
 
 func registerLegacyRoute(ctx context.Context, adminClient adminClient, cmd cli.Command, plan RunPlan, port, pid int, stdout, stderr io.Writer) (func(), error) {
+	if cmd.ShareMode != "" {
+		return nil, errors.New("router control does not support LAN sharing; update gohere")
+	}
 	routes, err := adminClient.Routes(ctx)
 	if err != nil {
 		if errors.Is(err, admin.ErrUnauthorized) {

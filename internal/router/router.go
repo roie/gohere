@@ -162,6 +162,7 @@ type Server struct {
 	storeMu        sync.RWMutex
 	lanMu          sync.RWMutex
 	lanRoutes      map[string]lanRouteBinding
+	lanManager     *LANManager
 	proxyTransport *http.Transport
 }
 
@@ -526,6 +527,7 @@ func (s *Server) AdminHandler() http.Handler {
 	mux.HandleFunc("/v2/route-reservations", s.handleRouteReservations)
 	mux.HandleFunc("/v2/route-reservations/", s.handleRouteReservation)
 	mux.HandleFunc("/v2/routes/", s.handleRouteRef)
+	mux.HandleFunc("/v2/lan-shares", s.handleLANShare)
 	mux.HandleFunc("/routes/", s.handleRoute)
 	mux.HandleFunc("/probe-target", s.handleProbeTarget)
 	mux.HandleFunc("/shutdown", s.handleShutdown)

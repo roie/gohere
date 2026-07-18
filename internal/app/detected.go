@@ -73,17 +73,32 @@ func registerDetectedRouteLifecycle(ctx context.Context, adminClient adminClient
 	plan.Name = route.Name
 	service := resolvedService{Plan: plan, Route: route, Ref: route.Ref(), ServiceKey: serviceDiscoveryEnvKey(plan.Name), PublicURL: resolvedPublicURL(plan, route)}
 	stopLease := startReservationLease(ctx, lifecycleClient, runID, refs, stderr)
-	if err := announceResolvedService(ctx, cmd, service, stdout, stderr); err != nil {
+	lanShare, err := createLANShare(ctx, adminClient, cmd, route.Ref())
+	if err != nil {
 		stopLease()
-		_ = lifecycleClient.ReleaseRoutes(ctx, runID, refs)
+		_ = deleteRouteRefs(ctx, lifecycleClient, refs)
 		return nil, err
 	}
+	if err := announceResolvedService(ctx, cmd, service, stdout, stderr); err != nil {
+		stopLease()
+		if lanShare != nil {
+			_ = deleteLANShare(ctx, adminClient, route.Ref())
+		}
+		_ = deleteRouteRefs(ctx, lifecycleClient, refs)
+		return nil, err
+	}
+	printLANShare(stdout, lanShare)
 	var cleanupOnce sync.Once
 	cleanup := func() {
 		cleanupOnce.Do(func() {
 			stopLease()
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
+			if lanShare != nil {
+				if err := deleteLANShare(cleanupCtx, adminClient, route.Ref()); err != nil && stderr != nil {
+					fmt.Fprintln(stderr, routeCleanupWarning(route.Host, err))
+				}
+			}
 			if err := deleteRouteRefs(cleanupCtx, lifecycleClient, refs); err != nil && stderr != nil {
 				fmt.Fprintln(stderr, routeCleanupWarning(route.Host, err))
 			}

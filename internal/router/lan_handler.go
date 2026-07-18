@@ -41,6 +41,18 @@ func (s *Server) RemoveLANRoute(ref RouteRef) {
 	}
 }
 
+func (s *Server) RemoveLANHostname(ref RouteRef, hostname string) {
+	hostname, err := normalizeLANHostname(hostname)
+	if err != nil {
+		return
+	}
+	s.lanMu.Lock()
+	defer s.lanMu.Unlock()
+	if binding, ok := s.lanRoutes[hostname]; ok && binding.ref == ref {
+		delete(s.lanRoutes, hostname)
+	}
+}
+
 func (s *Server) LANTLSConfig() *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,

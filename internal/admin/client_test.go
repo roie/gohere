@@ -117,6 +117,41 @@ func TestClientReserveRoutesReportsSchemeConflict(t *testing.T) {
 	}
 }
 
+func TestClientCreatesAndDeletesLANShare(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.URL.Path != "/v2/lan-shares" || request.Header.Get("X-Gohere-Token") != "secret" {
+			t.Fatalf("request = %s %s, token %q", request.Method, request.URL.Path, request.Header.Get("X-Gohere-Token"))
+		}
+		if request.Method == http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"hostname":"shop.local.","url":"https://shop.local","address":"192.168.1.42"}`))
+			return
+		}
+		if request.Method != http.MethodDelete {
+			t.Fatalf("method = %s", request.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "secret")
+	ref := router.RouteRef{ID: "route-1", Generation: 1}
+	result, err := client.CreateLANShare(t.Context(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Hostname != "shop.local." || result.URL != "https://shop.local" {
+		t.Fatalf("result = %#v", result)
+	}
+	if err := client.DeleteLANShare(t.Context(), ref); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d", requests)
+	}
+}
+
 func TestClientDeleteRouteRef(t *testing.T) {
 	store := router.NewMemoryStore()
 	route := router.Route{ID: "route-1", Generation: 2, State: router.RouteStateActive, Host: "web.localhost", Target: "http://127.0.0.1:48302"}
