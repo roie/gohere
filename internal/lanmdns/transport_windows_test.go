@@ -18,13 +18,18 @@ func windowsNativeInterface(t *testing.T) Interface {
 	if os.Getenv("GOHERE_NATIVE_MDNS_TEST") != "1" {
 		t.Skip("set GOHERE_NATIVE_MDNS_TEST=1 on the dedicated Windows runner")
 	}
-	index, err := strconv.Atoi(os.Getenv("LAN_MDNS_INTERFACE_INDEX"))
+	return windowsInterfaceFromEnv(t, "LAN_MDNS_INTERFACE_INDEX", "LAN_MDNS_PREFIX")
+}
+
+func windowsInterfaceFromEnv(t *testing.T, indexVariable, prefixVariable string) Interface {
+	t.Helper()
+	index, err := strconv.Atoi(os.Getenv(indexVariable))
 	if err != nil || index <= 0 {
-		t.Fatal("LAN_MDNS_INTERFACE_INDEX must be a positive integer")
+		t.Fatalf("%s must be a positive integer", indexVariable)
 	}
-	prefix, err := netip.ParsePrefix(os.Getenv("LAN_MDNS_PREFIX"))
+	prefix, err := netip.ParsePrefix(os.Getenv(prefixVariable))
 	if err != nil {
-		t.Fatalf("LAN_MDNS_PREFIX: %v", err)
+		t.Fatalf("%s: %v", prefixVariable, err)
 	}
 	return Interface{Index: index, Name: "native-test", Prefix: prefix}
 }
@@ -159,6 +164,19 @@ func TestRunWindowsTransportSpike(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := RunWindowsTransportSpike(ctx, windowsNativeInterface(t)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunWindowsTransportIsolationSpike(t *testing.T) {
+	selected := windowsNativeInterface(t)
+	excluded := windowsInterfaceFromEnv(t, "LAN_MDNS_EXCLUDED_INTERFACE_INDEX", "LAN_MDNS_EXCLUDED_PREFIX")
+	if selected.Index == excluded.Index {
+		t.Fatal("selected and excluded interface indexes must differ")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := RunWindowsTransportIsolationSpike(ctx, selected, excluded); err != nil {
 		t.Fatal(err)
 	}
 }

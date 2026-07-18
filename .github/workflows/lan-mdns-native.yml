@@ -93,6 +93,8 @@ jobs:
       GOHERE_NATIVE_MDNS_TEST: "1"
       LAN_MDNS_INTERFACE_INDEX: ${{ vars.LAN_MDNS_WINDOWS_INTERFACE_INDEX }}
       LAN_MDNS_PREFIX: ${{ vars.LAN_MDNS_WINDOWS_PREFIX }}
+      LAN_MDNS_EXCLUDED_INTERFACE_INDEX: ${{ vars.LAN_MDNS_WINDOWS_EXCLUDED_INTERFACE_INDEX }}
+      LAN_MDNS_EXCLUDED_PREFIX: ${{ vars.LAN_MDNS_WINDOWS_EXCLUDED_PREFIX }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -110,6 +112,8 @@ jobs:
         run: |
           if (-not $env:LAN_MDNS_INTERFACE_INDEX) { throw "LAN_MDNS_INTERFACE_INDEX is required" }
           if (-not $env:LAN_MDNS_PREFIX) { throw "LAN_MDNS_PREFIX is required" }
+          if (-not $env:LAN_MDNS_EXCLUDED_INTERFACE_INDEX) { throw "LAN_MDNS_EXCLUDED_INTERFACE_INDEX is required" }
+          if (-not $env:LAN_MDNS_EXCLUDED_PREFIX) { throw "LAN_MDNS_EXCLUDED_PREFIX is required" }
           $service = Get-Service Dnscache
           if ($service.Status -ne "Running") { throw "Windows DNS Client service is not running" }
 

@@ -67,6 +67,60 @@ func RunWindowsTransportSpike(ctx context.Context, spec Interface) error {
 	}
 }
 
+// RunWindowsTransportIsolationSpike verifies that traffic sent on an excluded
+// interface is discarded by a transport bound to the selected interface.
+func RunWindowsTransportIsolationSpike(ctx context.Context, selected, excluded Interface) error {
+	selectedTransportValue, err := newPlatformTransport(selected)
+	if err != nil {
+		return fmt.Errorf("open selected Windows LAN mDNS transport: %w", err)
+	}
+	selectedTransport := selectedTransportValue.(*windowsTransport)
+	defer selectedTransport.Close()
+
+	excludedTransportValue, err := newPlatformTransport(excluded)
+	if err != nil {
+		return fmt.Errorf("open excluded Windows LAN mDNS transport: %w", err)
+	}
+	excludedTransport := excludedTransportValue.(*windowsTransport)
+	defer excludedTransport.Close()
+
+	payload := make([]byte, 32)
+	if _, err := rand.Read(payload); err != nil {
+		return fmt.Errorf("generate Windows LAN mDNS isolation payload: %w", err)
+	}
+	if err := excludedTransport.WritePacket(ctx, outboundPacket{Payload: payload, Destination: mdnsIPv4AddrPort}); err != nil {
+		return fmt.Errorf("send excluded-interface multicast: %w", err)
+	}
+	for {
+		packet, err := excludedTransport.ReadPacket(ctx)
+		if err != nil {
+			return fmt.Errorf("observe excluded-interface multicast: %w", err)
+		}
+		if !bytes.Equal(packet.Payload, payload) {
+			continue
+		}
+		if packet.InterfaceIndex != excluded.Index || packet.Source.Addr() != excluded.Prefix.Addr() || packet.Destination != mdnsIPv4AddrPort {
+			return fmt.Errorf("excluded multicast metadata = source %s, destination %s, interface %d", packet.Source, packet.Destination, packet.InterfaceIndex)
+		}
+		break
+	}
+
+	isolationCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	defer cancel()
+	for {
+		packet, err := selectedTransport.ReadPacket(isolationCtx)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return nil
+			}
+			return fmt.Errorf("observe selected transport during isolation check: %w", err)
+		}
+		if bytes.Equal(packet.Payload, payload) {
+			return fmt.Errorf("excluded-interface multicast was accepted on selected interface %d", selected.Index)
+		}
+	}
+}
+
 func newPlatformTransport(spec Interface) (transport, error) {
 	if err := validateInterface(spec); err != nil {
 		return nil, err
