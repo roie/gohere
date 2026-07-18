@@ -53,6 +53,30 @@ func TestLANShareStateTransitionsFailClosed(t *testing.T) {
 	}
 }
 
+func TestActivateLANShareStoresResolvedHostnameAndInterface(t *testing.T) {
+	route := Route{ID: "route-1", Generation: 1, State: RouteStateActive, Host: "shop.localhost", Target: "http://127.0.0.1:5173"}
+	store := NewMemoryStore()
+	if err := store.Save([]Route{route}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RequestLANShare(store, route.Ref(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateLANShare(store, route.Ref(), LANActivation{
+		Hostname: "shop-2.local.", InterfaceIndex: 7, InterfaceName: "Wi-Fi", Address: "192.168.1.42", Prefix: "192.168.1.42/24",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	share := routes[0].LANShare
+	if share == nil || share.State != LANShareActive || share.Hostname != "shop-2.local." || share.InterfaceIndex != 7 || share.Address != "192.168.1.42" {
+		t.Fatalf("LAN share = %#v", share)
+	}
+}
+
 func TestRemoveLANSharePreservesRoute(t *testing.T) {
 	route := Route{ID: "route-1", Generation: 1, State: RouteStateActive, Host: "shop.localhost", Target: "http://127.0.0.1:5173"}
 	store := NewMemoryStore()

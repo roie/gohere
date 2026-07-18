@@ -3,6 +3,7 @@ package router
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -15,6 +16,14 @@ const (
 	LANShareSuspended LANShareState = "suspended"
 	LANShareRemoving  LANShareState = "removing"
 )
+
+type LANActivation struct {
+	Hostname       string
+	InterfaceIndex int
+	InterfaceName  string
+	Address        string
+	Prefix         string
+}
 
 type LANShare struct {
 	State             LANShareState `json:"state"`
@@ -70,6 +79,45 @@ func SetLANShareState(store Store, ref RouteRef, next LANShareState) error {
 			return nil, fmt.Errorf("invalid LAN share transition %s to %s", share.State, next)
 		}
 		share.State = next
+		return routes, nil
+	})
+}
+
+func ActivateLANShare(store Store, ref RouteRef, activation LANActivation) error {
+	hostname, err := normalizeLANHostname(activation.Hostname)
+	if err != nil {
+		return err
+	}
+	address, err := netip.ParseAddr(activation.Address)
+	if err != nil || !address.Is4() || !address.IsPrivate() {
+		return errors.New("LAN activation requires a private IPv4 address")
+	}
+	prefix, err := netip.ParsePrefix(activation.Prefix)
+	if err != nil || !prefix.Addr().Is4() || !prefix.Contains(address) {
+		return errors.New("LAN activation prefix does not contain its address")
+	}
+	if activation.InterfaceIndex <= 0 || strings.TrimSpace(activation.InterfaceName) == "" {
+		return errors.New("LAN activation requires a network interface")
+	}
+	return UpdateStore(store, func(routes []Route) ([]Route, error) {
+		index := routeRefIndex(routes, ref)
+		if index < 0 {
+			return nil, ErrRouteRefMismatch
+		}
+		share := routes[index].LANShare
+		if share == nil {
+			return nil, errors.New("route has no LAN share")
+		}
+		if share.State != LANShareActive && !validLANShareTransition(share.State, LANShareActive) {
+			return nil, fmt.Errorf("invalid LAN share transition %s to %s", share.State, LANShareActive)
+		}
+		share.State = LANShareActive
+		share.Hostname = hostname
+		share.InterfaceIndex = activation.InterfaceIndex
+		share.InterfaceName = activation.InterfaceName
+		share.Address = address.String()
+		share.Prefix = prefix.String()
+		share.SuspendedReason = ""
 		return routes, nil
 	})
 }

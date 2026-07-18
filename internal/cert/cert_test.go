@@ -3,13 +3,77 @@ package cert
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestIssueEphemeralLANHostCertUsesExistingCAWithoutPersistingLeaf(t *testing.T) {
+	store := Store{StateDir: t.TempDir()}
+	ca, err := store.EnsureCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := filesBelow(t, store.StateDir)
+	now := time.Date(2026, 7, 18, 19, 0, 0, 0, time.UTC)
+	leaf, err := store.IssueEphemeralLANHostCert("Shop.Local.", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leaf.Certificate) < 1 || leaf.PrivateKey == nil {
+		t.Fatalf("certificate = %#v", leaf)
+	}
+	parsed, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.DNSNames) != 1 || parsed.DNSNames[0] != "shop.local" {
+		t.Fatalf("DNS names = %#v", parsed.DNSNames)
+	}
+	if parsed.NotAfter.Sub(parsed.NotBefore) != 24*time.Hour {
+		t.Fatalf("validity = %s", parsed.NotAfter.Sub(parsed.NotBefore))
+	}
+	if err := parsed.CheckSignatureFrom(ca.Cert); err != nil {
+		t.Fatal(err)
+	}
+	after := filesBelow(t, store.StateDir)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("ephemeral leaf changed files: before %v, after %v", before, after)
+	}
+}
+
+func TestIssueEphemeralLANHostCertRejectsNonLocalName(t *testing.T) {
+	store := Store{StateDir: t.TempDir()}
+	if _, err := store.IssueEphemeralLANHostCert("shop.localhost", time.Now()); err == nil {
+		t.Fatal("non-.local hostname accepted")
+	}
+}
+
+func filesBelow(t *testing.T, root string) []string {
+	t.Helper()
+	var files []string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			files = append(files, strings.TrimPrefix(path, root))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(files)
+	return files
+}
 
 func TestEnsureCAGeneratesAndPersistsFingerprint(t *testing.T) {
 	store := Store{StateDir: t.TempDir()}

@@ -160,11 +160,16 @@ type Server struct {
 	shutdown       func()
 	shutdownOnce   sync.Once
 	storeMu        sync.RWMutex
+	lanMu          sync.RWMutex
+	lanRoutes      map[string]lanRouteBinding
 	proxyTransport *http.Transport
 }
 
 func NewServer(cfg Config) *Server {
-	return &Server{token: cfg.Token, instanceID: cfg.InstanceID, store: cfg.Store, shutdown: cfg.Shutdown, proxyTransport: newProxyTransport()}
+	return &Server{
+		token: cfg.Token, instanceID: cfg.InstanceID, store: cfg.Store, shutdown: cfg.Shutdown,
+		lanRoutes: make(map[string]lanRouteBinding), proxyTransport: newProxyTransport(),
+	}
 }
 
 func newProxyTransport() *http.Transport {

@@ -182,6 +182,61 @@ func (s Store) EnsureHostCert(host string) (tls.Certificate, error) {
 	return tls.LoadX509KeyPair(certPath, keyPath)
 }
 
+func (s Store) IssueEphemeralLANHostCert(host string, now time.Time) (tls.Certificate, error) {
+	canonical, err := canonicalLANHost(host)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	ca, err := s.EnsureCA()
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	notBefore := now.UTC().Add(-time.Minute)
+	template := &x509.Certificate{
+		SerialNumber: serialNumber(), Subject: pkix.Name{CommonName: canonical},
+		NotBefore: notBefore, NotAfter: notBefore.Add(24 * time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:    []string{canonical},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, ca.Cert, &key.PublicKey, ca.Key)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	certificatePEM := append(
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Cert.Raw})...,
+	)
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	certificate, err := tls.X509KeyPair(certificatePEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	certificate.Leaf, err = x509.ParseCertificate(der)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return certificate, nil
+}
+
+func canonicalLANHost(host string) (string, error) {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	label, ok := strings.CutSuffix(host, ".local")
+	if !ok || label == "" || len(label) > 63 || strings.Contains(label, ".") || label[0] == '-' || label[len(label)-1] == '-' {
+		return "", fmt.Errorf("invalid LAN hostname %q", host)
+	}
+	for _, character := range label {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+			return "", fmt.Errorf("invalid LAN hostname %q", host)
+		}
+	}
+	return label + ".local", nil
+}
+
 func (s Store) HostCertPaths(host string) (certPath, keyPath, hostPath string) {
 	key := hostCacheKey(host)
 	base := filepath.Join(s.StateDir, "tls", "certs", key)
