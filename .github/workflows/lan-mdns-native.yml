@@ -1,0 +1,44 @@
+name: Native LAN mDNS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-transport:
+    name: Windows transport coexistence
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 15
+    env:
+      GOHERE_NATIVE_MDNS_TEST: "1"
+      LAN_MDNS_INTERFACE_INDEX: ${{ vars.LAN_MDNS_INTERFACE_INDEX }}
+      LAN_MDNS_PREFIX: ${{ vars.LAN_MDNS_PREFIX }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Verify fixture
+        shell: pwsh
+        run: |
+          if (-not $env:LAN_MDNS_INTERFACE_INDEX) { throw "LAN_MDNS_INTERFACE_INDEX is required" }
+          if (-not $env:LAN_MDNS_PREFIX) { throw "LAN_MDNS_PREFIX is required" }
+          $service = Get-Service Dnscache
+          if ($service.Status -ne "Running") { throw "Windows DNS Client service is not running" }
+
+      - name: Test transport repeatedly
+        shell: pwsh
+        run: go test ./internal/lanmdns -run 'WindowsTransport|RunWindowsTransportSpike' -v -count=10
+
+      - name: Run transport spike
+        shell: pwsh
+        run: go run ./cmd/lanmdns-spike --interface-index $env:LAN_MDNS_INTERFACE_INDEX --prefix $env:LAN_MDNS_PREFIX

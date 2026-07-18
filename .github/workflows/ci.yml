@@ -33,6 +33,10 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Compile Windows LAN mDNS spike
+        if: runner.os == 'Windows'
+        run: go build ./cmd/lanmdns-spike
+
       - name: Vet
         run: go vet ./...
 
