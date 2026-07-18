@@ -607,6 +607,14 @@ func (s *Server) HTTPHandler() http.Handler {
 			return
 		}
 		proxy := httputil.NewSingleHostReverseProxy(target)
+		director := proxy.Director
+		proxy.Director = nil
+		proxy.Rewrite = func(proxyRequest *httputil.ProxyRequest) {
+			director(proxyRequest.Out)
+			rewriteLANRequest(proxyRequest.Out, proxyRequest.In)
+			setForwardedHeaders(proxyRequest.Out, proxyRequest.In)
+			appendRouteHop(proxyRequest.Out, route.Host)
+		}
 		proxy.Transport = s.proxyTransport
 		proxy.ModifyResponse = rewriteLANResponse
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
@@ -620,13 +628,6 @@ func (s *Server) HTTPHandler() http.Handler {
 				Host:    route.Host,
 				Target:  route.Target,
 			})
-		}
-		director := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			director(req)
-			rewriteLANRequest(req, r)
-			setForwardedHeaders(req, r)
-			appendRouteHop(req, route.Host)
 		}
 		proxy.ServeHTTP(w, r)
 	})
@@ -658,6 +659,9 @@ func setForwardedHeaders(out, in *http.Request) {
 		if lower == "forwarded" || strings.HasPrefix(lower, "x-forwarded-") {
 			out.Header.Del(name)
 		}
+	}
+	if clientIP, _, err := net.SplitHostPort(in.RemoteAddr); err == nil {
+		out.Header.Set("X-Forwarded-For", clientIP)
 	}
 	host := forwardedHost(in)
 	proto := forwardedProto(in)
