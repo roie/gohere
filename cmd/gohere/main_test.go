@@ -78,6 +78,8 @@ func TestPrintUsageDescribesFlags(t *testing.T) {
 		"auto-refresh static pages when files change",
 		"--as NAME",
 		"use NAME.localhost for this run",
+		"--share=lan",
+		"share this route on the local network",
 		"--verbose",
 		"show target, command, and service details",
 		"--target PORT",

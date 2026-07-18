@@ -289,6 +289,9 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if cmd.ShareMode == "lan" {
+		return errors.New("gohere error: LAN sharing is not available yet")
+	}
 	if cmd.Kind == cli.CommandRun && cmd.TargetPath != "" {
 		targetPath, info, err := resolvePathTarget(cwd, cmd.TargetPath)
 		if err != nil {

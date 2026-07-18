@@ -599,6 +599,48 @@ func TestParseRawCommandPreservesTrailingFlags(t *testing.T) {
 	}
 }
 
+func TestParseShareLAN(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		kind       CommandKind
+		wantScript string
+		wantRaw    []string
+	}{
+		{name: "default", args: []string{"gohere", "--share=lan"}, kind: CommandRun, wantScript: "dev"},
+		{name: "script", args: []string{"gohere", "dev:web", "--share=lan"}, kind: CommandRun, wantScript: "dev:web"},
+		{name: "raw command", args: []string{"gohere", "--share=lan", "--", "npm", "run", "dev"}, kind: CommandRaw, wantRaw: []string{"npm", "run", "dev"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, err := Parse(tt.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cmd.Kind != tt.kind || cmd.Script != tt.wantScript || cmd.ShareMode != "lan" || !sameStrings(cmd.Raw, tt.wantRaw) {
+				t.Fatalf("command = %#v", cmd)
+			}
+		})
+	}
+}
+
+func TestParseRejectsInvalidShareMode(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"gohere", "--share"}, want: "gohere error: --share requires a mode"},
+		{args: []string{"gohere", "--share="}, want: "gohere error: --share requires a mode"},
+		{args: []string{"gohere", "--share=public"}, want: "gohere error: unsupported share mode \"public\". Available: lan"},
+	}
+	for _, tt := range tests {
+		_, err := Parse(tt.args)
+		if err == nil || err.Error() != tt.want {
+			t.Fatalf("Parse(%q) error = %v, want %q", tt.args, err, tt.want)
+		}
+	}
+}
+
 func sameStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

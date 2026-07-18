@@ -40,6 +40,7 @@ type Command struct {
 	TargetPort     int
 	PortFlag       string
 	URLScheme      string
+	ShareMode      string
 	HelpTopic      string
 	StopTarget     string
 	StopAll        bool
@@ -81,6 +82,8 @@ func Parse(args []string) (Command, error) {
 			cmd.Live = true
 		case "--http":
 			cmd.HTTP = true
+		case "--share":
+			return Command{}, parseError("--share requires a mode")
 		case "--as":
 			if len(rest) == 0 || strings.HasPrefix(rest[0], "-") {
 				return Command{}, parseError("--as requires a name")
@@ -182,6 +185,17 @@ func Parse(args []string) (Command, error) {
 			}
 			return fixedCommand(CommandUninstall, arg, rest)
 		default:
+			if strings.HasPrefix(arg, "--share=") {
+				mode := strings.TrimPrefix(arg, "--share=")
+				if mode == "" {
+					return Command{}, parseError("--share requires a mode")
+				}
+				if mode != "lan" {
+					return Command{}, parseError(fmt.Sprintf("unsupported share mode %q. Available: lan", mode))
+				}
+				cmd.ShareMode = mode
+				continue
+			}
 			if strings.HasPrefix(arg, "-") {
 				return Command{}, unknownOptionError(arg)
 			}
