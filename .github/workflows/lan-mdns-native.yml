@@ -21,7 +21,7 @@ jobs:
   linux-coexistence:
     name: Linux Avahi coexistence
     if: inputs.target == 'linux' || inputs.target == 'all'
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, lan-mdns-native]
     timeout-minutes: 20
     env:
       GOHERE_NATIVE_MDNS_TEST: "1"
@@ -54,7 +54,7 @@ jobs:
   macos-coexistence:
     name: macOS Bonjour coexistence
     if: inputs.target == 'macos' || inputs.target == 'all'
-    runs-on: [self-hosted, macos]
+    runs-on: [self-hosted, macos, lan-mdns-native]
     timeout-minutes: 20
     env:
       GOHERE_NATIVE_MDNS_TEST: "1"
@@ -87,7 +87,7 @@ jobs:
   windows-transport:
     name: Windows transport coexistence
     if: inputs.target == 'windows' || inputs.target == 'all'
-    runs-on: [self-hosted, windows]
+    runs-on: [self-hosted, windows, lan-mdns-native]
     timeout-minutes: 15
     env:
       GOHERE_NATIVE_MDNS_TEST: "1"
