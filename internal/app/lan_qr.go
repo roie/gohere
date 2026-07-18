@@ -24,7 +24,6 @@ func renderLANSetupQR(setupURL string) (string, int, error) {
 	width := code.Size() + 2*lanQRQuietZone
 	var output strings.Builder
 	for y := -lanQRQuietZone; y < code.Size()+lanQRQuietZone; y += 2 {
-		output.WriteString("\x1b[30;47m")
 		for x := -lanQRQuietZone; x < code.Size()+lanQRQuietZone; x++ {
 			top := code.Module(x, y)
 			bottom := code.Module(x, y+1)
@@ -39,7 +38,7 @@ func renderLANSetupQR(setupURL string) (string, int, error) {
 				output.WriteByte(' ')
 			}
 		}
-		output.WriteString("\x1b[0m\n")
+		output.WriteByte('\n')
 	}
 	return output.String(), width, nil
 }

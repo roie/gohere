@@ -17,6 +17,21 @@ import (
 	"github.com/roie/gohere/internal/lanmdns"
 )
 
+func TestLANTrustTokenIsCompactAndRetains128BitsOfEntropy(t *testing.T) {
+	token, err := newLANTrustToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(token) != 22 {
+		t.Fatalf("token length = %d, want 22: %q", len(token), token)
+	}
+	for _, char := range token {
+		if !(char >= 'a' && char <= 'z') && !(char >= 'A' && char <= 'Z') && !(char >= '0' && char <= '9') && char != '-' && char != '_' {
+			t.Fatalf("token contains non-URL-safe character %q", char)
+		}
+	}
+}
+
 func TestLANManagerCoordinatesRouteBeforeMDNSActivationAndRemovesIt(t *testing.T) {
 	store, server, route := lanManagerFixture(t)
 	fakeIngress := &fakeLANIngress{}

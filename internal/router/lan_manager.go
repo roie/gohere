@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -560,11 +561,11 @@ func routeForRef(store Store, ref RouteRef) (Route, error) {
 }
 
 func newLANTrustToken() (string, error) {
-	value := make([]byte, 32)
+	value := make([]byte, 16)
 	if _, err := rand.Read(value); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(value), nil
+	return base64.RawURLEncoding.EncodeToString(value), nil
 }
 
 func formatLANFingerprint(der []byte) string {

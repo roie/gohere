@@ -2,6 +2,7 @@ package router
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"html"
@@ -12,9 +13,10 @@ import (
 )
 
 const (
-	lanTrustPathPrefix = "/__gohere/trust/"
-	lanTrustRateLimit  = 20
-	lanTrustRateWindow = time.Minute
+	lanTrustPathPrefix       = "/g/"
+	legacyLANTrustPathPrefix = "/__gohere/trust/"
+	lanTrustRateLimit        = 20
+	lanTrustRateWindow       = time.Minute
 )
 
 type LANTrustSession struct {
@@ -55,8 +57,12 @@ func (s *Server) ClearLANTrust(tokens ...string) {
 }
 
 func (s *Server) serveLANTrust(w http.ResponseWriter, request *http.Request) bool {
-	if !strings.HasPrefix(request.URL.Path, lanTrustPathPrefix) {
-		return false
+	pathPrefix := lanTrustPathPrefix
+	if !strings.HasPrefix(request.URL.Path, pathPrefix) {
+		pathPrefix = legacyLANTrustPathPrefix
+		if !strings.HasPrefix(request.URL.Path, pathPrefix) {
+			return false
+		}
 	}
 	if request.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -66,7 +72,7 @@ func (s *Server) serveLANTrust(w http.ResponseWriter, request *http.Request) boo
 	if parsed, _, err := net.SplitHostPort(host); err == nil {
 		host = parsed
 	}
-	parts := strings.Split(strings.TrimPrefix(request.URL.Path, lanTrustPathPrefix), "/")
+	parts := strings.Split(strings.TrimPrefix(request.URL.Path, pathPrefix), "/")
 	client, _, _ := net.SplitHostPort(request.RemoteAddr)
 	if client == "" {
 		client = request.RemoteAddr
@@ -126,8 +132,24 @@ func (s *Server) rateLimitedLANTrust(client string, now time.Time) bool {
 func (s *Server) writeLANTrustPage(w http.ResponseWriter, session LANTrustSession) {
 	base := lanTrustPathPrefix + session.Token + "/"
 	hostname := strings.TrimSuffix(session.Hostname, ".")
+	appURL := "https://" + hostname
+	appURLJSON, _ := json.Marshal(appURL)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Trust gohere</title></head><body><main><h1>Trust gohere on this device</h1><p>Only install this certificate on devices you control. Verify the fingerprint before enabling trust.</p><p><strong>CA fingerprint:</strong> <code>%s</code></p><p><a href="%sgohere-root.pem">Download gohere-root.pem</a></p><p><a href="%sgohere.mobileconfig">Download gohere.mobileconfig for Apple devices</a></p><h2>Apple devices</h2><p>Install the profile, then enable the root under Settings → General → About → Certificate Trust Settings.</p><h2>Android, Windows, macOS, and Linux</h2><p>Install the downloaded public root certificate in the system trust store and compare its fingerprint above.</p><p>After trust is enabled, open <a href="https://%s">https://%s</a>.</p></main></body></html>`, html.EscapeString(session.Fingerprint), html.EscapeString(base), html.EscapeString(base), html.EscapeString(hostname), html.EscapeString(hostname))
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect this device · gohere</title><style>
+:root{color-scheme:light dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5}body{margin:0;background:#f4f5f7;color:#17191c}main{box-sizing:border-box;width:min(100%% - 32px,680px);margin:0 auto;padding:48px 0 64px}h1{margin:0 0 8px;font-size:2rem;line-height:1.15;letter-spacing:-.025em}h2{margin:32px 0 8px;font-size:1.15rem}p{margin:8px 0;color:#4b5159}.notice{margin:24px 0;padding:16px;background:#fff;border-radius:12px}.fingerprint{overflow-wrap:anywhere;color:#262a30}.actions{display:flex;flex-wrap:wrap;gap:10px;margin:20px 0}a.button{display:inline-block;padding:11px 16px;border-radius:8px;background:#1769e0;color:#fff;font-weight:650;text-decoration:none}a.secondary{background:#e3e7ed;color:#20242a}ol{margin:10px 0;padding-left:24px}li+li{margin-top:8px}.security{font-size:.9rem}@media(prefers-color-scheme:dark){body{background:#111315;color:#f4f5f7}.notice{background:#1d2024}p,.fingerprint{color:#c6cbd2}a.secondary{background:#30353c;color:#f4f5f7}}@media(max-width:480px){main{padding-top:28px}h1{font-size:1.65rem}.actions{display:grid}a.button{text-align:center}}
+</style></head><body><main><h1>Connect this device to %s</h1><p>One-time setup. If this device already trusts gohere, you will be forwarded automatically.</p><div class="notice"><strong>Verify before installing</strong><p class="fingerprint"><code>%s</code></p><p class="security">Only install this certificate on devices you control.</p></div><section><h2>iPhone or iPad</h2><ol><li>Open this page in <strong>Safari</strong>. Chrome’s secure-connections setting may block the initial HTTP setup page.</li><li><a href="%sgohere.mobileconfig">Download the Apple profile</a>.</li><li>Open Settings → General → <strong>VPN &amp; Device Management</strong>, select the gohere profile, and tap Install.</li><li>Then open Settings → General → About → <strong>Certificate Trust Settings</strong> and enable full trust for “gohere local development CA”.</li></ol></section><section><h2>Android</h2><ol><li><a href="%sgohere-root.pem">Download the root certificate</a>.</li><li>Open Settings and search for <strong>Install a certificate</strong>.</li><li>Choose CA certificate, select the downloaded file, and confirm.</li></ol><p>Settings names vary between Android manufacturers.</p></section><div class="actions"><a class="button" id="open-app" href="%s">Open %s</a><a class="button secondary" href="%sgohere-root.pem">Download certificate</a></div></main><script>
+const appURL = %s;
+async function openWhenTrusted() {
+  try {
+    await fetch(appURL, {mode: "no-cors", cache: "no-store"});
+    window.location.replace(appURL);
+  } catch (_) {}
+}
+window.addEventListener("pageshow", openWhenTrusted);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) openWhenTrusted(); });
+</script></body></html>`, html.EscapeString(hostname), html.EscapeString(session.Fingerprint), html.EscapeString(base), html.EscapeString(base), html.EscapeString(appURL), html.EscapeString(hostname), html.EscapeString(base), appURLJSON)
 }
 
 func lanTrustMobileConfig(session LANTrustSession) []byte {

@@ -18,7 +18,12 @@ func TestLANTrustEndpointServesOnlyPublicBootstrapMaterial(t *testing.T) {
 	if page.Code != http.StatusOK {
 		t.Fatalf("page status = %d, body = %q", page.Code, page.Body.String())
 	}
-	for _, want := range []string{"https://shop.local", "AA:BB:CC", "Only install this certificate on devices you control", "gohere-root.pem", "gohere.mobileconfig"} {
+	for _, want := range []string{
+		"https://shop.local", "AA:BB:CC", "Only install this certificate on devices you control",
+		"gohere-root.pem", "gohere.mobileconfig", "VPN &amp; Device Management",
+		"Certificate Trust Settings", "Install a certificate", "Open shop.local",
+		`fetch(appURL, {mode: "no-cors", cache: "no-store"})`,
+	} {
 		if !strings.Contains(page.Body.String(), want) {
 			t.Fatalf("page missing %q", want)
 		}
@@ -38,6 +43,14 @@ func TestLANTrustEndpointServesOnlyPublicBootstrapMaterial(t *testing.T) {
 	profile := lanTrustRequest(server, "192.168.1.42", "/__gohere/trust/secret-token/gohere.mobileconfig")
 	if profile.Code != http.StatusOK || !strings.Contains(profile.Body.String(), "com.apple.security.root") {
 		t.Fatalf("profile = %d %q", profile.Code, profile.Body.String())
+	}
+}
+
+func TestLANTrustEndpointUsesCompactBootstrapPath(t *testing.T) {
+	server := NewServer(Config{Store: NewMemoryStore()})
+	server.ConfigureLANTrust(LANTrustSession{Address: "192.168.1.42", Token: "secret-token", Hostname: "shop.local.", CACertificatePEM: []byte("public")})
+	if response := lanTrustRequest(server, "192.168.1.42", "/g/secret-token"); response.Code != http.StatusOK {
+		t.Fatalf("compact path status = %d", response.Code)
 	}
 }
 
