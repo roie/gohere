@@ -148,7 +148,7 @@ func routeReservationForPlan(cmd cli.Command, plan RunPlan) router.RouteReservat
 		ProjectRoot: plan.ProjectRoot, ProjectName: plan.ProjectName, Source: plan.RouteSource,
 		OwnerCWD: plan.CWD, OwnerEnv: ownerEnv, OwnerInstance: plan.OwnerInstance,
 		Distro: plan.Distro, LinuxUser: plan.LinuxUser, RunnerID: plan.RunnerID,
-		Mode: runMode(cmd, plan), ListenTarget: routeTarget(plan.ListenHost, plan.Port),
+		Mode: runMode(cmd, plan), ShareMode: cmd.ShareMode, ListenTarget: routeTarget(plan.ListenHost, plan.Port),
 	}
 }
 

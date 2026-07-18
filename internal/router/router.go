@@ -62,6 +62,7 @@ type Route struct {
 	Generation           uint64     `json:"generation,omitempty"`
 	RunID                string     `json:"runId,omitempty"`
 	State                RouteState `json:"state,omitempty"`
+	LANShare             *LANShare  `json:"lanShare,omitempty"`
 	Service              string     `json:"service,omitempty"`
 	PreferredScheme      string     `json:"preferredScheme,omitempty"`
 	URLPath              string     `json:"urlPath,omitempty"`

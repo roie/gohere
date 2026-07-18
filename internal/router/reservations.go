@@ -41,6 +41,7 @@ type RouteReservation struct {
 	ListenTarget    string    `json:"listenTarget,omitempty"`
 	PID             int       `json:"pid,omitempty"`
 	Mode            string    `json:"mode,omitempty"`
+	ShareMode       string    `json:"shareMode,omitempty"`
 	ProcessIdentity string    `json:"processIdentity,omitempty"`
 	RunnerID        string    `json:"runnerId,omitempty"`
 	Reuse           *RouteRef `json:"reuse,omitempty"`
@@ -143,6 +144,10 @@ func ReserveRoutes(store Store, request ReservationRequest, now time.Time) (Rese
 				if err := schemeConflictForRoute(existing, candidate); err != nil {
 					return nil, err
 				}
+				if candidate.ShareMode == "lan" && existing.LANShare == nil {
+					existing.LANShare = requestedLANShare(candidate.ShareMode, existing.Host, now)
+					routes[routeRefIndex(routes, existing.Ref())] = existing
+				}
 				existingCopy := existing
 				reused[i] = &existingCopy
 			}
@@ -205,6 +210,7 @@ func ReserveRoutes(store Store, request ReservationRequest, now time.Time) (Rese
 				Generation:           1,
 				RunID:                request.RunID,
 				State:                RouteStatePending,
+				LANShare:             requestedLANShare(candidate.ShareMode, finalHost, now),
 				Service:              candidate.Service,
 				PreferredScheme:      candidate.PreferredScheme,
 				URLPath:              candidate.URLPath,
@@ -367,6 +373,9 @@ func validateReservation(candidate RouteReservation) (RouteReservation, error) {
 	}
 	if !validPreferredScheme(candidate.PreferredScheme) {
 		return RouteReservation{}, errors.New("preferred scheme must be http or https")
+	}
+	if candidate.ShareMode != "" && candidate.ShareMode != "lan" {
+		return RouteReservation{}, fmt.Errorf("unsupported share mode %q", candidate.ShareMode)
 	}
 	return candidate, nil
 }
