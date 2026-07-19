@@ -35,18 +35,19 @@ type Running struct {
 	HTTPSAddr string
 	AdminAddr string
 
-	httpServer   *http.Server
-	httpsServer  *http.Server
-	adminServer  *http.Server
-	lanManager   *LANManager
-	httpLn       net.Listener
-	httpsLn      net.Listener
-	adminLn      net.Listener
-	pidPath      string
-	instancePath string
-	logFile      *os.File
-	done         chan struct{}
-	doneOnce     sync.Once
+	httpServer      *http.Server
+	httpsServer     *http.Server
+	adminServer     *http.Server
+	lanManager      *LANManager
+	lanRecoveryDone chan struct{}
+	httpLn          net.Listener
+	httpsLn         net.Listener
+	adminLn         net.Listener
+	pidPath         string
+	instancePath    string
+	logFile         *os.File
+	done            chan struct{}
+	doneOnce        sync.Once
 }
 
 const (
@@ -173,14 +174,15 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 			WriteTimeout:      adminWriteTimeout,
 			IdleTimeout:       adminIdleTimeout,
 		},
-		httpLn:       httpLn,
-		httpsLn:      httpsLn,
-		adminLn:      adminLn,
-		lanManager:   lanManager,
-		pidPath:      pidPath,
-		instancePath: instancePath,
-		logFile:      logFile,
-		done:         make(chan struct{}),
+		httpLn:          httpLn,
+		httpsLn:         httpsLn,
+		adminLn:         adminLn,
+		lanManager:      lanManager,
+		lanRecoveryDone: make(chan struct{}),
+		pidPath:         pidPath,
+		instancePath:    instancePath,
+		logFile:         logFile,
+		done:            make(chan struct{}),
 	}
 	if cfg.TLSConfig != nil {
 		running.httpsServer = &http.Server{
@@ -194,7 +196,10 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		go running.httpsServer.Serve(tls.NewListener(httpsLn, running.httpsServer.TLSConfig))
 	}
 	go running.adminServer.Serve(adminLn)
-	go func() { _ = lanManager.Recover(ctx) }()
+	go func() {
+		defer close(running.lanRecoveryDone)
+		_ = lanManager.Recover(lanManager.ctx)
+	}()
 	go func() {
 		<-ctx.Done()
 		running.Close()
@@ -318,7 +323,15 @@ func (r *Running) Close() error {
 	defer cancel()
 	var firstErr error
 	if r.lanManager != nil {
-		if err := r.lanManager.Close(); err != nil {
+		r.lanManager.cancel()
+		if r.lanRecoveryDone != nil {
+			select {
+			case <-r.lanRecoveryDone:
+			case <-ctx.Done():
+				firstErr = ctx.Err()
+			}
+		}
+		if err := r.lanManager.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
