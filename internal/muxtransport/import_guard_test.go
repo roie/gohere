@@ -29,18 +29,26 @@ func TestDirectMuxImportGuardDetectsViolation(t *testing.T) {
 	root := t.TempDir()
 	allowedDir := filepath.Join(root, "internal", "muxtransport")
 	forbiddenDir := filepath.Join(root, "internal", "tunnel")
+	worktreeDir := filepath.Join(root, ".worktrees", "feature", "internal", "tunnel")
 	if err := os.MkdirAll(allowedDir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(forbiddenDir, 0700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(worktreeDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	allowedFile := filepath.Join(allowedDir, "allowed.go")
 	forbiddenFile := filepath.Join(forbiddenDir, "forbidden.go")
+	worktreeFile := filepath.Join(worktreeDir, "ignored.go")
 	if err := os.WriteFile(allowedFile, []byte("package muxtransport\nimport _ \""+muxImportPath+"\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(forbiddenFile, []byte("package tunnel\nimport _ \""+muxImportPath+"\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(worktreeFile, []byte("package tunnel\nimport _ \""+muxImportPath+"\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -63,7 +71,7 @@ func directMuxImports(root string) ([]string, error) {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", "node_modules", "vendor":
+			case ".git", ".worktrees", "node_modules", "vendor":
 				return filepath.SkipDir
 			}
 			return nil
