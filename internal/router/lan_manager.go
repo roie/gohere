@@ -132,19 +132,22 @@ func NewLANManager(ctx context.Context, server *Server, stateDir string, routeOw
 		},
 		networkStillValid: func(ctx context.Context, selected laninterface.Candidate) bool {
 			candidates, err := laninterface.Discover(ctx)
-			if err != nil {
-				return false
-			}
-			for _, candidate := range candidates {
-				if candidate.Index == selected.Index && candidate.Prefix == selected.Prefix {
-					return true
-				}
-			}
-			return false
+			return err == nil && selectedLANNetworkStillValid(selected, candidates)
 		},
 		monitorInterval: 10 * time.Second,
 		now:             time.Now,
 	})
+}
+
+func selectedLANNetworkStillValid(selected laninterface.Candidate, candidates []laninterface.Candidate) bool {
+	for _, candidate := range candidates {
+		if candidate.Index != selected.Index || candidate.Prefix != selected.Prefix {
+			continue
+		}
+		_, err := laninterface.Select([]laninterface.Candidate{candidate}, nil)
+		return err == nil
+	}
+	return false
 }
 
 func newLANManager(ctx context.Context, server *Server, config lanManagerConfig) *LANManager {

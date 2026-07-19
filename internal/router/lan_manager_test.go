@@ -211,6 +211,18 @@ func TestLANManagerSuspendsUnverifiedRouteWithoutExposure(t *testing.T) {
 	}
 }
 
+func TestSelectedLANNetworkRejectsPublicProfileTransition(t *testing.T) {
+	selected := laninterface.Candidate{Index: 7, Name: "Wi-Fi", Prefix: netip.MustParsePrefix("192.168.1.42/24"), Flags: net.FlagUp | net.FlagMulticast, Profile: laninterface.ProfilePrivate}
+	if !selectedLANNetworkStillValid(selected, []laninterface.Candidate{selected}) {
+		t.Fatal("unchanged private network was rejected")
+	}
+	becamePublic := selected
+	becamePublic.Profile = laninterface.ProfilePublic
+	if selectedLANNetworkStillValid(selected, []laninterface.Candidate{becamePublic}) {
+		t.Fatal("public profile transition remained valid")
+	}
+}
+
 func TestLANManagerSuspendsAndWithdrawsWhenSelectedNetworkDisappears(t *testing.T) {
 	store, server, route := lanManagerFixture(t)
 	var responder *fakeLANHostnameResponder
