@@ -13,74 +13,63 @@ import (
 	"github.com/roie/gohere/internal/router"
 )
 
-func TestFormatRoutesShowsCompactTable(t *testing.T) {
-	out := FormatRoutes([]RouteStatus{{
-		Route: router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173", CWD: "/tmp/app", PID: 123,
-			LANShare: &router.LANShare{State: router.LANShareActive, Hostname: "app.local."}},
-		Status: RouteStatusUnknown,
-	}})
-	if !strings.Contains(out, "host") || !strings.Contains(out, "target") || !strings.Contains(out, "status") || !strings.Contains(out, "lan") || strings.Contains(out, "share") || !strings.Contains(out, "https://app.local") {
-		t.Fatalf("output = %q", out)
+func TestFormatRoutesShowsTypedShareValues(t *testing.T) {
+	out := FormatRoutes([]RouteStatus{
+		{Route: router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173", LANShare: &router.LANShare{State: router.LANShareActive, Hostname: "app.local."}}, Status: RouteStatusReady},
+		{Route: router.Route{Host: "api.localhost", Target: "http://127.0.0.1:4000", LANShare: &router.LANShare{State: router.LANShareSuspended, Hostname: "api.local.", SuspendedReason: "network changed"}}, Status: RouteStatusReady},
+		{Route: router.Route{Host: "docs.localhost", Target: "http://127.0.0.1:3000"}, Status: RouteStatusReady},
+	})
+	header := strings.Split(out, "\n")[0]
+	for _, want := range []string{"host", "target", "status", "share", "lan: https://app.local", "lan: unavailable", "docs.localhost", "—"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q: %q", want, out)
+		}
 	}
-	if !strings.Contains(out, "app.localhost") || !strings.Contains(out, "unknown") || strings.Contains(out, "dead") || strings.Contains(out, "cwd") || strings.Contains(out, "pid") {
-		t.Fatalf("output = %q", out)
-	}
-}
-
-func TestFormatRoutesHidesLANColumnUnlessAnActiveShareExists(t *testing.T) {
-	withoutLAN := []RouteStatus{{Route: router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173"}, Status: RouteStatusReady}}
-	if out := FormatRoutes(withoutLAN); strings.Contains(strings.Split(out, "\n")[0], "lan") {
-		t.Fatalf("unexpected LAN column: %q", out)
-	}
-
-	mixed := append(withoutLAN, RouteStatus{Route: router.Route{Host: "api.localhost", Target: "http://127.0.0.1:5174", LANShare: &router.LANShare{State: router.LANShareActive, Hostname: "api.local."}}, Status: RouteStatusReady})
-	out := FormatRoutes(mixed)
-	if !strings.Contains(strings.Split(out, "\n")[0], "lan") || !strings.Contains(out, "app.localhost") || !strings.Contains(out, "—") || !strings.Contains(out, "https://api.local") {
-		t.Fatalf("mixed output = %q", out)
+	if strings.Contains(header, "lan") || strings.Contains(out, "suspended:") || strings.Contains(out, "network changed") {
+		t.Fatalf("output exposes mode as a header or internal state: %q", out)
 	}
 }
 
-func TestFormatRoutesVerboseShowsOperationalDetails(t *testing.T) {
+func TestFormatRoutesHidesShareColumnUnlessSharingIsConfigured(t *testing.T) {
+	withoutShare := []RouteStatus{{Route: router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173"}, Status: RouteStatusReady}}
+	if out := FormatRoutes(withoutShare); strings.Contains(strings.Split(out, "\n")[0], "share") {
+		t.Fatalf("unexpected share column: %q", out)
+	}
+
+	withSuspendedShare := append(withoutShare, RouteStatus{Route: router.Route{Host: "api.localhost", Target: "http://127.0.0.1:5174", LANShare: &router.LANShare{State: router.LANShareSuspended, Hostname: "api.local."}}, Status: RouteStatusReady})
+	out := FormatRoutes(withSuspendedShare)
+	if !strings.Contains(strings.Split(out, "\n")[0], "share") || !strings.Contains(out, "lan: unavailable") {
+		t.Fatalf("configured share output = %q", out)
+	}
+}
+
+func TestFormatRoutesVerboseShowsSummaryBeforeOperationalDetails(t *testing.T) {
 	ownerEnv := foreignOwnerEnv()
-	out := FormatRoutesVerbose([]RouteStatus{{
-		Route: router.Route{
-			Host:      "app.localhost",
-			Target:    "http://127.0.0.1:5173",
-			CWD:       "/tmp/app",
-			PID:       123,
-			Mode:      "package",
-			Source:    "wsl",
-			OwnerEnv:  ownerEnv,
-			StartedAt: time.Date(2026, 5, 28, 1, 2, 3, 0, time.UTC),
-		},
-		Status: RouteStatusReady,
-	}})
+	out := FormatRoutesVerbose([]RouteStatus{
+		{Route: router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173", CWD: "/tmp/app", PID: 123, Mode: "package", Source: "wsl", OwnerEnv: ownerEnv, StartedAt: time.Date(2026, 5, 28, 1, 2, 3, 0, time.UTC)}, Status: RouteStatusReady},
+		{Route: router.Route{Host: "api.localhost", Target: "http://127.0.0.1:4000"}, Status: RouteStatusReady},
+	})
 	for _, want := range []string{
-		"host",
-		"target",
-		"status",
-		"  cwd      /tmp/app",
-		"  mode     package",
-		"  source   wsl",
-		"  owner    " + ownerEnv,
-		"  pid      123",
-		"  started  2026-05-28T01:02:03Z",
+		"host", "target", "status", "details",
+		"  app.localhost", "    cwd      /tmp/app", "    mode     package", "    source   wsl", "    owner    " + ownerEnv, "    pid      123", "    started  2026-05-28T01:02:03Z",
+		"  api.localhost", "    mode     —", "    pid      —", "    started  —",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q: %q", want, out)
 		}
 	}
-	if !strings.Contains(out, "app.localhost") || !strings.Contains(out, "ready") || !strings.Contains(out, "123") || !strings.Contains(out, "/tmp/app") {
-		t.Fatalf("output = %q", out)
+	detailsAt := strings.Index(out, "\ndetails\n")
+	if detailsAt < 0 || strings.Index(out, "api.localhost") > detailsAt {
+		t.Fatalf("summary table is not complete before details: %q", out)
 	}
-	if strings.Contains(out, "stop") || strings.Contains(out, "route belongs to another environment") {
-		t.Fatalf("output contains internal stop state: %q", out)
+	if strings.Contains(out, "stop") || strings.Contains(out, "route belongs to another environment") || strings.Contains(out, "    mode     unknown") {
+		t.Fatalf("output contains internal or synthetic metadata: %q", out)
 	}
 }
 
 func TestFormatRoutesVerboseUsesDashForMissingPID(t *testing.T) {
 	out := FormatRoutesVerbose([]RouteStatus{{Route: router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173"}, Status: RouteStatusReady}})
-	if !strings.Contains(out, "  pid      —") || strings.Contains(out, "  pid      0") {
+	if !strings.Contains(out, "    pid      —") || strings.Contains(out, "    pid      0") {
 		t.Fatalf("output = %q", out)
 	}
 }

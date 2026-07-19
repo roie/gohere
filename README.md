@@ -163,7 +163,7 @@ On iPhone or iPad:
 
 On Android, download the root certificate, search Settings for **Install a certificate**, and install it as a CA certificate. Exact Settings names vary by manufacturer.
 
-After one-time trust setup, scan the QR again or open the persistent LAN URL. Short-lived LAN leaf certificates are held in memory and rotate automatically. `gohere list` displays the persistent LAN URL when a route is actively shared; it never displays setup tokens, QR data, fingerprints, or firewall state.
+After one-time trust setup, scan the QR again or open the persistent LAN URL. Short-lived LAN leaf certificates are held in memory and rotate automatically. When sharing is configured, `gohere list` adds a `share` column: `lan: <URL>` means LAN sharing is active, `lan: unavailable` means it is configured but unusable, and `—` means it is not configured for that route. The column is hidden when no listed route has sharing configured. Setup tokens, QR data, fingerprints, firewall state, and internal lifecycle state are never displayed.
 
 Windows LAN sharing requires the selected network profile to be Private. The first share may show a Windows Firewall approval prompt. In WSL, the Windows gohere authority owns the LAN listeners, certificate, mDNS responder, and firewall rules.
 
@@ -196,7 +196,7 @@ gohere service stop
 gohere uninstall
 ```
 
-`gohere list --verbose` shows host, target, status, PID, and working directory.
+`gohere list --verbose` begins with the same summary table, then shows per-route working directory, mode, source, owner, PID, and start time in indented detail blocks. Missing metadata is displayed as `—`.
 
 `gohere list --json` returns the same route snapshot in a stable machine-readable format, including route `id`, `generation`, lifecycle `state`, service, preferred public URL, exact target, and parsed port.
 

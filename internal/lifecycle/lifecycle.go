@@ -66,38 +66,40 @@ func formatRoutes(statuses []RouteStatus, verbose bool) string {
 		return "No active routes.\n"
 	}
 
-	showLAN := false
+	showShare := false
 	for _, status := range statuses {
-		showLAN = showLAN || routeLANURL(status.Route) != ""
+		showShare = showShare || status.Route.LANShare != nil
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "%-28s %-25s %-8s", "host", "target", "status")
-	if showLAN {
-		fmt.Fprint(&out, " lan")
+	if showShare {
+		fmt.Fprint(&out, " share")
 	}
 	fmt.Fprintln(&out)
 	for _, status := range statuses {
 		fmt.Fprintf(&out, "%-28s %-25s %-8s", status.Route.Host, status.Route.EffectiveTarget(), status.Status)
-		if showLAN {
-			lanURL := routeLANURL(status.Route)
-			if lanURL == "" {
-				lanURL = "—"
-			}
-			fmt.Fprintf(&out, " %s", lanURL)
+		if showShare {
+			fmt.Fprintf(&out, " %s", routeShareLabel(status.Route))
 		}
 		fmt.Fprintln(&out)
-		if verbose {
-			pid := "—"
-			if status.Route.PID > 0 {
-				pid = strconv.Itoa(status.Route.PID)
-			}
-			fmt.Fprintf(&out, "  %-8s %s\n", "cwd", routeDetailValue(status.Route.CWD))
-			fmt.Fprintf(&out, "  %-8s %s\n", "mode", routeDetailValue(RouteMode(status.Route)))
-			fmt.Fprintf(&out, "  %-8s %s\n", "source", routeDetailValue(RouteSource(status.Route)))
-			fmt.Fprintf(&out, "  %-8s %s\n", "owner", routeDetailValue(RouteOwner(status.Route)))
-			fmt.Fprintf(&out, "  %-8s %s\n", "pid", pid)
-			fmt.Fprintf(&out, "  %-8s %s\n", "started", routeDetailValue(RouteStartedAt(status.Route)))
+	}
+	if !verbose {
+		return out.String()
+	}
+
+	fmt.Fprintln(&out, "\ndetails")
+	for _, status := range statuses {
+		pid := "—"
+		if status.Route.PID > 0 {
+			pid = strconv.Itoa(status.Route.PID)
 		}
+		fmt.Fprintf(&out, "\n  %s\n", status.Route.Host)
+		fmt.Fprintf(&out, "    %-8s %s\n", "cwd", routeDetailValue(status.Route.CWD))
+		fmt.Fprintf(&out, "    %-8s %s\n", "mode", routeDetailValue(status.Route.Mode))
+		fmt.Fprintf(&out, "    %-8s %s\n", "source", routeDetailValue(RouteSource(status.Route)))
+		fmt.Fprintf(&out, "    %-8s %s\n", "owner", routeDetailValue(RouteOwner(status.Route)))
+		fmt.Fprintf(&out, "    %-8s %s\n", "pid", pid)
+		fmt.Fprintf(&out, "    %-8s %s\n", "started", routeDetailValue(RouteStartedAt(status.Route)))
 	}
 	return out.String()
 }
@@ -107,6 +109,16 @@ func routeDetailValue(value string) string {
 		return "—"
 	}
 	return value
+}
+
+func routeShareLabel(route router.Route) string {
+	if route.LANShare == nil {
+		return "—"
+	}
+	if lanURL := routeLANURL(route); lanURL != "" {
+		return "lan: " + lanURL
+	}
+	return "lan: unavailable"
 }
 
 func routeLANURL(route router.Route) string {
