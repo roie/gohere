@@ -132,6 +132,9 @@ func ReserveRoutes(store Store, request ReservationRequest, now time.Time) (Rese
 			}
 			candidates[i] = candidate
 		}
+		if err := enforceSingleWSLOwner(routes, candidates); err != nil {
+			return nil, err
+		}
 
 		reused := make([]*Route, len(candidates))
 		logicalRoutes := append([]Route(nil), routes...)
@@ -249,6 +252,28 @@ func ReserveRoutes(store Store, request ReservationRequest, now time.Time) (Rese
 		return ReservationResult{}, err
 	}
 	return result, nil
+}
+
+func enforceSingleWSLOwner(routes []Route, candidates []RouteReservation) error {
+	owner := ""
+	for _, candidate := range candidates {
+		if candidate.OwnerEnv != "wsl" || candidate.OwnerInstance == "" {
+			continue
+		}
+		if owner != "" && owner != candidate.OwnerInstance {
+			return fmt.Errorf("%w: another WSL owner (%s) is already using the Windows gohere authority", ErrReservationConflict, owner)
+		}
+		owner = candidate.OwnerInstance
+	}
+	if owner == "" {
+		return nil
+	}
+	for _, route := range routes {
+		if route.OwnerEnv == "wsl" && route.OwnerInstance != "" && route.OwnerInstance != owner {
+			return fmt.Errorf("%w: another WSL owner (%s) is already using the Windows gohere authority", ErrReservationConflict, route.OwnerInstance)
+		}
+	}
+	return nil
 }
 
 func ActivateRoutes(store Store, runID string, refs []RouteRef, now time.Time, leaseTTL time.Duration) ([]Route, error) {

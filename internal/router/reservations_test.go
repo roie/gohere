@@ -269,6 +269,25 @@ func TestReserveRoutesRequiresExactPreferredScheme(t *testing.T) {
 	}
 }
 
+func TestReserveRoutesAtomicallyRejectsDifferentWSLOwner(t *testing.T) {
+	now := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
+	store := NewMemoryStore()
+	first := ReservationRequest{RunID: "run-a", TTL: time.Minute, Routes: []RouteReservation{{
+		DesiredHost: "web.localhost", PreferredScheme: "https", Target: "http://127.0.0.1:49101", CWD: "/work/web",
+		OwnerEnv: "wsl", OwnerInstance: "ubuntu/alice", Distro: "Ubuntu", LinuxUser: "alice",
+	}}}
+	if _, err := ReserveRoutes(store, first, now); err != nil {
+		t.Fatal(err)
+	}
+	second := ReservationRequest{RunID: "run-b", TTL: time.Minute, Routes: []RouteReservation{{
+		DesiredHost: "api.localhost", PreferredScheme: "https", Target: "http://127.0.0.1:49102", CWD: "/work/api",
+		OwnerEnv: "wsl", OwnerInstance: "debian/bob", Distro: "Debian", LinuxUser: "bob",
+	}}}
+	if _, err := ReserveRoutes(store, second, now); !errors.Is(err, ErrReservationConflict) || !strings.Contains(err.Error(), "another WSL owner") {
+		t.Fatalf("error = %v, want atomic WSL owner conflict", err)
+	}
+}
+
 func TestReservationResultPendingRefsExcludesReusedRoutes(t *testing.T) {
 	result := ReservationResult{Routes: []ReservedRoute{
 		{Route: Route{ID: "new", Generation: 1, State: RouteStatePending}},
