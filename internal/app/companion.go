@@ -377,44 +377,57 @@ func (a *companionAuthority) ProbeTarget(ctx context.Context, target string) (bo
 	return probeClient.ProbeTarget(ctx, target)
 }
 
-func (a *companionAuthority) ReserveRoutes(_ context.Context, request router.ReservationRequest) (router.ReservationResult, error) {
-	if err := a.requireWindows(); err != nil {
+func (a *companionAuthority) ReserveRoutes(ctx context.Context, request router.ReservationRequest) (router.ReservationResult, error) {
+	client, err := a.lifecycleClient()
+	if err != nil {
 		return router.ReservationResult{}, err
 	}
 	request.TTL = router.DefaultReservationTTL
-	return router.ReserveRoutes(a.routeStore(), request, time.Now().UTC())
+	return client.ReserveRoutes(ctx, request)
 }
 
-func (a *companionAuthority) ActivateRoutes(_ context.Context, runID string, refs []router.RouteRef) ([]router.Route, error) {
-	if err := a.requireWindows(); err != nil {
+func (a *companionAuthority) ActivateRoutes(ctx context.Context, runID string, refs []router.RouteRef) ([]router.Route, error) {
+	client, err := a.lifecycleClient()
+	if err != nil {
 		return nil, err
 	}
-	return router.ActivateRoutes(a.routeStore(), runID, refs, time.Now().UTC(), router.DefaultRouteLeaseTTL)
+	return client.ActivateRoutes(ctx, runID, refs)
 }
 
-func (a *companionAuthority) ReleaseRoutes(_ context.Context, runID string, refs []router.RouteRef) error {
-	if err := a.requireWindows(); err != nil {
+func (a *companionAuthority) ReleaseRoutes(ctx context.Context, runID string, refs []router.RouteRef) error {
+	client, err := a.lifecycleClient()
+	if err != nil {
 		return err
 	}
-	return router.ReleaseRoutes(a.routeStore(), runID, refs)
+	return client.ReleaseRoutes(ctx, runID, refs)
 }
 
-func (a *companionAuthority) RenewRoutes(_ context.Context, runID string, refs []router.RouteRef) error {
-	if err := a.requireWindows(); err != nil {
+func (a *companionAuthority) RenewRoutes(ctx context.Context, runID string, refs []router.RouteRef) error {
+	client, err := a.lifecycleClient()
+	if err != nil {
 		return err
 	}
-	return router.RenewRoutes(a.routeStore(), runID, refs, time.Now().UTC(), router.DefaultRouteLeaseTTL)
+	return client.RenewRoutes(ctx, runID, refs)
 }
 
-func (a *companionAuthority) DeleteRouteRef(_ context.Context, ref router.RouteRef) error {
-	if err := a.requireWindows(); err != nil {
+func (a *companionAuthority) DeleteRouteRef(ctx context.Context, ref router.RouteRef) error {
+	client, err := a.lifecycleClient()
+	if err != nil {
 		return err
 	}
-	return router.DeleteRouteRef(a.routeStore(), ref)
+	return client.DeleteRouteRef(ctx, ref)
 }
 
-func (a *companionAuthority) routeStore() router.Store {
-	return router.NewRouteStore(filepath.Join(a.stateDir, router.RoutesFilename))
+func (a *companionAuthority) lifecycleClient() (routeLifecycleClient, error) {
+	client, err := a.client()
+	if err != nil {
+		return nil, err
+	}
+	lifecycleClient, ok := client.(routeLifecycleClient)
+	if !ok {
+		return nil, errors.New("Windows router does not support atomic route lifecycle; update gohere")
+	}
+	return lifecycleClient, nil
 }
 
 func (a *companionAuthority) client() (adminClient, error) {

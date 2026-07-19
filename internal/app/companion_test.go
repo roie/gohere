@@ -198,9 +198,11 @@ func TestCompanionReadyInfoUpgradesOlderWindowsBinaryWithoutChangingHTTPSPolicy(
 	}
 }
 
-func TestCompanionRouteLifecycleUsesWindowsAuthorityStore(t *testing.T) {
-	stateDir := t.TempDir()
-	authority := newCompanionAuthority(CompanionConfig{GOOS: "windows", StateDir: stateDir})
+func TestCompanionRouteLifecycleUsesWindowsRouterControl(t *testing.T) {
+	client := &recordingAdminClient{}
+	authority := newCompanionAuthority(CompanionConfig{GOOS: "windows", StateDir: t.TempDir(), AdminClient: func() (adminClient, error) {
+		return client, nil
+	}})
 	result, err := authority.ReserveRoutes(t.Context(), router.ReservationRequest{RunID: "run-a", Routes: []router.RouteReservation{{DesiredHost: "web.localhost", PreferredScheme: "http", Target: "http://127.0.0.1:49101", CWD: `/work/web`}}})
 	if err != nil {
 		t.Fatal(err)
@@ -222,9 +224,8 @@ func TestCompanionRouteLifecycleUsesWindowsAuthorityStore(t *testing.T) {
 	if err := authority.ReleaseRoutes(t.Context(), "run-a", refs); err != nil {
 		t.Fatal(err)
 	}
-	stored, err := router.NewRouteStore(filepath.Join(stateDir, router.RoutesFilename)).Load()
-	if err != nil || len(stored) != 0 {
-		t.Fatalf("stored/error = %#v/%v", stored, err)
+	if len(client.routes) != 0 || client.reserveCalls != 1 || client.activateCalls != 1 || client.renewCalls != 1 || client.releaseCalls != 1 {
+		t.Fatalf("client routes/calls = %#v reserve=%d activate=%d renew=%d release=%d", client.routes, client.reserveCalls, client.activateCalls, client.renewCalls, client.releaseCalls)
 	}
 }
 
