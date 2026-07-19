@@ -189,12 +189,21 @@ jobs:
           echo '<html><body><h1>live</h1></body></html>' > "$smoke_dir/live/index.html"
           echo '<h1>dist package smoke</h1>' > "$smoke_dir/dist/index.html"
           echo '<h1>about package smoke</h1>' > "$smoke_dir/pages/about.html"
+          printf '\n' > "$smoke_dir/stdin"
 
           route_pid=""
           route_name=""
           cleanup_route() {
             if [ -n "$route_pid" ]; then
               "$gohere_bin" stop "$route_name" >/dev/null 2>&1 || true
+              kill -TERM "$route_pid" >/dev/null 2>&1 || true
+              for _ in $(seq 1 40); do
+                if ! kill -0 "$route_pid" >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 0.25
+              done
+              kill -KILL "$route_pid" >/dev/null 2>&1 || true
               wait "$route_pid" >/dev/null 2>&1 || true
               route_pid=""
               route_name=""
@@ -217,7 +226,7 @@ jobs:
             shift 2
             (
               cd "$smoke_dir"
-              printf '\n' | "$gohere_bin" "$@" --as "$name"
+              exec "$gohere_bin" "$@" --as "$name" < "$smoke_dir/stdin"
             ) > "$smoke_dir/$name.out" 2> "$smoke_dir/$name.err" &
             route_pid="$!"
             route_name="$name"
