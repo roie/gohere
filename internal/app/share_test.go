@@ -20,6 +20,23 @@ func TestRouteReservationCarriesLANShareIntent(t *testing.T) {
 	}
 }
 
+func TestCreateLANShareDoesNothingWithoutShareMode(t *testing.T) {
+	client := &fakeLANShareClient{}
+	var progress bytes.Buffer
+	result, err := createLANShare(t.Context(), client, cli.Command{}, router.RouteRef{ID: "route-1", Generation: 1}, &progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil || client.created != (router.RouteRef{}) || progress.Len() != 0 {
+		t.Fatalf("result=%#v created=%#v progress=%q", result, client.created, progress.String())
+	}
+	var output bytes.Buffer
+	printLANShare(&output, nil)
+	if output.Len() != 0 {
+		t.Fatalf("ordinary run emitted LAN output %q", output.String())
+	}
+}
+
 func TestCreateAndPrintLANShare(t *testing.T) {
 	client := &fakeLANShareClient{result: router.LANShareResult{
 		Hostname: "shop.local.", URL: "https://shop.local", SetupURL: "http://192.168.1.42/__gohere/trust/token",

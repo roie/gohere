@@ -136,6 +136,37 @@ Open the project URL in your browser:
 gohere --open
 ```
 
+### Share on your local network
+
+Expose one project to devices on the same trusted Wi-Fi network:
+
+```bash
+gohere --share=lan
+```
+
+Gohere keeps the normal `.localhost` URL and adds a private HTTPS `.local` URL:
+
+```text
+gohere → https://myapp.localhost
+lan    → https://myapp.local
+```
+
+LAN sharing selects one safe private IPv4 interface and fails closed on ambiguous, virtual, VPN, unsafe, or Windows Public-profile networks. Only the selected active route is exposed; unrelated `.localhost` routes and the admin API remain loopback-only. Multi-project LAN sharing is not supported in one command.
+
+The terminal also shows a setup URL and QR for devices that do not yet trust the gohere installation CA. The QR opens a device-specific setup page. Verify the displayed fingerprint before installing the certificate, and only install it on devices you control.
+
+On iPhone or iPad:
+
+1. Open the setup URL in Safari. Chrome's secure-connections setting may upgrade and block the initial HTTP bootstrap URL.
+2. Install the downloaded profile under **Settings → General → VPN & Device Management**.
+3. Enable the CA under **Settings → General → About → Certificate Trust Settings**.
+
+On Android, download the root certificate, search Settings for **Install a certificate**, and install it as a CA certificate. Exact Settings names vary by manufacturer.
+
+After one-time trust setup, scan the QR again or open the persistent LAN URL. Short-lived LAN leaf certificates are held in memory and rotate automatically. `gohere list` displays the persistent LAN URL when a route is actively shared; it never displays setup tokens, QR data, fingerprints, or firewall state.
+
+Windows LAN sharing requires the selected network profile to be Private. The first share may show a Windows Firewall approval prompt. In WSL, the Windows gohere authority owns the LAN listeners, certificate, mDNS responder, and firewall rules.
+
 For static folders, `gohere` serves `index.html`. You can also open a specific file, for example `gohere about.html`, which routes to `https://myproject.localhost/about.html`.
 
 CSS, images, and scripts are served normally.
