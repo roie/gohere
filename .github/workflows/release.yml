@@ -181,7 +181,7 @@ jobs:
           test -f "$install_dir/node_modules/gohere/third_party/go-yamux-v5.1.0-source.tar.gz.sha256"
           grep -q 'go-yamux v5.1.0' "$install_dir/node_modules/gohere/THIRD_PARTY_NOTICES"
           grep -q 'gofrs/flock v0.13.0' "$install_dir/node_modules/gohere/THIRD_PARTY_NOTICES"
-          x_sys_version="$(go list -m -f '{{.Version}}' golang.org/x/sys)"
+          x_sys_version="$(go list -mod=mod -m -f '{{.Version}}' golang.org/x/sys)"
           grep -q "golang.org/x/sys ${x_sys_version}" "$install_dir/node_modules/gohere/THIRD_PARTY_NOTICES"
 
           smoke_dir="$(mktemp -d)"
