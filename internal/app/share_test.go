@@ -22,7 +22,8 @@ func TestRouteReservationCarriesLANShareIntent(t *testing.T) {
 
 func TestCreateAndPrintLANShare(t *testing.T) {
 	client := &fakeLANShareClient{result: router.LANShareResult{
-		Hostname: "shop.local.", URL: "https://shop.local", SetupURL: "http://192.168.1.42/__gohere/trust/token", Fingerprint: "AA:BB",
+		Hostname: "shop.local.", URL: "https://shop.local", SetupURL: "http://192.168.1.42/__gohere/trust/token",
+		Fingerprint: "00:01:02:03:04:05:06:07:08:09:0A:0B:0C:0D:0E:0F:10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E:1F",
 	}}
 	ref := router.RouteRef{ID: "route-1", Generation: 1}
 	var progress bytes.Buffer
@@ -30,7 +31,7 @@ func TestCreateAndPrintLANShare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(progress.String(), "approve the Windows firewall prompt") {
+	if progress.String() != "Preparing LAN access…\n" {
 		t.Fatalf("progress = %q", progress.String())
 	}
 	if client.created != ref || result.URL != "https://shop.local" {
@@ -38,7 +39,7 @@ func TestCreateAndPrintLANShare(t *testing.T) {
 	}
 	var output bytes.Buffer
 	printLANShare(&output, result)
-	wantOutput := "share  → https://shop.local\nsetup  → http://192.168.1.42/__gohere/trust/token\nCA fingerprint: AA:BB\nOnly install this certificate on devices you control. Verify the fingerprint before enabling trust.\n"
+	wantOutput := "lan    → https://shop.local\nsetup  → http://192.168.1.42/__gohere/trust/token\n\nVerify the certificate fingerprint before trusting:\n00:01:02:03:04:05:06:07:08:09:0A:0B:0C:0D:0E:0F\n10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E:1F\n\nOnly trust this certificate on devices you control.\n"
 	if output.String() != wantOutput {
 		t.Fatalf("output = %q", output.String())
 	}

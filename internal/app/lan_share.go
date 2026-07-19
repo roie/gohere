@@ -28,7 +28,7 @@ func createLANShare(ctx context.Context, client adminClient, cmd cli.Command, re
 		return nil, errors.New("router control does not support LAN sharing; update gohere")
 	}
 	if progress != nil {
-		fmt.Fprintln(progress, "Preparing LAN access… approve the Windows firewall prompt if asked.")
+		fmt.Fprintln(progress, "Preparing LAN access…")
 	}
 	result, err := lanClient.CreateLANShare(ctx, ref)
 	if err != nil {
@@ -56,13 +56,32 @@ func printLANShare(output io.Writer, result *router.LANShareResult) {
 	if result == nil {
 		return
 	}
-	fmt.Fprintf(output, "share  → %s\n", result.URL)
+	fmt.Fprintf(output, "lan    → %s\n", result.URL)
 	if result.SetupURL != "" {
 		fmt.Fprintf(output, "setup  → %s\n", result.SetupURL)
 	}
+	printedQR := maybePrintLANSetupQR(output, result.SetupURL)
 	if result.Fingerprint != "" {
-		fmt.Fprintf(output, "CA fingerprint: %s\n", result.Fingerprint)
-		fmt.Fprintln(output, "Only install this certificate on devices you control. Verify the fingerprint before enabling trust.")
+		if !printedQR {
+			fmt.Fprintln(output)
+		}
+		fmt.Fprintln(output, "Verify the certificate fingerprint before trusting:")
+		fmt.Fprintln(output, wrapLANFingerprint(result.Fingerprint, 16))
+		fmt.Fprintln(output)
+		fmt.Fprintln(output, "Only trust this certificate on devices you control.")
 	}
-	maybePrintLANSetupQR(output, result.SetupURL)
+}
+
+func wrapLANFingerprint(fingerprint string, bytesPerLine int) string {
+	parts := strings.Split(fingerprint, ":")
+	if bytesPerLine <= 0 || len(parts) <= bytesPerLine {
+		return fingerprint
+	}
+	lines := make([]string, 0, (len(parts)+bytesPerLine-1)/bytesPerLine)
+	for len(parts) > 0 {
+		count := min(bytesPerLine, len(parts))
+		lines = append(lines, strings.Join(parts[:count], ":"))
+		parts = parts[count:]
+	}
+	return strings.Join(lines, "\n")
 }
