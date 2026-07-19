@@ -19,11 +19,24 @@ func TestFormatRoutesShowsCompactTable(t *testing.T) {
 			LANShare: &router.LANShare{State: router.LANShareActive, Hostname: "app.local."}},
 		Status: RouteStatusUnknown,
 	}})
-	if !strings.Contains(out, "host") || !strings.Contains(out, "target") || !strings.Contains(out, "status") || !strings.Contains(out, "share") || !strings.Contains(out, "https://app.local") {
+	if !strings.Contains(out, "host") || !strings.Contains(out, "target") || !strings.Contains(out, "status") || !strings.Contains(out, "lan") || strings.Contains(out, "share") || !strings.Contains(out, "https://app.local") {
 		t.Fatalf("output = %q", out)
 	}
 	if !strings.Contains(out, "app.localhost") || !strings.Contains(out, "unknown") || strings.Contains(out, "dead") || strings.Contains(out, "cwd") || strings.Contains(out, "pid") {
 		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestFormatRoutesHidesLANColumnUnlessAnActiveShareExists(t *testing.T) {
+	withoutLAN := []RouteStatus{{Route: router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173"}, Status: RouteStatusReady}}
+	if out := FormatRoutes(withoutLAN); strings.Contains(strings.Split(out, "\n")[0], "lan") {
+		t.Fatalf("unexpected LAN column: %q", out)
+	}
+
+	mixed := append(withoutLAN, RouteStatus{Route: router.Route{Host: "api.localhost", Target: "http://127.0.0.1:5174", LANShare: &router.LANShare{State: router.LANShareActive, Hostname: "api.local."}}, Status: RouteStatusReady})
+	out := FormatRoutes(mixed)
+	if !strings.Contains(strings.Split(out, "\n")[0], "lan") || !strings.Contains(out, "app.localhost") || !strings.Contains(out, "—") || !strings.Contains(out, "https://api.local") {
+		t.Fatalf("mixed output = %q", out)
 	}
 }
 
@@ -46,18 +59,12 @@ func TestFormatRoutesVerboseShowsOperationalDetails(t *testing.T) {
 		"host",
 		"target",
 		"status",
-		"mode",
-		"source",
-		"owner",
-		"pid",
-		"started",
-		"stop",
-		"cwd",
-		"package",
-		"wsl",
-		ownerEnv,
-		"2026-05-28T01:02:03Z",
-		"route belongs to another environment",
+		"  cwd      /tmp/app",
+		"  mode     package",
+		"  source   wsl",
+		"  owner    " + ownerEnv,
+		"  pid      123",
+		"  started  2026-05-28T01:02:03Z",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q: %q", want, out)
@@ -66,7 +73,14 @@ func TestFormatRoutesVerboseShowsOperationalDetails(t *testing.T) {
 	if !strings.Contains(out, "app.localhost") || !strings.Contains(out, "ready") || !strings.Contains(out, "123") || !strings.Contains(out, "/tmp/app") {
 		t.Fatalf("output = %q", out)
 	}
-	if strings.Contains(out, "backend") || strings.Contains(out, "cwd /tmp/app") || strings.Contains(out, "pid 123") {
+	if strings.Contains(out, "stop") || strings.Contains(out, "route belongs to another environment") {
+		t.Fatalf("output contains internal stop state: %q", out)
+	}
+}
+
+func TestFormatRoutesVerboseUsesDashForMissingPID(t *testing.T) {
+	out := FormatRoutesVerbose([]RouteStatus{{Route: router.Route{Host: "app.localhost", Target: "http://127.0.0.1:5173"}, Status: RouteStatusReady}})
+	if !strings.Contains(out, "  pid      —") || strings.Contains(out, "  pid      0") {
 		t.Fatalf("output = %q", out)
 	}
 }

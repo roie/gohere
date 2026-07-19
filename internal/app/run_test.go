@@ -4672,12 +4672,12 @@ func TestListVerboseOutput(t *testing.T) {
 	if !strings.Contains(text, "vibe-oke.localhost") || !strings.Contains(text, "dead") || !strings.Contains(text, "999999") || !strings.Contains(text, "/tmp/vibe-oke") {
 		t.Fatalf("verbose list output = %q", text)
 	}
-	for _, want := range []string{"mode", "source", "owner", "started", "stop", "package", "local", "2026-05-28T01:02:03Z"} {
+	for _, want := range []string{"mode", "source", "owner", "started", "package", "local", "2026-05-28T01:02:03Z", "  cwd      /tmp/vibe-oke", "  pid      999999"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("verbose list output missing %q: %q", want, text)
 		}
 	}
-	if strings.Contains(text, "backend") || strings.Contains(text, "cwd /tmp/vibe-oke") || strings.Contains(text, "pid 123") {
+	if strings.Contains(text, "backend") || strings.Contains(text, "stop") || strings.Contains(text, "stop ok") {
 		t.Fatalf("verbose list output = %q", text)
 	}
 }

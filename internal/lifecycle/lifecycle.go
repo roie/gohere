@@ -54,59 +54,66 @@ type StopSkip struct {
 }
 
 func FormatRoutes(statuses []RouteStatus) string {
-	if len(statuses) == 0 {
-		return "No active routes.\n"
-	}
-
-	var out strings.Builder
-	fmt.Fprintf(&out, "%-28s %-25s %-8s %s\n", "host", "target", "status", "share")
-	for _, status := range statuses {
-		fmt.Fprintf(&out, "%-28s %-25s %-8s %s\n", status.Route.Host, status.Route.EffectiveTarget(), status.Status, routeLANShareLabel(status.Route))
-	}
-	return out.String()
+	return formatRoutes(statuses, false)
 }
 
 func FormatRoutesVerbose(statuses []RouteStatus) string {
+	return formatRoutes(statuses, true)
+}
+
+func formatRoutes(statuses []RouteStatus, verbose bool) string {
 	if len(statuses) == 0 {
 		return "No active routes.\n"
 	}
 
-	var out strings.Builder
-	fmt.Fprintf(&out, "%-28s %-25s %-7s %-8s %-8s %-8s %-6s %-20s %-36s %-30s %s\n", "host", "target", "status", "mode", "source", "owner", "pid", "started", "stop", "share", "cwd")
+	showLAN := false
 	for _, status := range statuses {
-		_, stopReason := RouteStopInfo(status)
-		if stopReason == "" {
-			stopReason = "ok"
+		showLAN = showLAN || routeLANURL(status.Route) != ""
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "%-28s %-25s %-8s", "host", "target", "status")
+	if showLAN {
+		fmt.Fprint(&out, " lan")
+	}
+	fmt.Fprintln(&out)
+	for _, status := range statuses {
+		fmt.Fprintf(&out, "%-28s %-25s %-8s", status.Route.Host, status.Route.EffectiveTarget(), status.Status)
+		if showLAN {
+			lanURL := routeLANURL(status.Route)
+			if lanURL == "" {
+				lanURL = "—"
+			}
+			fmt.Fprintf(&out, " %s", lanURL)
 		}
-		fmt.Fprintf(&out, "%-28s %-25s %-7s %-8s %-8s %-8s %-6d %-20s %-36s %-30s %s\n",
-			status.Route.Host,
-			status.Route.EffectiveTarget(),
-			status.Status,
-			RouteMode(status.Route),
-			RouteSource(status.Route),
-			RouteOwner(status.Route),
-			status.Route.PID,
-			RouteStartedAt(status.Route),
-			stopReason,
-			routeLANShareLabel(status.Route),
-			status.Route.CWD)
+		fmt.Fprintln(&out)
+		if verbose {
+			pid := "—"
+			if status.Route.PID > 0 {
+				pid = strconv.Itoa(status.Route.PID)
+			}
+			fmt.Fprintf(&out, "  %-8s %s\n", "cwd", routeDetailValue(status.Route.CWD))
+			fmt.Fprintf(&out, "  %-8s %s\n", "mode", routeDetailValue(RouteMode(status.Route)))
+			fmt.Fprintf(&out, "  %-8s %s\n", "source", routeDetailValue(RouteSource(status.Route)))
+			fmt.Fprintf(&out, "  %-8s %s\n", "owner", routeDetailValue(RouteOwner(status.Route)))
+			fmt.Fprintf(&out, "  %-8s %s\n", "pid", pid)
+			fmt.Fprintf(&out, "  %-8s %s\n", "started", routeDetailValue(RouteStartedAt(status.Route)))
+		}
 	}
 	return out.String()
 }
 
-func routeLANShareLabel(route router.Route) string {
-	if route.LANShare == nil {
-		return "-"
+func routeDetailValue(value string) string {
+	if value == "" || value == "-" {
+		return "—"
 	}
-	hostname := route.LANShare.Hostname
-	if hostname == "" {
-		hostname = route.LANShare.RequestedHostname
+	return value
+}
+
+func routeLANURL(route router.Route) string {
+	if route.LANShare == nil || route.LANShare.State != router.LANShareActive || route.LANShare.Hostname == "" {
+		return ""
 	}
-	url := "https://" + strings.TrimSuffix(hostname, ".")
-	if route.LANShare.State == router.LANShareActive {
-		return url
-	}
-	return string(route.LANShare.State) + ":" + url
+	return "https://" + strings.TrimSuffix(route.LANShare.Hostname, ".")
 }
 
 func RouteMode(route router.Route) string {
