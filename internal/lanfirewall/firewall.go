@@ -23,7 +23,7 @@ foreach ($spec in $rules) {
   $address = $rule | Get-NetFirewallAddressFilter
   if ($rule.Direction -ne 'Inbound' -or $rule.Action -ne 'Allow' -or $rule.Enabled -ne 'True' -or $rule.Profile -ne 'Private' -or
       $application.Program -ne $program -or $port.Protocol -ne $spec.Protocol -or $port.LocalPort -ne $spec.Port -or
-      $address.RemoteAddress -notcontains 'LocalSubnet') {
+      @($address.RemoteAddress).Count -ne 1 -or @($address.RemoteAddress)[0] -ne 'LocalSubnet') {
     throw "Existing firewall rule '$($spec.Name)' is not owned by gohere with the required private-network scope"
   }
 }
