@@ -27,9 +27,8 @@ func createLANShare(ctx context.Context, client adminClient, cmd cli.Command, re
 	if !ok {
 		return nil, errors.New("router control does not support LAN sharing; update gohere")
 	}
-	if progress != nil {
-		fmt.Fprintln(progress, "Preparing LAN access…")
-	}
+	finishProgress := startLANProgress(progress, isTerminalOutput(progress))
+	defer finishProgress()
 	result, err := lanClient.CreateLANShare(ctx, ref)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout exceeded") {
@@ -38,6 +37,15 @@ func createLANShare(ctx context.Context, client adminClient, cmd cli.Command, re
 		return nil, err
 	}
 	return &result, nil
+}
+
+func startLANProgress(output io.Writer, terminal bool) func() {
+	if output == nil || !terminal {
+		return func() {}
+	}
+	const message = "Preparing LAN access…"
+	_, _ = fmt.Fprint(output, message)
+	return func() { _, _ = fmt.Fprintf(output, "\r%s\r", strings.Repeat(" ", len([]rune(message)))) }
 }
 
 func deleteLANShare(ctx context.Context, client adminClient, ref router.RouteRef) error {

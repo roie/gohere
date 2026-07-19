@@ -31,8 +31,8 @@ func TestCreateAndPrintLANShare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if progress.String() != "Preparing LAN access…\n" {
-		t.Fatalf("progress = %q", progress.String())
+	if progress.String() != "" {
+		t.Fatalf("non-terminal progress = %q", progress.String())
 	}
 	if client.created != ref || result.URL != "https://shop.local" {
 		t.Fatalf("created = %#v, result = %#v", client.created, result)
@@ -48,6 +48,18 @@ func TestCreateAndPrintLANShare(t *testing.T) {
 	}
 	if client.deleted != ref {
 		t.Fatalf("deleted = %#v", client.deleted)
+	}
+}
+
+func TestLANProgressIsTransientOnTerminal(t *testing.T) {
+	var output bytes.Buffer
+	finish := startLANProgress(&output, true)
+	if output.String() != "Preparing LAN access…" {
+		t.Fatalf("progress start = %q", output.String())
+	}
+	finish()
+	if output.String() != "Preparing LAN access…\r                     \r" {
+		t.Fatalf("progress finish = %q", output.String())
 	}
 }
 

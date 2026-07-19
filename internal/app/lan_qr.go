@@ -43,13 +43,17 @@ func renderLANSetupQR(setupURL string) (string, int, error) {
 	return output.String(), width, nil
 }
 
-func maybePrintLANSetupQR(output io.Writer, setupURL string) bool {
+func isTerminalOutput(output io.Writer) bool {
 	file, ok := output.(*os.File)
 	if !ok {
 		return false
 	}
 	info, err := file.Stat()
-	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func maybePrintLANSetupQR(output io.Writer, setupURL string) bool {
+	if !isTerminalOutput(output) {
 		return false
 	}
 	rendered, width, err := renderLANSetupQR(setupURL)
