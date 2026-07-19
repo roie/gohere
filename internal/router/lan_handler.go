@@ -32,6 +32,22 @@ func (s *Server) RegisterLANRoute(ref RouteRef, hostname string, certificate tls
 	return nil
 }
 
+func (s *Server) replaceLANCertificate(ref RouteRef, hostname string, certificate tls.Certificate) bool {
+	hostname, err := normalizeLANHostname(hostname)
+	if err != nil {
+		return false
+	}
+	s.lanMu.Lock()
+	defer s.lanMu.Unlock()
+	binding, ok := s.lanRoutes[hostname]
+	if !ok || binding.ref != ref {
+		return false
+	}
+	binding.certificate = certificate
+	s.lanRoutes[hostname] = binding
+	return true
+}
+
 func (s *Server) RemoveLANRoute(ref RouteRef) {
 	s.lanMu.Lock()
 	defer s.lanMu.Unlock()

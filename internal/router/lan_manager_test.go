@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net"
@@ -81,6 +82,50 @@ func TestLANManagerCoordinatesRouteBeforeMDNSActivationAndRemovesIt(t *testing.T
 	}
 	if !fakeIngress.closed {
 		t.Fatal("last share did not close ingress")
+	}
+}
+
+func TestLANManagerRotatesCertificateWithoutReplacingMDNSRegistration(t *testing.T) {
+	store, server, route := lanManagerFixture(t)
+	now := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
+	issueCalls := 0
+	var responder *fakeLANHostnameResponder
+	manager := newLANManager(t.Context(), server, lanManagerConfig{
+		store: store,
+		selectInterface: func(context.Context) (laninterface.Candidate, error) {
+			return laninterface.Candidate{Index: 7, Name: "Wi-Fi", Prefix: netip.MustParsePrefix("192.168.1.42/24"), Flags: net.FlagUp | net.FlagMulticast}, nil
+		},
+		issueCertificate: func(string, time.Time) (tls.Certificate, error) {
+			issueCalls++
+			notAfter := now.Add(30 * time.Minute)
+			if issueCalls > 1 {
+				notAfter = now.Add(24 * time.Hour)
+			}
+			return tls.Certificate{Leaf: &x509.Certificate{NotAfter: notAfter}}, nil
+		},
+		startIngress: func(context.Context, *Server, string, string) (lanIngress, error) { return &fakeLANIngress{}, nil },
+		newResponder: func(_ context.Context, _ lanmdns.Interface, coordinator lanmdns.Coordinator) (lanHostnameResponder, error) {
+			responder = &fakeLANHostnameResponder{coordinator: coordinator}
+			return responder, nil
+		},
+		networkStillValid: func(context.Context, laninterface.Candidate) bool { return true },
+		now:               func() time.Time { return now },
+	})
+	if _, err := manager.Create(t.Context(), route.Ref()); err != nil {
+		t.Fatal(err)
+	}
+	manager.reconcileNetwork(t.Context())
+	if issueCalls != 2 {
+		t.Fatalf("certificate issue calls = %d, want 2", issueCalls)
+	}
+	if responder.registerCalls != 1 {
+		t.Fatalf("mDNS register calls = %d, want 1", responder.registerCalls)
+	}
+	server.lanMu.RLock()
+	rotated := server.lanRoutes["shop.local."].certificate.Leaf
+	server.lanMu.RUnlock()
+	if rotated == nil || !rotated.NotAfter.Equal(now.Add(24*time.Hour)) {
+		t.Fatalf("rotated certificate = %#v", rotated)
 	}
 }
 
@@ -291,14 +336,16 @@ type fakeLANIngress struct{ closed bool }
 func (i *fakeLANIngress) Close() error { i.closed = true; return nil }
 
 type fakeLANHostnameResponder struct {
-	coordinator  lanmdns.Coordinator
-	registration fakeLANRegistration
-	registered   string
-	closed       bool
+	coordinator   lanmdns.Coordinator
+	registration  fakeLANRegistration
+	registered    string
+	registerCalls int
+	closed        bool
 }
 
 func (r *fakeLANHostnameResponder) Register(ctx context.Context, hostname string) (lanmdns.Registration, error) {
 	r.registered = hostname
+	r.registerCalls++
 	r.registration = fakeLANRegistration{id: "registration-1", requested: hostname, current: hostname}
 	if err := r.coordinator.Prepare(ctx, lanmdns.Change{Registration: r.registration.id, Requested: hostname, Proposed: hostname}); err != nil {
 		return nil, err

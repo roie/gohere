@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -41,19 +42,25 @@ type lanTrustRegistration struct {
 	fingerprint string
 }
 
+type lanCertificateState struct {
+	hostname string
+	notAfter time.Time
+}
+
 type lanManagerConfig struct {
-	store              Store
-	selectInterface    func(context.Context) (laninterface.Candidate, error)
-	issueCertificate   func(string, time.Time) (tls.Certificate, error)
-	prepareTrust       func(laninterface.Candidate, string) (lanTrustRegistration, error)
-	prepareFirewall    func(context.Context) error
-	startIngress       func(context.Context, *Server, string, string) (lanIngress, error)
-	newResponder       func(context.Context, lanmdns.Interface, lanmdns.Coordinator) (lanHostnameResponder, error)
-	routeOwnerVerified func(Route) bool
-	targetReachable    func(Route) bool
-	networkStillValid  func(context.Context, laninterface.Candidate) bool
-	monitorInterval    time.Duration
-	now                func() time.Time
+	store                   Store
+	selectInterface         func(context.Context) (laninterface.Candidate, error)
+	issueCertificate        func(string, time.Time) (tls.Certificate, error)
+	prepareTrust            func(laninterface.Candidate, string) (lanTrustRegistration, error)
+	prepareFirewall         func(context.Context) error
+	startIngress            func(context.Context, *Server, string, string) (lanIngress, error)
+	newResponder            func(context.Context, lanmdns.Interface, lanmdns.Coordinator) (lanHostnameResponder, error)
+	routeOwnerVerified      func(Route) bool
+	targetReachable         func(Route) bool
+	networkStillValid       func(context.Context, laninterface.Candidate) bool
+	monitorInterval         time.Duration
+	certificateRotateBefore time.Duration
+	now                     func() time.Time
 }
 
 type LANShareResult struct {
@@ -78,6 +85,7 @@ type LANManager struct {
 	registrations    map[RouteRef]lanmdns.Registration
 	registrationRefs map[lanmdns.RegistrationID]RouteRef
 	trust            map[RouteRef]lanTrustRegistration
+	certificates     map[RouteRef]lanCertificateState
 	monitorStarted   bool
 	closeOnce        sync.Once
 	closeErr         error
@@ -143,11 +151,15 @@ func newLANManager(ctx context.Context, server *Server, config lanManagerConfig)
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if config.certificateRotateBefore <= 0 {
+		config.certificateRotateBefore = time.Hour
+	}
 	managerCtx, cancel := context.WithCancel(ctx)
 	return &LANManager{
 		ctx: managerCtx, cancel: cancel, server: server, config: config,
 		pending: make(map[string]RouteRef), registrations: make(map[RouteRef]lanmdns.Registration),
 		registrationRefs: make(map[lanmdns.RegistrationID]RouteRef), trust: make(map[RouteRef]lanTrustRegistration),
+		certificates: make(map[RouteRef]lanCertificateState),
 	}
 }
 
@@ -297,6 +309,9 @@ func (m *LANManager) Prepare(_ context.Context, change lanmdns.Change) error {
 	if trust.token != "" {
 		m.trust[ref] = trust
 	}
+	if notAfter := lanCertificateNotAfter(certificate); !notAfter.IsZero() {
+		m.certificates[ref] = lanCertificateState{hostname: change.Proposed, notAfter: notAfter}
+	}
 	m.mu.Unlock()
 	if previousTrust.token != "" && previousTrust.token != trust.token {
 		m.server.ClearLANTrust(previousTrust.token)
@@ -312,6 +327,7 @@ func (m *LANManager) Remove(ctx context.Context, ref RouteRef) error {
 	registration := m.registrations[ref]
 	trust := m.trust[ref]
 	delete(m.trust, ref)
+	delete(m.certificates, ref)
 	if registration != nil {
 		delete(m.registrations, ref)
 		delete(m.registrationRefs, registration.ID())
@@ -360,6 +376,7 @@ func (m *LANManager) Close() error {
 		trust := m.trust
 		m.registrations = make(map[RouteRef]lanmdns.Registration)
 		m.trust = make(map[RouteRef]lanTrustRegistration)
+		m.certificates = make(map[RouteRef]lanCertificateState)
 		m.registrationRefs = make(map[lanmdns.RegistrationID]RouteRef)
 		m.pending = make(map[string]RouteRef)
 		responder, ingress := m.responder, m.ingress
@@ -439,7 +456,11 @@ func (m *LANManager) reconcileNetwork(ctx context.Context) {
 	validator := m.config.networkStillValid
 	active := m.responder != nil
 	m.mu.Unlock()
-	if !active || validator == nil || validator(ctx, iface) {
+	if !active {
+		return
+	}
+	if validator == nil || validator(ctx, iface) {
+		m.rotateCertificates()
 		return
 	}
 	m.mu.Lock()
@@ -454,6 +475,7 @@ func (m *LANManager) reconcileNetwork(ctx context.Context) {
 	m.registrationRefs = make(map[lanmdns.RegistrationID]RouteRef)
 	m.pending = make(map[string]RouteRef)
 	m.trust = make(map[RouteRef]lanTrustRegistration)
+	m.certificates = make(map[RouteRef]lanCertificateState)
 	m.responder, m.ingress = nil, nil
 	m.iface = laninterface.Candidate{}
 	m.mu.Unlock()
@@ -477,12 +499,56 @@ func (m *LANManager) reconcileNetwork(ctx context.Context) {
 	}
 }
 
+func (m *LANManager) rotateCertificates() {
+	now := m.config.now()
+	cutoff := now.Add(m.config.certificateRotateBefore)
+	m.mu.Lock()
+	candidates := make(map[RouteRef]lanCertificateState)
+	for ref, state := range m.certificates {
+		if !state.notAfter.After(cutoff) {
+			candidates[ref] = state
+		}
+	}
+	m.mu.Unlock()
+
+	for ref, state := range candidates {
+		certificate, err := m.config.issueCertificate(state.hostname, now)
+		if err != nil || !m.server.replaceLANCertificate(ref, state.hostname, certificate) {
+			continue
+		}
+		notAfter := lanCertificateNotAfter(certificate)
+		if notAfter.IsZero() {
+			continue
+		}
+		m.mu.Lock()
+		if current, ok := m.certificates[ref]; ok && current == state {
+			m.certificates[ref] = lanCertificateState{hostname: state.hostname, notAfter: notAfter}
+		}
+		m.mu.Unlock()
+	}
+}
+
+func lanCertificateNotAfter(certificate tls.Certificate) time.Time {
+	if certificate.Leaf != nil {
+		return certificate.Leaf.NotAfter.UTC()
+	}
+	if len(certificate.Certificate) == 0 {
+		return time.Time{}
+	}
+	leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+	if err != nil {
+		return time.Time{}
+	}
+	return leaf.NotAfter.UTC()
+}
+
 func (m *LANManager) rollbackCreate(ref RouteRef, requested string) {
 	m.server.RemoveLANRoute(ref)
 	_ = RemoveLANShare(m.config.store, ref)
 	m.mu.Lock()
 	trust := m.trust[ref]
 	delete(m.trust, ref)
+	delete(m.certificates, ref)
 	delete(m.pending, requested)
 	if len(m.registrations) == 0 {
 		responder, ingress := m.responder, m.ingress
