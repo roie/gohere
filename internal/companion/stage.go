@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type OutputRunner interface {
@@ -21,6 +22,20 @@ type ExecOutputRunner struct{}
 
 func (ExecOutputRunner) Output(ctx context.Context, command string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, command, args...).Output()
+}
+
+const commandDetailLimit = 2 * 1024
+
+func compactCommandDetail(detail string) string {
+	detail = strings.Join(strings.Fields(detail), " ")
+	if len(detail) <= commandDetailLimit {
+		return detail
+	}
+	const marker = " ... diagnostic omitted ... "
+	available := commandDetailLimit - len(marker)
+	prefix := available / 2
+	suffix := available - prefix
+	return detail[:prefix] + marker + detail[len(detail)-suffix:]
 }
 
 func BundledWindowsBinary(currentExecutable, goarch string) (string, error) {
@@ -52,23 +67,41 @@ func BundledWindowsBinary(currentExecutable, goarch string) (string, error) {
 }
 
 func StageWindowsBinary(ctx context.Context, source string, runner OutputRunner) (string, error) {
+	return stageWindowsBinary(ctx, source, runner, waitWindowsTempRetry)
+}
+
+const windowsTempRetryDelay = 100 * time.Millisecond
+
+func waitWindowsTempRetry(ctx context.Context) error {
+	timer := time.NewTimer(windowsTempRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func stageWindowsBinary(
+	ctx context.Context,
+	source string,
+	runner OutputRunner,
+	waitRetry func(context.Context) error,
+) (string, error) {
 	if runner == nil {
 		runner = ExecOutputRunner{}
+	}
+	if waitRetry == nil {
+		waitRetry = waitWindowsTempRetry
 	}
 	sourceHash, err := fileSHA256(source)
 	if err != nil {
 		return "", err
 	}
-	windowsTemp, err := runner.Output(
-		ctx,
-		"cmd.exe",
-		"/d",
-		"/s",
-		"/c",
-		"echo %TEMP%",
-	)
+	windowsTemp, err := windowsTempOutput(ctx, runner, waitRetry)
 	if err != nil {
-		return "", fmt.Errorf("could not resolve the current Windows temporary directory: %w", err)
+		return "", err
 	}
 	windowsTempPath := strings.TrimSpace(string(windowsTemp))
 	if windowsTempPath == "" {
@@ -102,6 +135,76 @@ func StageWindowsBinary(ctx context.Context, source string, runner OutputRunner)
 		return "", errors.New("staged Windows companion hash does not match the npm package")
 	}
 	return destination, nil
+}
+
+func windowsTempOutput(
+	ctx context.Context,
+	runner OutputRunner,
+	waitRetry func(context.Context) error,
+) ([]byte, error) {
+	firstOutput, firstErr := runner.Output(ctx, "cmd.exe", "/d", "/s", "/c", "echo %TEMP%")
+	if firstErr == nil {
+		return firstOutput, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var firstExit *exec.ExitError
+	if !errors.As(firstErr, &firstExit) {
+		return nil, fmt.Errorf("could not resolve the current Windows temporary directory: Windows interoperability command unavailable: %w", firstErr)
+	}
+	if err := waitRetry(ctx); err != nil {
+		return nil, err
+	}
+	secondOutput, secondErr := runner.Output(ctx, "cmd.exe", "/d", "/s", "/c", "echo %TEMP%")
+	if secondErr == nil {
+		return secondOutput, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, windowsTempExitFailure(firstErr, secondErr)
+}
+
+const windowsInteropDiagnostic = "UtilBindVsockAnyPort"
+
+func exitDiagnostic(err error) string {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return ""
+	}
+	return strings.TrimSpace(string(exitErr.Stderr))
+}
+
+func preferredWindowsTempDiagnostic(firstErr, secondErr error) (string, bool) {
+	first := exitDiagnostic(firstErr)
+	second := exitDiagnostic(secondErr)
+	switch {
+	case strings.Contains(second, windowsInteropDiagnostic):
+		return second, true
+	case strings.Contains(first, windowsInteropDiagnostic):
+		return first, true
+	case second != "":
+		return second, false
+	default:
+		return first, false
+	}
+}
+
+func windowsTempExitFailure(firstErr, secondErr error) error {
+	detail, interoperability := preferredWindowsTempDiagnostic(firstErr, secondErr)
+	message := "could not resolve the current Windows temporary directory: Windows interoperability command started but exited unsuccessfully"
+	if detail != "" {
+		message += "\n\nDetails: " + compactCommandDetail(detail)
+	}
+	if interoperability {
+		message += "\n\nWindows interoperability failed before gohere could start the bundled Windows companion."
+		message += "\n\nRun from this WSL shell:\n  cmd.exe /d /c ver"
+		message += "\n\nIf that succeeds only outside a sandbox or container, run first-time gohere setup from that unrestricted shell."
+		message += "\n\nIf it also fails from a normal WSL shell, open Windows PowerShell or Command Prompt and run:\n  wsl --update\n  wsl --shutdown\n\nThen reopen WSL and retry."
+	}
+	message += "\n\nThis attempt did not start or fall back to a WSL router."
+	return fmt.Errorf("%s: %w", message, secondErr)
 }
 
 func npmArchitecture(goarch string) (string, error) {
