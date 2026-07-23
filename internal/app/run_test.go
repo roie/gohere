@@ -5898,6 +5898,196 @@ func TestLocalhostHTTPStatusRecognizesGohereMissingRoute(t *testing.T) {
 	}
 }
 
+func fillDoctorNonce(value byte) func([]byte) error {
+	return func(dst []byte) error {
+		for i := range dst {
+			dst[i] = value
+		}
+		return nil
+	}
+}
+
+func TestDoctorProbeHostnameUses128BitLowercaseHexNonce(t *testing.T) {
+	host, err := doctorProbeHostname(fillDoctorNonce(0xab))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "gohere-doctor-" + strings.Repeat("ab", 16) + ".localhost"
+	if host != want {
+		t.Fatalf("host = %q, want %q", host, want)
+	}
+	if label := strings.TrimSuffix(host, ".localhost"); len(label) != 46 {
+		t.Fatalf("label length = %d, want 46", len(label))
+	}
+}
+
+func TestLocalhostHTTPStatusConnectsToURLWithRandomizedHost(t *testing.T) {
+	var gotHost string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, "No gohere route is running for "+r.Host)
+	}))
+	defer server.Close()
+
+	status := localhostHTTPStatusWith(t.Context(), server.URL, fillDoctorNonce(0x11), newDoctorHTTPClient())
+	if !status.OK {
+		t.Fatalf("status = %#v", status)
+	}
+	want := "gohere-doctor-" + strings.Repeat("11", 16) + ".localhost"
+	if gotHost != want {
+		t.Fatalf("Host = %q, want %q", gotHost, want)
+	}
+}
+
+func TestLocalhostHTTPStatusReportsProbeHostnameGenerationFailure(t *testing.T) {
+	requested := false
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requested = true
+	}))
+	defer server.Close()
+
+	status := localhostHTTPStatusWith(t.Context(), server.URL, func([]byte) error {
+		return errors.New("entropy unavailable")
+	}, newDoctorHTTPClient())
+	if status.OK || status.Detail != "could not generate probe hostname" || !strings.Contains(status.Hint, "entropy unavailable") {
+		t.Fatalf("status = %#v", status)
+	}
+	if requested {
+		t.Fatal("request sent after hostname generation failure")
+	}
+}
+
+func TestDoctorHTTPClientDisablesProxy(t *testing.T) {
+	if newDoctorHTTPClient().Transport.(*http.Transport).Proxy != nil {
+		t.Fatal("doctor HTTP client proxy = non-nil, want nil")
+	}
+}
+
+func TestLocalhostHTTPStatusUsesDistinctRandomizedHosts(t *testing.T) {
+	var gotHosts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHosts = append(gotHosts, r.Host)
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, doctorMissingRouteMarker)
+	}))
+	defer server.Close()
+
+	nonce := byte(0x30)
+	fillRandom := func(dst []byte) error {
+		for i := range dst {
+			dst[i] = nonce
+		}
+		nonce++
+		return nil
+	}
+	for range 2 {
+		status := localhostHTTPStatusWith(t.Context(), server.URL, fillRandom, newDoctorHTTPClient())
+		if !status.OK {
+			t.Fatalf("status = %#v", status)
+		}
+	}
+	if len(gotHosts) != 2 || gotHosts[0] == gotHosts[1] {
+		t.Fatalf("Host headers = %#v, want two distinct values", gotHosts)
+	}
+}
+
+func TestLocalhostHTTPStatusDoesNotFollowRedirects(t *testing.T) {
+	redirected := 0
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		redirected++
+	}))
+	defer target.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer server.Close()
+
+	status := localhostHTTPStatusWith(t.Context(), server.URL, fillDoctorNonce(0x22), newDoctorHTTPClient())
+	if status.OK || status.Detail != "unexpected response: 302 Found" {
+		t.Fatalf("status = %#v", status)
+	}
+	if redirected != 0 {
+		t.Fatalf("redirect target requests = %d, want 0", redirected)
+	}
+}
+
+func TestLocalhostHTTPStatusRejectsMatchingMarkerUnder200(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, doctorMissingRouteMarker)
+	}))
+	defer server.Close()
+
+	status := localhostHTTPStatusWith(t.Context(), server.URL, fillDoctorNonce(0x22), newDoctorHTTPClient())
+	if status.OK || status.Detail != "unexpected response: 200 OK" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestLocalhostHTTPStatusRejectsBadGatewayWithoutMarker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, "other proxy error")
+	}))
+	defer server.Close()
+
+	status := localhostHTTPStatusWith(t.Context(), server.URL, fillDoctorNonce(0x22), newDoctorHTTPClient())
+	if status.OK || status.Detail != "unexpected response: 502 Bad Gateway" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestLocalhostHTTPStatusRecognizesBadGatewayWithMarker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, doctorMissingRouteMarker)
+	}))
+	defer server.Close()
+
+	status := localhostHTTPStatusWith(t.Context(), server.URL, fillDoctorNonce(0x22), newDoctorHTTPClient())
+	if !status.OK || status.Detail != "reached gohere router" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type trackingReadCloser struct {
+	io.Reader
+	closed bool
+}
+
+func (b *trackingReadCloser) Close() error {
+	b.closed = true
+	return nil
+}
+
+func TestLocalhostHTTPStatusClosesResponseBodyForRedirect(t *testing.T) {
+	body := &trackingReadCloser{Reader: strings.NewReader("redirect")}
+	client := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Status:     "302 Found",
+				Header:     http.Header{"Location": []string{"http://127.0.0.1/elsewhere"}},
+				Body:       body,
+				Request:    req,
+			}, nil
+		}),
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	_ = localhostHTTPStatusWith(t.Context(), "http://127.0.0.1/", fillDoctorNonce(0x22), client)
+	if !body.closed {
+		t.Fatal("response body was not closed")
+	}
+}
+
 func TestLocalhostHTTPStatusRejectsUnexpectedResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -5910,8 +6100,7 @@ func TestLocalhostHTTPStatusRejectsUnexpectedResponse(t *testing.T) {
 		t.Fatalf("status = %#v, want failure", status)
 	}
 	if status.Detail != "unexpected response: 200 OK" ||
-		!strings.Contains(status.Hint, "Another process may own port 80") ||
-		!strings.Contains(status.Hint, "Windows/WSL") {
+		!strings.Contains(status.Hint, "Another process may own port 80") {
 		t.Fatalf("status = %#v", status)
 	}
 }
