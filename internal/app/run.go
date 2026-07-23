@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,8 +79,9 @@ var (
 )
 
 const (
-	doctorLocalhostProbeURL     = "http://gohere-doctor.localhost/"
+	doctorLocalhostProbeURL     = "http://127.0.0.1:80/"
 	doctorLocalhostProbeTimeout = 1500 * time.Millisecond
+	doctorMissingRouteMarker    = "No gohere route is running"
 )
 
 type adminClient interface {
@@ -3142,10 +3145,53 @@ func port80Status() Port80Status {
 }
 
 func localhostHTTPStatus(ctx context.Context) LocalhostHTTPStatus {
-	return localhostHTTPStatusForURL(ctx, doctorLocalhostProbeURL)
+	return localhostHTTPStatusWith(ctx, doctorLocalhostProbeURL, fillDoctorRandom, newDoctorHTTPClient())
 }
 
 func localhostHTTPStatusForURL(ctx context.Context, probeURL string) LocalhostHTTPStatus {
+	return localhostHTTPStatusWith(ctx, probeURL, fillDoctorRandom, newDoctorHTTPClient())
+}
+
+func doctorProbeHostname(fillRandom func([]byte) error) (string, error) {
+	var nonce [16]byte
+	if err := fillRandom(nonce[:]); err != nil {
+		return "", err
+	}
+	return "gohere-doctor-" + hex.EncodeToString(nonce[:]) + ".localhost", nil
+}
+
+func fillDoctorRandom(dst []byte) error {
+	_, err := cryptorand.Read(dst)
+	return err
+}
+
+func newDoctorHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return &http.Client{
+		Timeout:   doctorLocalhostProbeTimeout,
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func localhostHTTPStatusWith(
+	ctx context.Context,
+	probeURL string,
+	fillRandom func([]byte) error,
+	client *http.Client,
+) LocalhostHTTPStatus {
+	probeHost, err := doctorProbeHostname(fillRandom)
+	if err != nil {
+		return LocalhostHTTPStatus{
+			OK:     false,
+			Detail: "could not generate probe hostname",
+			Hint:   compactDoctorDetail(err.Error()),
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, doctorLocalhostProbeTimeout)
 	defer cancel()
 
@@ -3157,19 +3203,14 @@ func localhostHTTPStatusForURL(ctx context.Context, probeURL string) LocalhostHT
 			Hint:   err.Error(),
 		}
 	}
+	req.Host = probeHost
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil
-	client := &http.Client{
-		Timeout:   doctorLocalhostProbeTimeout,
-		Transport: transport,
-	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return LocalhostHTTPStatus{
 			OK:     false,
 			Detail: "unreachable: " + compactDoctorDetail(err.Error()),
-			Hint:   "Try: gohere setup. In Windows/WSL setups, run gohere doctor from the OS where the browser runs too.",
+			Hint:   "Try: gohere setup. Another process may own the gohere HTTP listener.",
 		}
 	}
 	defer resp.Body.Close()
@@ -3182,14 +3223,14 @@ func localhostHTTPStatusForURL(ctx context.Context, probeURL string) LocalhostHT
 			Hint:   err.Error(),
 		}
 	}
-	text := string(body)
-	if strings.Contains(text, "gohere route missing") || strings.Contains(text, "No gohere route is running") {
+	if resp.StatusCode == http.StatusBadGateway &&
+		strings.Contains(string(body), doctorMissingRouteMarker) {
 		return LocalhostHTTPStatus{OK: true, Detail: "reached gohere router"}
 	}
 	return LocalhostHTTPStatus{
 		OK:     false,
 		Detail: "unexpected response: " + resp.Status,
-		Hint:   "Another process may own port 80, or .localhost may resolve outside gohere. In Windows/WSL setups, run gohere doctor from the OS where the browser runs too.",
+		Hint:   "Another process may own port 80, or the gohere router may need setup.",
 	}
 }
 
