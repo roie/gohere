@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"os"
@@ -142,7 +143,9 @@ func routerStartConfig() router.StartConfig {
 	startConfig := router.StartConfig{RouteOwnerVerified: lifecycle.RouteProcessVerified}
 	cfg, err := appconfig.Load(stateDir)
 	if err == nil && cfg.HTTPS {
-		startConfig.TLSConfig = localcert.Store{StateDir: stateDir}.TLSConfig()
+		certificateStore := &localcert.Store{StateDir: stateDir}
+		startConfig.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		startConfig.CertificateStore = certificateStore
 	}
 	return startConfig
 }

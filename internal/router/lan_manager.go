@@ -42,16 +42,24 @@ type lanTrustRegistration struct {
 	fingerprint string
 }
 
+type lanCertificateMaterial struct {
+	certificate      tls.Certificate
+	caFingerprint    string
+	caCertificateDER []byte
+}
+
 type lanCertificateState struct {
-	hostname string
-	notAfter time.Time
+	hostname      string
+	notAfter      time.Time
+	caFingerprint string
 }
 
 type lanManagerConfig struct {
 	store                   Store
 	selectInterface         func(context.Context) (laninterface.Candidate, error)
-	issueCertificate        func(string, time.Time) (tls.Certificate, error)
-	prepareTrust            func(laninterface.Candidate, string) (lanTrustRegistration, error)
+	issueCertificate        func(string, time.Time) (lanCertificateMaterial, error)
+	prepareTrust            func(laninterface.Candidate, string, lanCertificateMaterial) (lanTrustRegistration, error)
+	currentCAFingerprint    func() (string, error)
 	prepareFirewall         func(context.Context) error
 	startIngress            func(context.Context, *Server, string, string) (lanIngress, error)
 	newResponder            func(context.Context, lanmdns.Interface, lanmdns.Coordinator) (lanHostnameResponder, error)
@@ -98,26 +106,54 @@ func NewLANManager(ctx context.Context, server *Server, stateDir string, routeOw
 		selectInterface: func(ctx context.Context) (laninterface.Candidate, error) {
 			return laninterface.DiscoverAndSelect(ctx, nil)
 		},
-		issueCertificate: certificateStore.IssueEphemeralLANHostCert,
-		prepareFirewall:  lanfirewall.Ensure,
-		prepareTrust: func(iface laninterface.Candidate, hostname string) (lanTrustRegistration, error) {
-			ca, err := certificateStore.EnsureCA()
+		issueCertificate: func(host string, now time.Time) (lanCertificateMaterial, error) {
+			ca, err := certificateStore.LoadCA()
 			if err != nil {
-				return lanTrustRegistration{}, err
+				return lanCertificateMaterial{}, fmt.Errorf(
+					"HTTPS certificate authority is unavailable; run gohere setup: %w",
+					err,
+				)
 			}
+			certificate, err := certificateStore.IssueLANHostCert(ca, host, now)
+			if err != nil {
+				return lanCertificateMaterial{}, fmt.Errorf(
+					"HTTPS certificate authority is unavailable; run gohere setup: %w",
+					err,
+				)
+			}
+			return lanCertificateMaterial{
+				certificate:      certificate,
+				caFingerprint:    ca.Fingerprint,
+				caCertificateDER: append([]byte(nil), ca.Cert.Raw...),
+			}, nil
+		},
+		prepareFirewall: lanfirewall.Ensure,
+		prepareTrust: func(
+			iface laninterface.Candidate,
+			hostname string,
+			material lanCertificateMaterial,
+		) (lanTrustRegistration, error) {
 			token, err := newLANTrustToken()
 			if err != nil {
 				return lanTrustRegistration{}, err
 			}
-			fingerprint := formatLANFingerprint(ca.Cert.Raw)
+			fingerprint := formatLANFingerprint(material.caCertificateDER)
 			server.ConfigureLANTrust(LANTrustSession{
 				Address: iface.Prefix.Addr().String(), Token: token, Hostname: hostname, Fingerprint: fingerprint,
-				CACertificatePEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Cert.Raw}),
+				CAFingerprint:    material.caFingerprint,
+				CACertificatePEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: material.caCertificateDER}),
 			})
 			return lanTrustRegistration{
 				token: token, fingerprint: fingerprint,
 				setupURL: "http://" + iface.Prefix.Addr().String() + lanTrustPathPrefix + token,
 			}, nil
+		},
+		currentCAFingerprint: func() (string, error) {
+			ca, err := certificateStore.LoadCA()
+			if err != nil {
+				return "", err
+			}
+			return ca.Fingerprint, nil
 		},
 		startIngress: func(ctx context.Context, server *Server, httpAddr, httpsAddr string) (lanIngress, error) {
 			return StartLANIngress(ctx, server, httpAddr, httpsAddr)
@@ -157,6 +193,9 @@ func newLANManager(ctx context.Context, server *Server, config lanManagerConfig)
 	if config.certificateRotateBefore <= 0 {
 		config.certificateRotateBefore = time.Hour
 	}
+	server.lanMu.Lock()
+	server.currentLANCAFingerprint = config.currentCAFingerprint
+	server.lanMu.Unlock()
 	managerCtx, cancel := context.WithCancel(ctx)
 	return &LANManager{
 		ctx: managerCtx, cancel: cancel, server: server, config: config,
@@ -279,18 +318,34 @@ func (m *LANManager) Prepare(_ context.Context, change lanmdns.Change) error {
 	if !ok {
 		return fmt.Errorf("no LAN route owns mDNS registration %s", change.Registration)
 	}
-	certificate, err := m.config.issueCertificate(change.Proposed, m.config.now())
+	material, err := m.config.issueCertificate(change.Proposed, m.config.now())
 	if err != nil {
+		return err
+	}
+	if err := m.validateCertificateMaterial(material); err != nil {
 		return err
 	}
 	var trust lanTrustRegistration
 	if m.config.prepareTrust != nil {
-		trust, err = m.config.prepareTrust(iface, change.Proposed)
+		trust, err = m.config.prepareTrust(iface, change.Proposed, material)
 		if err != nil {
 			return err
 		}
 	}
-	if err := m.server.RegisterLANRoute(ref, change.Proposed, certificate); err != nil {
+	if err := m.validateCertificateMaterial(material); err != nil {
+		if trust.token != "" {
+			m.server.ClearLANTrust(trust.token)
+		}
+		return err
+	}
+	if err := m.server.RegisterLANRoute(ref, change.Proposed, material.certificate); err != nil {
+		if trust.token != "" {
+			m.server.ClearLANTrust(trust.token)
+		}
+		return err
+	}
+	if err := m.validateCertificateMaterial(material); err != nil {
+		m.server.RemoveLANHostname(ref, change.Proposed)
 		if trust.token != "" {
 			m.server.ClearLANTrust(trust.token)
 		}
@@ -312,8 +367,11 @@ func (m *LANManager) Prepare(_ context.Context, change lanmdns.Change) error {
 	if trust.token != "" {
 		m.trust[ref] = trust
 	}
-	if notAfter := lanCertificateNotAfter(certificate); !notAfter.IsZero() {
-		m.certificates[ref] = lanCertificateState{hostname: change.Proposed, notAfter: notAfter}
+	if notAfter := lanCertificateNotAfter(material.certificate); !notAfter.IsZero() {
+		m.certificates[ref] = lanCertificateState{
+			hostname: change.Proposed, notAfter: notAfter,
+			caFingerprint: material.caFingerprint,
+		}
 	}
 	m.mu.Unlock()
 	if previousTrust.token != "" && previousTrust.token != trust.token {
@@ -502,32 +560,112 @@ func (m *LANManager) reconcileNetwork(ctx context.Context) {
 	}
 }
 
+func (m *LANManager) validateCertificateMaterial(material lanCertificateMaterial) error {
+	if m.config.currentCAFingerprint == nil {
+		return nil
+	}
+	if material.caFingerprint == "" {
+		return errors.New("LAN certificate has no certificate authority identity")
+	}
+	current, err := m.config.currentCAFingerprint()
+	if err != nil {
+		return fmt.Errorf("load current LAN certificate authority: %w", err)
+	}
+	if current != material.caFingerprint {
+		return errors.New("LAN certificate authority changed during issuance")
+	}
+	return nil
+}
+
 func (m *LANManager) rotateCertificates() {
 	now := m.config.now()
 	cutoff := now.Add(m.config.certificateRotateBefore)
+	currentCAFingerprint := ""
+	if m.config.currentCAFingerprint != nil {
+		var err error
+		currentCAFingerprint, err = m.config.currentCAFingerprint()
+		if err != nil {
+			return
+		}
+	}
 	m.mu.Lock()
 	candidates := make(map[RouteRef]lanCertificateState)
 	for ref, state := range m.certificates {
-		if !state.notAfter.After(cutoff) {
+		caChanged := currentCAFingerprint != "" && state.caFingerprint != currentCAFingerprint
+		if caChanged || !state.notAfter.After(cutoff) {
 			candidates[ref] = state
 		}
 	}
+	iface := m.iface
 	m.mu.Unlock()
 
 	for ref, state := range candidates {
-		certificate, err := m.config.issueCertificate(state.hostname, now)
-		if err != nil || !m.server.replaceLANCertificate(ref, state.hostname, certificate) {
+		if currentCAFingerprint != "" && state.caFingerprint != currentCAFingerprint {
+			m.mu.Lock()
+			staleTrust := lanTrustRegistration{}
+			if current, ok := m.certificates[ref]; ok && current == state {
+				staleTrust = m.trust[ref]
+				delete(m.trust, ref)
+			}
+			m.mu.Unlock()
+			if staleTrust.token != "" {
+				m.server.ClearLANTrust(staleTrust.token)
+			}
+		}
+		material, err := m.config.issueCertificate(state.hostname, now)
+		if err != nil || m.validateCertificateMaterial(material) != nil {
 			continue
 		}
-		notAfter := lanCertificateNotAfter(certificate)
+		caChanged := state.caFingerprint != material.caFingerprint
+		var nextTrust lanTrustRegistration
+		if caChanged && m.config.prepareTrust != nil {
+			nextTrust, err = m.config.prepareTrust(iface, state.hostname, material)
+			if err != nil {
+				continue
+			}
+		}
+		if !m.server.replaceLANCertificate(ref, state.hostname, material.certificate) {
+			if nextTrust.token != "" {
+				m.server.ClearLANTrust(nextTrust.token)
+			}
+			continue
+		}
+		if err := m.validateCertificateMaterial(material); err != nil {
+			if nextTrust.token != "" {
+				m.server.ClearLANTrust(nextTrust.token)
+			}
+			continue
+		}
+		notAfter := lanCertificateNotAfter(material.certificate)
 		if notAfter.IsZero() {
+			if nextTrust.token != "" {
+				m.server.ClearLANTrust(nextTrust.token)
+			}
 			continue
 		}
 		m.mu.Lock()
+		previousTrust := m.trust[ref]
+		updated := false
 		if current, ok := m.certificates[ref]; ok && current == state {
-			m.certificates[ref] = lanCertificateState{hostname: state.hostname, notAfter: notAfter}
+			m.certificates[ref] = lanCertificateState{
+				hostname: state.hostname, notAfter: notAfter,
+				caFingerprint: material.caFingerprint,
+			}
+			if nextTrust.token != "" {
+				m.trust[ref] = nextTrust
+			}
+			updated = true
 		}
 		m.mu.Unlock()
+		if !updated {
+			if nextTrust.token != "" {
+				m.server.ClearLANTrust(nextTrust.token)
+			}
+			continue
+		}
+		if nextTrust.token != "" && previousTrust.token != "" && previousTrust.token != nextTrust.token {
+			m.server.ClearLANTrust(previousTrust.token)
+		}
 	}
 }
 

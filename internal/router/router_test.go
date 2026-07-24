@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1440,6 +1441,135 @@ func TestServerConfiguresProxyResponseHeaderTimeout(t *testing.T) {
 	}
 }
 
+func TestServerConfiguresDirectProxyTransport(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+
+	srv := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+	if srv.proxyTransport == nil {
+		t.Fatal("proxy transport is nil")
+	}
+	if srv.proxyTransport.Proxy != nil {
+		t.Fatal("route transport inherited an environment proxy callback")
+	}
+	if srv.proxyTransport.ResponseHeaderTimeout <= 0 {
+		t.Fatalf("ResponseHeaderTimeout = %v, want positive", srv.proxyTransport.ResponseHeaderTimeout)
+	}
+}
+
+func TestProxyIgnoresInheritedProxyForHTTPAndUpgrade(t *testing.T) {
+	var proxyRequests int32
+	fakeProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&proxyRequests, 1)
+		http.Error(w, "unexpected proxy", http.StatusBadGateway)
+	}))
+	defer fakeProxy.Close()
+	proxyURL, err := url.Parse(fakeProxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var targetRequests int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&targetRequests, 1)
+		if !isUpgradeRequest(r) {
+			io.WriteString(w, "direct")
+			return
+		}
+		connection, buffer, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack target: %v", err)
+			return
+		}
+		defer connection.Close()
+		buffer.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
+		buffer.WriteString("Upgrade: websocket\r\n")
+		buffer.WriteString("Connection: Upgrade\r\n\r\n")
+		buffer.Flush()
+		message, err := buffer.ReadString('\n')
+		if err != nil {
+			t.Errorf("read upgraded stream: %v", err)
+			return
+		}
+		buffer.WriteString("target:" + message)
+		buffer.Flush()
+	}))
+	defer target.Close()
+	targetAddress := strings.TrimPrefix(target.URL, "http://")
+	routeTarget := "http://10.23.45.67:8080"
+
+	originalDefaultTransport := http.DefaultTransport
+	http.DefaultTransport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	t.Cleanup(func() { http.DefaultTransport = originalDefaultTransport })
+	store := NewMemoryStore()
+	if err := store.Save([]Route{
+		{Host: "direct.localhost", State: RouteStateActive, PreferredScheme: "http", Target: routeTarget},
+		{Host: "upgrade.localhost", State: RouteStateActive, PreferredScheme: "http", Target: routeTarget},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(Config{Token: "secret", Store: store})
+	http.DefaultTransport = originalDefaultTransport
+	dialer := &net.Dialer{}
+	server.proxyTransport.DialContext = func(
+		ctx context.Context,
+		network string,
+		address string,
+	) (net.Conn, error) {
+		if address == "10.23.45.67:8080" {
+			address = targetAddress
+		}
+		return dialer.DialContext(ctx, network, address)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "http://direct.localhost/", nil)
+	request.Host = "direct.localhost"
+	response := httptest.NewRecorder()
+	server.HTTPHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "direct" {
+		t.Fatalf("HTTP response = %d %q", response.Code, response.Body.String())
+	}
+
+	routerServer := httptest.NewServer(server.HTTPHandler())
+	defer routerServer.Close()
+	connection, err := net.Dial("tcp", strings.TrimPrefix(routerServer.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	io.WriteString(connection, "GET /hmr HTTP/1.1\r\n")
+	io.WriteString(connection, "Host: upgrade.localhost\r\n")
+	io.WriteString(connection, "Connection: Upgrade\r\n")
+	io.WriteString(connection, "Upgrade: websocket\r\n\r\n")
+	upgradeResponse, err := http.ReadResponse(bufio.NewReader(connection), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgradeResponse.Body.Close()
+	if upgradeResponse.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade status = %d", upgradeResponse.StatusCode)
+	}
+	if _, err := io.WriteString(connection, "ping\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	echo, err := bufio.NewReader(connection).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if echo != "target:ping\n" {
+		t.Fatalf("upgrade echo = %q", echo)
+	}
+	if got := atomic.LoadInt32(&proxyRequests); got != 0 {
+		t.Fatalf("inherited proxy received %d route requests", got)
+	}
+	if got := atomic.LoadInt32(&targetRequests); got != 2 {
+		t.Fatalf("target received %d requests, want 2", got)
+	}
+}
+
 func TestProxySetsForwardedHeaders(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Backend-Forwarded-For", r.Header.Get("X-Forwarded-For"))
@@ -1992,16 +2122,17 @@ func TestStartProxiesForwardedHeadersOverHTTPS(t *testing.T) {
 	if err := store.Save([]Route{{Host: "smoke.localhost", PreferredScheme: "https", Target: backend.URL}}); err != nil {
 		t.Fatal(err)
 	}
-	tlsCert, err := localcert.Store{StateDir: stateDir}.EnsureHostCert("smoke.localhost")
-	if err != nil {
+	certificateStore := &localcert.Store{StateDir: stateDir}
+	if _, err := certificateStore.EnsureCA(); err != nil {
 		t.Fatal(err)
 	}
 	running, err := Start(t.Context(), StartConfig{
-		HTTPAddr:  "127.0.0.1:0",
-		HTTPSAddr: "127.0.0.1:0",
-		AdminAddr: "127.0.0.1:0",
-		StateDir:  stateDir,
-		TLSConfig: &tls.Config{Certificates: []tls.Certificate{tlsCert}},
+		HTTPAddr:         "127.0.0.1:0",
+		HTTPSAddr:        "127.0.0.1:0",
+		AdminAddr:        "127.0.0.1:0",
+		StateDir:         stateDir,
+		TLSConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
+		CertificateStore: certificateStore,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2019,7 +2150,10 @@ func TestStartProxiesForwardedHeadersOverHTTPS(t *testing.T) {
 	client := &http.Client{
 		Timeout: 2 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         "smoke.localhost",
+			},
 		},
 	}
 	resp, err := client.Do(req)
@@ -2040,6 +2174,42 @@ func TestStartProxiesForwardedHeadersOverHTTPS(t *testing.T) {
 	}
 }
 
+func TestStartHTTPSRequiresCertificateStore(t *testing.T) {
+	running, err := Start(t.Context(), StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		HTTPSAddr: "127.0.0.1:0",
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  t.TempDir(),
+		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+	})
+	if running != nil {
+		running.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "certificate store") {
+		t.Fatalf("error = %v, want missing certificate store", err)
+	}
+}
+
+func TestStartHTTPSRequiresExistingValidCA(t *testing.T) {
+	stateDir := t.TempDir()
+	certificateStore := &localcert.Store{StateDir: stateDir}
+	running, err := Start(t.Context(), StartConfig{
+		HTTPAddr:         "127.0.0.1:0",
+		HTTPSAddr:        "127.0.0.1:0",
+		AdminAddr:        "127.0.0.1:0",
+		StateDir:         stateDir,
+		TLSConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
+		CertificateStore: certificateStore,
+	})
+	if running != nil {
+		running.Close()
+	}
+	if err == nil ||
+		!strings.Contains(err.Error(), "run gohere setup") {
+		t.Fatalf("error = %v, want setup guidance", err)
+	}
+}
+
 func TestStartAppliesRouteSchemePolicyAcrossListeners(t *testing.T) {
 	stateDir := t.TempDir()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2053,13 +2223,14 @@ func TestStartAppliesRouteSchemePolicyAcrossListeners(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	certificate, err := localcert.Store{StateDir: stateDir}.EnsureHostCert("secure.localhost")
-	if err != nil {
+	certificateStore := &localcert.Store{StateDir: stateDir}
+	if _, err := certificateStore.EnsureCA(); err != nil {
 		t.Fatal(err)
 	}
 	running, err := Start(t.Context(), StartConfig{
 		HTTPAddr: "127.0.0.1:0", HTTPSAddr: "127.0.0.1:0", AdminAddr: "127.0.0.1:0",
-		StateDir: stateDir, TLSConfig: &tls.Config{Certificates: []tls.Certificate{certificate}},
+		StateDir: stateDir, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+		CertificateStore: certificateStore,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2070,9 +2241,14 @@ func TestStartAppliesRouteSchemePolicyAcrossListeners(t *testing.T) {
 		Timeout:       2 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	tlsClient := &http.Client{
-		Timeout:   2 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	tlsClient := func(host string) *http.Client {
+		return &http.Client{
+			Timeout: 2 * time.Second,
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         host,
+			}},
+		}
 	}
 	request := func(client *http.Client, rawURL, host string) *http.Response {
 		t.Helper()
@@ -2099,8 +2275,8 @@ func TestStartAppliesRouteSchemePolicyAcrossListeners(t *testing.T) {
 		host   string
 	}{
 		{httpClient, "http://" + running.HTTPAddr + "/", "plain.localhost"},
-		{tlsClient, "https://" + running.HTTPSAddr + "/", "plain.localhost"},
-		{tlsClient, "https://" + running.HTTPSAddr + "/", "secure.localhost"},
+		{tlsClient("plain.localhost"), "https://" + running.HTTPSAddr + "/", "plain.localhost"},
+		{tlsClient("secure.localhost"), "https://" + running.HTTPSAddr + "/", "secure.localhost"},
 	} {
 		response := request(test.client, test.url, test.host)
 		body, err := io.ReadAll(response.Body)
@@ -2139,6 +2315,32 @@ func TestStartWritesRouterPIDAndOpaqueInstance(t *testing.T) {
 	}
 	if len(strings.TrimSpace(string(instance))) != tokenLength {
 		t.Fatalf("router instance = %q, want %d hex characters", instance, tokenLength)
+	}
+}
+
+func TestStartPrunesLegacyHostCertificatesWithoutHTTPS(t *testing.T) {
+	stateDir := t.TempDir()
+	legacyDir := filepath.Join(stateDir, "tls", "certs")
+	if err := os.MkdirAll(legacyDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	legacyKey := filepath.Join(legacyDir, "legacy.key")
+	if err := os.WriteFile(legacyKey, []byte("legacy private key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	running, err := Start(t.Context(), StartConfig{
+		HTTPAddr:  "127.0.0.1:0",
+		AdminAddr: "127.0.0.1:0",
+		StateDir:  stateDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+
+	if _, err := os.Stat(legacyKey); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy host key survived HTTP-only startup: %v", err)
 	}
 }
 

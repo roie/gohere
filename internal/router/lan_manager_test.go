@@ -11,12 +11,24 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/roie/gohere/internal/laninterface"
 	"github.com/roie/gohere/internal/lanmdns"
 )
+
+func TestLANManagerCertificateFailureDirectsUserToSetup(t *testing.T) {
+	server := NewServer(Config{Token: "secret", Store: NewMemoryStore()})
+	manager := NewLANManager(t.Context(), server, t.TempDir(), nil)
+	defer manager.Close()
+
+	_, err := manager.config.issueCertificate("shop.local", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "run gohere setup") {
+		t.Fatalf("error = %v, want setup guidance", err)
+	}
+}
 
 func TestLANTrustTokenIsCompactAndRetains128BitsOfEntropy(t *testing.T) {
 	token, err := newLANTrustToken()
@@ -42,8 +54,20 @@ func TestLANManagerCoordinatesRouteBeforeMDNSActivationAndRemovesIt(t *testing.T
 		selectInterface: func(context.Context) (laninterface.Candidate, error) {
 			return laninterface.Candidate{Index: 7, Name: "Wi-Fi", Prefix: netip.MustParsePrefix("192.168.1.42/24"), Flags: net.FlagUp | net.FlagMulticast}, nil
 		},
-		issueCertificate: func(string, time.Time) (tls.Certificate, error) { return tls.Certificate{}, nil },
-		prepareTrust: func(laninterface.Candidate, string) (lanTrustRegistration, error) {
+		issueCertificate: func(string, time.Time) (lanCertificateMaterial, error) {
+			return lanCertificateMaterial{
+				certificate:   tls.Certificate{},
+				caFingerprint: "ca-1",
+			}, nil
+		},
+		prepareTrust: func(
+			_ laninterface.Candidate,
+			_ string,
+			material lanCertificateMaterial,
+		) (lanTrustRegistration, error) {
+			if material.caFingerprint != "ca-1" {
+				t.Fatalf("trust material CA = %q, want ca-1", material.caFingerprint)
+			}
 			return lanTrustRegistration{token: "token", setupURL: "http://192.168.1.42/__gohere/trust/token", fingerprint: "AA:BB"}, nil
 		},
 		startIngress: func(context.Context, *Server, string, string) (lanIngress, error) { return fakeIngress, nil },
@@ -95,13 +119,16 @@ func TestLANManagerRotatesCertificateWithoutReplacingMDNSRegistration(t *testing
 		selectInterface: func(context.Context) (laninterface.Candidate, error) {
 			return laninterface.Candidate{Index: 7, Name: "Wi-Fi", Prefix: netip.MustParsePrefix("192.168.1.42/24"), Flags: net.FlagUp | net.FlagMulticast}, nil
 		},
-		issueCertificate: func(string, time.Time) (tls.Certificate, error) {
+		issueCertificate: func(string, time.Time) (lanCertificateMaterial, error) {
 			issueCalls++
 			notAfter := now.Add(30 * time.Minute)
 			if issueCalls > 1 {
 				notAfter = now.Add(24 * time.Hour)
 			}
-			return tls.Certificate{Leaf: &x509.Certificate{NotAfter: notAfter}}, nil
+			return lanCertificateMaterial{
+				certificate:   tls.Certificate{Leaf: &x509.Certificate{NotAfter: notAfter}},
+				caFingerprint: "ca-1",
+			}, nil
 		},
 		startIngress: func(context.Context, *Server, string, string) (lanIngress, error) { return &fakeLANIngress{}, nil },
 		newResponder: func(_ context.Context, _ lanmdns.Interface, coordinator lanmdns.Coordinator) (lanHostnameResponder, error) {
@@ -129,6 +156,169 @@ func TestLANManagerRotatesCertificateWithoutReplacingMDNSRegistration(t *testing
 	}
 }
 
+func TestLANManagerRotatesCertificateWhenCAFingerprintChanges(t *testing.T) {
+	store, server, route := lanManagerFixture(t)
+	now := time.Now().UTC()
+	currentFingerprint := "ca-1"
+	issueCalls := 0
+	trustCalls := 0
+	failRotation := false
+	var responder *fakeLANHostnameResponder
+	manager := newLANManager(t.Context(), server, lanManagerConfig{
+		store: store,
+		selectInterface: func(context.Context) (laninterface.Candidate, error) {
+			return laninterface.Candidate{Index: 7, Name: "Wi-Fi", Prefix: netip.MustParsePrefix("192.168.1.42/24"), Flags: net.FlagUp | net.FlagMulticast}, nil
+		},
+		issueCertificate: func(string, time.Time) (lanCertificateMaterial, error) {
+			issueCalls++
+			if failRotation && currentFingerprint == "ca-2" {
+				return lanCertificateMaterial{}, errors.New("rotation failed")
+			}
+			return lanCertificateMaterial{
+				certificate: tls.Certificate{
+					Leaf: &x509.Certificate{NotAfter: now.Add(24 * time.Hour)},
+				},
+				caFingerprint: currentFingerprint,
+			}, nil
+		},
+		currentCAFingerprint: func() (string, error) {
+			return currentFingerprint, nil
+		},
+		prepareTrust: func(
+			iface laninterface.Candidate,
+			hostname string,
+			material lanCertificateMaterial,
+		) (lanTrustRegistration, error) {
+			trustCalls++
+			token := "token-1"
+			if material.caFingerprint == "ca-2" {
+				token = "token-2"
+			}
+			server.ConfigureLANTrust(LANTrustSession{
+				Address: iface.Prefix.Addr().String(), Token: token,
+				Hostname: hostname, Fingerprint: material.caFingerprint,
+				CAFingerprint:    material.caFingerprint,
+				CACertificatePEM: []byte("public-" + material.caFingerprint),
+			})
+			return lanTrustRegistration{
+				token: token, fingerprint: material.caFingerprint,
+			}, nil
+		},
+		startIngress: func(context.Context, *Server, string, string) (lanIngress, error) {
+			return &fakeLANIngress{}, nil
+		},
+		newResponder: func(
+			_ context.Context,
+			_ lanmdns.Interface,
+			coordinator lanmdns.Coordinator,
+		) (lanHostnameResponder, error) {
+			responder = &fakeLANHostnameResponder{coordinator: coordinator}
+			return responder, nil
+		},
+		networkStillValid: func(context.Context, laninterface.Candidate) bool { return true },
+		now:               func() time.Time { return now },
+	})
+	if _, err := manager.Create(t.Context(), route.Ref()); err != nil {
+		t.Fatal(err)
+	}
+	currentFingerprint = "ca-2"
+	failRotation = true
+	manager.reconcileNetwork(t.Context())
+	server.lanTrustMu.Lock()
+	_, staleTrustExists := server.lanTrustSessions["token-1"]
+	server.lanTrustMu.Unlock()
+	if staleTrustExists {
+		t.Fatal("old CA trust session survived a failed rotation")
+	}
+	failRotation = false
+	manager.reconcileNetwork(t.Context())
+
+	if issueCalls != 3 {
+		t.Fatalf("certificate issue calls = %d, want 3", issueCalls)
+	}
+	if trustCalls != 2 {
+		t.Fatalf("trust preparation calls = %d, want 2", trustCalls)
+	}
+	if responder.registerCalls != 1 {
+		t.Fatalf("mDNS register calls = %d, want 1", responder.registerCalls)
+	}
+	manager.mu.Lock()
+	state := manager.certificates[route.Ref()]
+	manager.mu.Unlock()
+	if state.caFingerprint != "ca-2" {
+		t.Fatalf("certificate CA = %q, want ca-2", state.caFingerprint)
+	}
+	server.lanTrustMu.Lock()
+	_, oldTrustExists := server.lanTrustSessions["token-1"]
+	newTrust := server.lanTrustSessions["token-2"]
+	server.lanTrustMu.Unlock()
+	if oldTrustExists || newTrust.Fingerprint != "ca-2" {
+		t.Fatalf("trust sessions = old:%v new:%#v", oldTrustExists, newTrust)
+	}
+	trustResponse := lanTrustRequest(server, "192.168.1.42", "/g/token-2/gohere-root.pem")
+	if trustResponse.Code != http.StatusOK || trustResponse.Body.String() != "public-ca-2" {
+		t.Fatalf("replacement trust response = %d %q", trustResponse.Code, trustResponse.Body.String())
+	}
+}
+
+func TestLANManagerRejectsCARotationDuringPreparation(t *testing.T) {
+	store, server, route := lanManagerFixture(t)
+	currentFingerprint := "ca-1"
+	var responder *fakeLANHostnameResponder
+	manager := newLANManager(t.Context(), server, lanManagerConfig{
+		store: store,
+		selectInterface: func(context.Context) (laninterface.Candidate, error) {
+			return laninterface.Candidate{Index: 7, Name: "Wi-Fi", Prefix: netip.MustParsePrefix("192.168.1.42/24"), Flags: net.FlagUp | net.FlagMulticast}, nil
+		},
+		issueCertificate: func(string, time.Time) (lanCertificateMaterial, error) {
+			return lanCertificateMaterial{
+				certificate:   tls.Certificate{},
+				caFingerprint: currentFingerprint,
+			}, nil
+		},
+		currentCAFingerprint: func() (string, error) {
+			return currentFingerprint, nil
+		},
+		prepareTrust: func(
+			_ laninterface.Candidate,
+			_ string,
+			material lanCertificateMaterial,
+		) (lanTrustRegistration, error) {
+			if material.caFingerprint != "ca-1" {
+				t.Fatalf("trust material CA = %q, want ca-1", material.caFingerprint)
+			}
+			currentFingerprint = "ca-2"
+			server.ConfigureLANTrust(LANTrustSession{Token: "token", Fingerprint: "ca-1"})
+			return lanTrustRegistration{token: "token"}, nil
+		},
+		startIngress: func(context.Context, *Server, string, string) (lanIngress, error) {
+			return &fakeLANIngress{}, nil
+		},
+		newResponder: func(
+			_ context.Context,
+			_ lanmdns.Interface,
+			coordinator lanmdns.Coordinator,
+		) (lanHostnameResponder, error) {
+			responder = &fakeLANHostnameResponder{coordinator: coordinator}
+			return responder, nil
+		},
+		now: time.Now,
+	})
+
+	if _, err := manager.Create(t.Context(), route.Ref()); err == nil {
+		t.Fatal("LAN preparation accepted a certificate from the previous CA")
+	}
+	if _, ok := server.lanRoutes["shop.local."]; ok {
+		t.Fatal("stale CA certificate was registered")
+	}
+	server.lanTrustMu.Lock()
+	_, trustExists := server.lanTrustSessions["token"]
+	server.lanTrustMu.Unlock()
+	if trustExists {
+		t.Fatal("stale CA trust session survived preparation rollback")
+	}
+}
+
 func TestLANManagerRollsBackCoordinatorFailure(t *testing.T) {
 	store, server, route := lanManagerFixture(t)
 	manager := newLANManager(t.Context(), server, lanManagerConfig{
@@ -136,8 +326,8 @@ func TestLANManagerRollsBackCoordinatorFailure(t *testing.T) {
 		selectInterface: func(context.Context) (laninterface.Candidate, error) {
 			return laninterface.Candidate{Index: 7, Name: "Wi-Fi", Prefix: netip.MustParsePrefix("192.168.1.42/24"), Flags: net.FlagUp | net.FlagMulticast}, nil
 		},
-		issueCertificate: func(string, time.Time) (tls.Certificate, error) {
-			return tls.Certificate{}, errors.New("certificate failed")
+		issueCertificate: func(string, time.Time) (lanCertificateMaterial, error) {
+			return lanCertificateMaterial{}, errors.New("certificate failed")
 		},
 		startIngress: func(context.Context, *Server, string, string) (lanIngress, error) { return &fakeLANIngress{}, nil },
 		newResponder: func(_ context.Context, _ lanmdns.Interface, coordinator lanmdns.Coordinator) (lanHostnameResponder, error) {
@@ -152,7 +342,7 @@ func TestLANManagerRollsBackCoordinatorFailure(t *testing.T) {
 	if stored[0].LANShare != nil {
 		t.Fatalf("failed creation left share = %#v", stored[0].LANShare)
 	}
-	if _, err := server.LANTLSConfig().GetCertificate(&tls.ClientHelloInfo{ServerName: "shop.local"}); err == nil {
+	if _, err := lanCertificateForServer(server, "shop.local"); err == nil {
 		t.Fatal("failed creation left TLS registration")
 	}
 }
@@ -307,7 +497,7 @@ func TestLANManagerCoordinatesRuntimeRename(t *testing.T) {
 	if stored[0].LANShare.Hostname != "shop-2.local." {
 		t.Fatalf("hostname = %q", stored[0].LANShare.Hostname)
 	}
-	if _, err := server.LANTLSConfig().GetCertificate(&tls.ClientHelloInfo{ServerName: "shop.local"}); err == nil {
+	if _, err := lanCertificateForServer(server, "shop.local"); err == nil {
 		t.Fatal("old hostname still has certificate")
 	}
 	if responder == nil {
@@ -322,8 +512,10 @@ func newTestLANManager(t *testing.T, store Store, server *Server, capture func(*
 		selectInterface: func(context.Context) (laninterface.Candidate, error) {
 			return laninterface.Candidate{Index: 7, Name: "Wi-Fi", Prefix: netip.MustParsePrefix("192.168.1.42/24"), Flags: net.FlagUp | net.FlagMulticast}, nil
 		},
-		issueCertificate: func(string, time.Time) (tls.Certificate, error) { return tls.Certificate{}, nil },
-		startIngress:     func(context.Context, *Server, string, string) (lanIngress, error) { return &fakeLANIngress{}, nil },
+		issueCertificate: func(string, time.Time) (lanCertificateMaterial, error) {
+			return lanCertificateMaterial{certificate: tls.Certificate{}}, nil
+		},
+		startIngress: func(context.Context, *Server, string, string) (lanIngress, error) { return &fakeLANIngress{}, nil },
 		newResponder: func(_ context.Context, _ lanmdns.Interface, coordinator lanmdns.Coordinator) (lanHostnameResponder, error) {
 			responder := &fakeLANHostnameResponder{coordinator: coordinator}
 			capture(responder)

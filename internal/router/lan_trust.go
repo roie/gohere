@@ -24,6 +24,7 @@ type LANTrustSession struct {
 	Token            string
 	Hostname         string
 	Fingerprint      string
+	CAFingerprint    string
 	CACertificatePEM []byte
 }
 
@@ -78,7 +79,6 @@ func (s *Server) serveLANTrust(w http.ResponseWriter, request *http.Request) boo
 		client = request.RemoteAddr
 	}
 	s.lanTrustMu.Lock()
-	defer s.lanTrustMu.Unlock()
 	var session LANTrustSession
 	valid := false
 	if len(parts) > 0 {
@@ -86,11 +86,19 @@ func (s *Server) serveLANTrust(w http.ResponseWriter, request *http.Request) boo
 		valid = valid && host == session.Address
 	}
 	if !valid {
-		if s.rateLimitedLANTrust(client, time.Now()) {
+		rateLimited := s.rateLimitedLANTrust(client, time.Now())
+		s.lanTrustMu.Unlock()
+		if rateLimited {
 			http.Error(w, "too many setup attempts", http.StatusTooManyRequests)
 		} else {
 			http.NotFound(w, request)
 		}
+		return true
+	}
+	s.lanTrustMu.Unlock()
+	if !s.currentLANTrustSession(session) {
+		s.ClearLANTrust(session.Token)
+		http.NotFound(w, request)
 		return true
 	}
 	if len(parts) == 1 && parts[0] != "" {
@@ -114,6 +122,17 @@ func (s *Server) serveLANTrust(w http.ResponseWriter, request *http.Request) boo
 		http.NotFound(w, request)
 	}
 	return true
+}
+
+func (s *Server) currentLANTrustSession(session LANTrustSession) bool {
+	s.lanMu.RLock()
+	currentCAFingerprint := s.currentLANCAFingerprint
+	s.lanMu.RUnlock()
+	if currentCAFingerprint == nil {
+		return true
+	}
+	current, err := currentCAFingerprint()
+	return err == nil && session.CAFingerprint != "" && session.CAFingerprint == current
 }
 
 func (s *Server) rateLimitedLANTrust(client string, now time.Time) bool {

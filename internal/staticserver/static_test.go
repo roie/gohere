@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +198,144 @@ func TestHandlerDoesNotServePathTraversalOutsideRoot(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("path %q response = %d %q", path, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+func TestHandlerRejectsSymlinkEscape(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "site")
+	if err := os.Mkdir(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(parent, "secret.txt")
+	if err := os.WriteFile(secret, []byte("outside-secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(root, "escape.txt")); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(root).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/escape.txt", nil))
+	if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "outside-secret") {
+		t.Fatalf("escape response = %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlerRejectsIntermediateDirectorySymlinkEscape(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "site")
+	outside := filepath.Join(parent, "outside")
+	if err := os.Mkdir(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("outside-secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "assets")); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(root).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/secret.txt", nil))
+	if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "outside-secret") {
+		t.Fatalf("escape response = %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlerAllowsSymlinkContainedByRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "real.txt"), []byte("inside"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.txt", filepath.Join(root, "link.txt")); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(root).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/link.txt", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "inside" {
+		t.Fatalf("contained symlink response = %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestOpenStaticFileRetainsConfinedDescriptorAfterRename(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "site")
+	if err := os.Mkdir(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "asset.txt")
+	if err := os.WriteFile(path, []byte("inside"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	file, _, _, err := openStaticFile(root, "asset.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	if err := os.Rename(path, filepath.Join(root, "moved.txt")); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(parent, "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside-secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, path); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "inside" {
+		t.Fatalf("opened descriptor read %q, want inside", data)
+	}
+}
+
+func TestLiveHandlerRejectsSymlinkEscape(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "site")
+	if err := os.Mkdir(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(parent, "outside.html")
+	if err := os.WriteFile(outside, []byte("<html><body>outside-secret</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape.html")); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	HandlerWithConfig(Config{Dir: root, Live: true}).ServeHTTP(
+		rec,
+		httptest.NewRequest(http.MethodGet, "/escape.html", nil),
+	)
+	if rec.Code != http.StatusNotFound ||
+		strings.Contains(rec.Body.String(), "outside-secret") ||
+		strings.Contains(rec.Body.String(), liveClientScript) {
+		t.Fatalf("live escape response = %d %q", rec.Code, rec.Body.String())
 	}
 }
 

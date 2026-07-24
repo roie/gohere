@@ -76,6 +76,28 @@ func TestLANTrustEndpointRejectsWrongHostTokenAndExpiredSession(t *testing.T) {
 	}
 }
 
+func TestLANTrustEndpointRejectsSessionFromPreviousCAImmediately(t *testing.T) {
+	server := NewServer(Config{Store: NewMemoryStore()})
+	server.currentLANCAFingerprint = func() (string, error) {
+		return "current-ca", nil
+	}
+	server.ConfigureLANTrust(LANTrustSession{
+		Address: "192.168.1.42", Token: "secret-token", Hostname: "shop.local.",
+		CAFingerprint: "previous-ca", CACertificatePEM: []byte("previous public CA"),
+	})
+
+	response := lanTrustRequest(server, "192.168.1.42", "/g/secret-token/gohere-root.pem")
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("stale trust status = %d, body = %q", response.Code, response.Body.String())
+	}
+	server.lanTrustMu.Lock()
+	_, exists := server.lanTrustSessions["secret-token"]
+	server.lanTrustMu.Unlock()
+	if exists {
+		t.Fatal("stale trust session was not invalidated synchronously")
+	}
+}
+
 func TestLANTrustEndpointRateLimitsTokenGuesses(t *testing.T) {
 	server := NewServer(Config{Store: NewMemoryStore()})
 	server.ConfigureLANTrust(LANTrustSession{Address: "192.168.1.42", Token: "secret-token", Hostname: "shop.local.", CACertificatePEM: []byte("public")})

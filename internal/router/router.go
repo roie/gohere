@@ -154,19 +154,20 @@ type Config struct {
 }
 
 type Server struct {
-	token            string
-	instanceID       string
-	store            Store
-	shutdown         func()
-	shutdownOnce     sync.Once
-	storeMu          sync.RWMutex
-	lanMu            sync.RWMutex
-	lanRoutes        map[string]lanRouteBinding
-	lanTrustMu       sync.Mutex
-	lanTrustSessions map[string]LANTrustSession
-	lanTrustAttempts map[string]lanTrustAttempt
-	lanManager       *LANManager
-	proxyTransport   *http.Transport
+	token                   string
+	instanceID              string
+	store                   Store
+	shutdown                func()
+	shutdownOnce            sync.Once
+	storeMu                 sync.RWMutex
+	lanMu                   sync.RWMutex
+	lanRoutes               map[string]lanRouteBinding
+	lanTrustMu              sync.Mutex
+	lanTrustSessions        map[string]LANTrustSession
+	lanTrustAttempts        map[string]lanTrustAttempt
+	lanManager              *LANManager
+	currentLANCAFingerprint func() (string, error)
+	proxyTransport          *http.Transport
 }
 
 func NewServer(cfg Config) *Server {
@@ -180,10 +181,14 @@ func NewServer(cfg Config) *Server {
 func newProxyTransport() *http.Transport {
 	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
 		clone := transport.Clone()
+		clone.Proxy = nil
 		clone.ResponseHeaderTimeout = proxyResponseHeaderTimeout
 		return clone
 	}
-	return &http.Transport{ResponseHeaderTimeout: proxyResponseHeaderTimeout}
+	return &http.Transport{
+		Proxy:                 nil,
+		ResponseHeaderTimeout: proxyResponseHeaderTimeout,
+	}
 }
 
 func EnsureToken(stateDir string) (string, error) {
