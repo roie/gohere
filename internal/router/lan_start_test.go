@@ -30,11 +30,11 @@ func TestStartLANIngressServesSharedHTTPAndHTTPSListeners(t *testing.T) {
 	defer upstreamServer.Close()
 
 	certificateStore := goherecert.Store{StateDir: t.TempDir()}
-	certificate, err := certificateStore.IssueEphemeralLANHostCert("shop.local", time.Now())
+	ca, err := certificateStore.EnsureCA()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ca, err := certificateStore.EnsureCA()
+	certificate, err := certificateStore.IssueEphemeralLANHostCert("shop.local", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

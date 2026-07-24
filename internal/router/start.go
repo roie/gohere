@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	localcert "github.com/roie/gohere/internal/cert"
 	"github.com/roie/gohere/internal/userpath"
 )
 
@@ -27,6 +28,7 @@ type StartConfig struct {
 	StateDir           string
 	LogPath            string
 	TLSConfig          *tls.Config
+	CertificateStore   *localcert.Store
 	RouteOwnerVerified func(Route) bool
 }
 
@@ -74,6 +76,20 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 	if cfg.StateDir == "" {
 		cfg.StateDir = DefaultStateDir()
 	}
+	if err := (localcert.Store{StateDir: cfg.StateDir}).PruneLegacyHostCerts(); err != nil {
+		return nil, fmt.Errorf("remove legacy HTTPS certificates: %w", err)
+	}
+	if cfg.TLSConfig != nil {
+		if cfg.CertificateStore == nil {
+			return nil, errors.New("HTTPS certificate store is required")
+		}
+		if _, err := cfg.CertificateStore.LoadCA(); err != nil {
+			return nil, fmt.Errorf(
+				"HTTPS certificate authority is unavailable; run gohere setup: %w",
+				err,
+			)
+		}
+	}
 	if cfg.LogPath == "" {
 		cfg.LogPath = filepath.Join(cfg.StateDir, "logs", "router.log")
 	}
@@ -93,6 +109,12 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		return nil, err
 	}
 	store := NewRouteStore(filepath.Join(cfg.StateDir, RoutesFilename))
+	if err := UpdateStore(store, func(routes []Route) ([]Route, error) {
+		return routes, nil
+	}); err != nil {
+		logFile.Close()
+		return nil, fmt.Errorf("initialize route identities: %w", err)
+	}
 	instanceID, err := generateToken()
 	if err != nil {
 		logFile.Close()
@@ -104,6 +126,18 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 			running.Close()
 		}
 	}})
+	var localTLSConfig *tls.Config
+	if cfg.TLSConfig != nil {
+		localTLSConfig, err = newLocalTLSConfig(
+			preparedTLSConfig(cfg.TLSConfig),
+			server,
+			cfg.CertificateStore,
+		)
+		if err != nil {
+			logFile.Close()
+			return nil, err
+		}
+	}
 	lanManager := NewLANManager(ctx, server, cfg.StateDir, cfg.RouteOwnerVerified)
 	server.lanManager = lanManager
 
@@ -113,7 +147,7 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		return nil, listenError(cfg.HTTPAddr, err)
 	}
 	var httpsLn net.Listener
-	if cfg.TLSConfig != nil {
+	if localTLSConfig != nil {
 		httpsLn, err = listenHTTPForGOOS(runtime.GOOS, cfg.HTTPSAddr)
 		if err != nil {
 			httpLn.Close()
@@ -184,10 +218,10 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		logFile:         logFile,
 		done:            make(chan struct{}),
 	}
-	if cfg.TLSConfig != nil {
+	if localTLSConfig != nil {
 		running.httpsServer = &http.Server{
 			Handler:           proxyHandler,
-			TLSConfig:         preparedTLSConfig(cfg.TLSConfig),
+			TLSConfig:         localTLSConfig,
 			ReadHeaderTimeout: proxyReadHeaderTimeout,
 		}
 	}

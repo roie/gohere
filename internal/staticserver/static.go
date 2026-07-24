@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -57,25 +59,17 @@ func HandlerWithConfig(cfg Config) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		fullPath := filepath.Join(root, localPath)
-		info, err := os.Stat(fullPath)
+		file, info, name, err := openStaticFile(root, localPath)
 		if err != nil {
 			http.NotFound(w, r)
 			return
 		}
-		if info.IsDir() {
-			fullPath = filepath.Join(fullPath, "index.html")
-			info, err = os.Stat(fullPath)
-			if err != nil || info.IsDir() {
-				http.NotFound(w, r)
-				return
-			}
-		}
-		if live && isHTMLFile(fullPath) {
-			serveLiveHTML(w, r, fullPath, info)
+		defer file.Close()
+		if live && isHTMLFile(name) {
+			serveLiveHTML(w, r, file, info, name)
 			return
 		}
-		http.ServeFile(w, r, fullPath)
+		http.ServeContent(w, r, name, info.ModTime(), file)
 	})
 }
 
@@ -158,14 +152,46 @@ func isHTMLFile(path string) bool {
 	return ext == ".html" || ext == ".htm"
 }
 
-func serveLiveHTML(w http.ResponseWriter, r *http.Request, fullPath string, info os.FileInfo) {
-	data, err := os.ReadFile(fullPath)
+func openStaticFile(root, relative string) (*os.File, os.FileInfo, string, error) {
+	file, err := os.OpenInRoot(root, relative)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, nil, "", err
+	}
+	name := filepath.Base(relative)
+	if info.IsDir() {
+		file.Close()
+		relative = filepath.Join(relative, "index.html")
+		file, err = os.OpenInRoot(root, relative)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		info, err = file.Stat()
+		if err != nil {
+			file.Close()
+			return nil, nil, "", err
+		}
+		name = "index.html"
+	}
+	if !info.Mode().IsRegular() {
+		file.Close()
+		return nil, nil, "", fs.ErrNotExist
+	}
+	return file, info, name, nil
+}
+
+func serveLiveHTML(w http.ResponseWriter, r *http.Request, file *os.File, info os.FileInfo, name string) {
+	data, err := io.ReadAll(file)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	body := injectLiveClient(data)
-	http.ServeContent(w, r, filepath.Base(fullPath), info.ModTime(), bytes.NewReader(body))
+	http.ServeContent(w, r, name, info.ModTime(), bytes.NewReader(body))
 }
 
 func injectLiveClient(data []byte) []byte {

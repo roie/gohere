@@ -1,6 +1,8 @@
 package cert
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
@@ -10,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -17,15 +20,20 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 const (
-	caCertFilename      = "ca.pem"
-	caKeyFilename       = "ca.key"
-	fingerprintFilename = "fingerprint"
-	hostCertValidity    = 397 * 24 * time.Hour
-	caCertValidity      = 10 * 365 * 24 * time.Hour
-	renewBefore         = 30 * 24 * time.Hour
+	caCertFilename               = "ca.pem"
+	caKeyFilename                = "ca.key"
+	fingerprintFilename          = "fingerprint"
+	ephemeralHostCertValidity    = 24 * time.Hour
+	caCertValidity               = 10 * 365 * 24 * time.Hour
+	renewBefore                  = 30 * 24 * time.Hour
+	certificateStoreLockTimeout  = 10 * time.Second
+	certificateStoreLockPoll     = 10 * time.Millisecond
+	certificateStoreLockFilename = "certificate-store.lock"
 )
 
 type Store struct {
@@ -38,32 +46,22 @@ type CA struct {
 	Fingerprint string
 }
 
-func (s Store) TLSConfig() *tls.Config {
-	return &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			host := "localhost"
-			if hello != nil && hello.ServerName != "" {
-				host = hello.ServerName
-			}
-			cert, err := s.EnsureHostCert(host)
-			if err != nil {
-				return nil, err
-			}
-			return &cert, nil
-		},
-	}
-}
-
 func (s Store) CACertPath() string {
 	certPath, _, _ := s.caPaths()
 	return certPath
 }
 
 func (s Store) EnsureCA() (CA, error) {
+	unlock, err := s.lock("initialize certificate authority")
+	if err != nil {
+		return CA{}, err
+	}
+	defer unlock()
+
 	certPath, keyPath, fingerprintPath := s.caPaths()
-	ca, err := s.loadCA(certPath, keyPath)
-	if err == nil && time.Until(ca.Cert.NotAfter) > renewBefore {
+	now := time.Now()
+	ca, err := loadValidatedCA(certPath, keyPath, now)
+	if err == nil && ca.Cert.NotAfter.Sub(now) > renewBefore {
 		fingerprint := fingerprint(ca.Cert.Raw)
 		if err := writeFileIfChanged(fingerprintPath, []byte(fingerprint+"\n"), 0644); err != nil {
 			return CA{}, err
@@ -76,12 +74,12 @@ func (s Store) EnsureCA() (CA, error) {
 	if err != nil {
 		return CA{}, err
 	}
-	now := time.Now().Add(-time.Minute)
+	notBefore := now.Add(-time.Minute)
 	template := &x509.Certificate{
 		SerialNumber:          serialNumber(),
 		Subject:               pkix.Name{CommonName: "gohere local development CA"},
-		NotBefore:             now,
-		NotAfter:              now.Add(caCertValidity),
+		NotBefore:             notBefore,
+		NotAfter:              notBefore.Add(caCertValidity),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -111,94 +109,82 @@ func (s Store) EnsureCA() (CA, error) {
 	return CA{Cert: parsed, Key: key, Fingerprint: fp}, nil
 }
 
+func (s Store) LoadCA() (CA, error) {
+	unlock, err := s.lock("load certificate authority")
+	if err != nil {
+		return CA{}, err
+	}
+	defer unlock()
+	return s.loadCALocked(time.Now())
+}
+
 func (s Store) Fingerprint() (string, error) {
-	_, _, fingerprintPath := s.caPaths()
-	data, err := os.ReadFile(fingerprintPath)
+	ca, err := s.LoadCA()
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(data)), nil
+	return ca.Fingerprint, nil
 }
 
 func (s Store) TrustFingerprint() (string, error) {
-	certPath, _, _ := s.caPaths()
-	der, err := readPEMBlock(certPath, "CERTIFICATE")
+	ca, err := s.LoadCA()
 	if err != nil {
 		return "", err
 	}
-	sum := sha1.Sum(der)
+	sum := sha1.Sum(ca.Cert.Raw)
 	return strings.ToUpper(hex.EncodeToString(sum[:])), nil
 }
 
-func (s Store) EnsureHostCert(host string) (tls.Certificate, error) {
-	canonical, parsedIP, err := canonicalHost(host)
+func (s Store) IssueEphemeralLANHostCert(host string, now time.Time) (tls.Certificate, error) {
+	ca, err := s.LoadCA()
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	certPath, keyPath, hostPath := s.HostCertPaths(canonical)
-	if cert, ok := loadReusableHostCert(certPath, keyPath, canonical); ok {
-		return cert, nil
-	}
-
-	ca, err := s.EnsureCA()
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	now := time.Now().Add(-time.Minute)
-	template := &x509.Certificate{
-		SerialNumber: serialNumber(),
-		Subject:      pkix.Name{CommonName: canonical},
-		NotBefore:    now,
-		NotAfter:     now.Add(hostCertValidity),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	if parsedIP != nil {
-		template.IPAddresses = []net.IP{parsedIP}
-	} else {
-		template.DNSNames = []string{canonical}
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, ca.Cert, &key.PublicKey, ca.Key)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(certPath), 0700); err != nil {
-		return tls.Certificate{}, err
-	}
-	certPEM := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Cert.Raw})...)
-	if err := writeRawFile(certPath, certPEM, 0644); err != nil {
-		return tls.Certificate{}, err
-	}
-	if err := writePEMFile(keyPath, 0600, "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(key)); err != nil {
-		return tls.Certificate{}, err
-	}
-	if err := writeFileIfChanged(hostPath, []byte(canonical+"\n"), 0644); err != nil {
-		return tls.Certificate{}, err
-	}
-	return tls.LoadX509KeyPair(certPath, keyPath)
+	return s.IssueLANHostCert(ca, host, now)
 }
 
-func (s Store) IssueEphemeralLANHostCert(host string, now time.Time) (tls.Certificate, error) {
+func (s Store) IssueLANHostCert(ca CA, host string, now time.Time) (tls.Certificate, error) {
 	canonical, err := canonicalLANHost(host)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	ca, err := s.EnsureCA()
+	return issueEphemeralHostCert(ca, canonical, now)
+}
+
+func (s Store) IssueLocalhostCert(ca CA, host string, now time.Time) (tls.Certificate, error) {
+	canonical, err := canonicalLocalhostHost(host)
 	if err != nil {
 		return tls.Certificate{}, err
+	}
+	return issueEphemeralHostCert(ca, canonical, now)
+}
+
+func issueEphemeralHostCert(ca CA, canonical string, now time.Time) (tls.Certificate, error) {
+	if ca.Cert == nil || ca.Key == nil {
+		return tls.Certificate{}, errors.New("certificate authority is incomplete")
+	}
+	now = now.UTC()
+	if now.Before(ca.Cert.NotBefore) || !now.Before(ca.Cert.NotAfter) {
+		return tls.Certificate{}, errors.New("certificate authority is not currently valid")
 	}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	notBefore := now.UTC().Add(-time.Minute)
+	notBefore := now.Add(-time.Minute)
+	if ca.Cert.NotBefore.After(notBefore) {
+		notBefore = ca.Cert.NotBefore
+	}
+	notAfter := notBefore.Add(ephemeralHostCertValidity)
+	if ca.Cert.NotAfter.Before(notAfter) {
+		notAfter = ca.Cert.NotAfter
+	}
+	if !notAfter.After(notBefore) {
+		return tls.Certificate{}, errors.New("certificate authority validity is too short")
+	}
 	template := &x509.Certificate{
 		SerialNumber: serialNumber(), Subject: pkix.Name{CommonName: canonical},
-		NotBefore: notBefore, NotAfter: notBefore.Add(24 * time.Hour),
+		NotBefore: notBefore, NotAfter: notAfter,
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		DNSNames:    []string{canonical},
@@ -223,6 +209,20 @@ func (s Store) IssueEphemeralLANHostCert(host string, now time.Time) (tls.Certif
 	return certificate, nil
 }
 
+func canonicalLocalhostHost(host string) (string, error) {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" || strings.Contains(host, ":") || net.ParseIP(host) != nil {
+		return "", fmt.Errorf("invalid certificate host %q", host)
+	}
+	if host != "localhost" && !strings.HasSuffix(host, ".localhost") {
+		return "", fmt.Errorf("invalid certificate host %q: expected localhost or .localhost", host)
+	}
+	if !validLocalhostName(host) {
+		return "", fmt.Errorf("invalid certificate host %q", host)
+	}
+	return host, nil
+}
+
 func canonicalLANHost(host string) (string, error) {
 	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	label, ok := strings.CutSuffix(host, ".local")
@@ -237,26 +237,65 @@ func canonicalLANHost(host string) (string, error) {
 	return label + ".local", nil
 }
 
-func (s Store) HostCertPaths(host string) (certPath, keyPath, hostPath string) {
-	key := hostCacheKey(host)
-	base := filepath.Join(s.StateDir, "tls", "certs", key)
-	return base + ".pem", base + ".key", base + ".host"
-}
-
 func (s Store) caPaths() (certPath, keyPath, fingerprintPath string) {
 	base := filepath.Join(s.StateDir, "ca")
 	return filepath.Join(base, caCertFilename), filepath.Join(base, caKeyFilename), filepath.Join(base, fingerprintFilename)
 }
 
-func (s Store) loadCA(certPath, keyPath string) (CA, error) {
-	certDER, err := readPEMBlock(certPath, "CERTIFICATE")
+func (s Store) lock(operation string) (func(), error) {
+	if strings.TrimSpace(s.StateDir) == "" {
+		return nil, errors.New("certificate state directory is required")
+	}
+	if err := os.MkdirAll(s.StateDir, 0700); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), certificateStoreLockTimeout)
+	defer cancel()
+	lockPath := filepath.Join(s.StateDir, certificateStoreLockFilename)
+	fileLock := flock.New(lockPath, flock.SetPermissions(0600))
+	locked, err := fileLock.TryLockContext(ctx, certificateStoreLockPoll)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", operation, err)
+	}
+	if !locked {
+		return nil, fmt.Errorf("%s: timed out waiting for certificate store lock", operation)
+	}
+	if err := os.Chmod(lockPath, 0600); err != nil {
+		_ = fileLock.Unlock()
+		return nil, fmt.Errorf("%s: %w", operation, err)
+	}
+	return func() { _ = fileLock.Unlock() }, nil
+}
+
+func (s Store) loadCALocked(now time.Time) (CA, error) {
+	certPath, keyPath, fingerprintPath := s.caPaths()
+	ca, err := loadValidatedCA(certPath, keyPath, now)
 	if err != nil {
 		return CA{}, err
 	}
-	keyDER, err := readPEMBlock(keyPath, "RSA PRIVATE KEY")
+	storedFingerprint, err := os.ReadFile(fingerprintPath)
 	if err != nil {
 		return CA{}, err
 	}
+	if strings.TrimSpace(string(storedFingerprint)) != ca.Fingerprint {
+		return CA{}, errors.New("certificate authority fingerprint does not match certificate")
+	}
+	return ca, nil
+}
+
+func loadValidatedCA(certPath, keyPath string, now time.Time) (CA, error) {
+	certDER, err := readSinglePEMBlock(certPath, "CERTIFICATE")
+	if err != nil {
+		return CA{}, err
+	}
+	keyDER, err := readSinglePEMBlock(keyPath, "RSA PRIVATE KEY")
+	if err != nil {
+		return CA{}, err
+	}
+	return validateCA(certDER, keyDER, now)
+}
+
+func validateCA(certDER, keyDER []byte, now time.Time) (CA, error) {
 	parsedCert, err := x509.ParseCertificate(certDER)
 	if err != nil {
 		return CA{}, err
@@ -265,63 +304,55 @@ func (s Store) loadCA(certPath, keyPath string) (CA, error) {
 	if err != nil {
 		return CA{}, err
 	}
+	if !parsedCert.IsCA ||
+		!parsedCert.BasicConstraintsValid ||
+		parsedCert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return CA{}, errors.New("invalid certificate authority constraints")
+	}
+	if now.Before(parsedCert.NotBefore) || !now.Before(parsedCert.NotAfter) {
+		return CA{}, errors.New("certificate authority is not currently valid")
+	}
+	publicKey, ok := parsedCert.PublicKey.(*rsa.PublicKey)
+	if !ok || !publicKey.Equal(&parsedKey.PublicKey) {
+		return CA{}, errors.New("certificate authority key does not match certificate")
+	}
+	if !bytes.Equal(parsedCert.RawIssuer, parsedCert.RawSubject) {
+		return CA{}, errors.New("certificate authority is not self-issued")
+	}
+	if err := parsedCert.CheckSignatureFrom(parsedCert); err != nil {
+		return CA{}, fmt.Errorf("certificate authority is not self-signed: %w", err)
+	}
 	return CA{Cert: parsedCert, Key: parsedKey, Fingerprint: fingerprint(parsedCert.Raw)}, nil
 }
 
-func loadReusableHostCert(certPath, keyPath, wantHost string) (tls.Certificate, bool) {
-	tlsCert, err := tls.LoadX509KeyPair(certPath, keyPath)
-	if err != nil || len(tlsCert.Certificate) == 0 {
-		return tls.Certificate{}, false
+func (s Store) PruneLegacyHostCerts() error {
+	unlock, err := s.lock("remove legacy host certificates")
+	if err != nil {
+		return err
 	}
-	leaf, err := x509.ParseCertificate(tlsCert.Certificate[0])
-	if err != nil || time.Until(leaf.NotAfter) <= renewBefore {
-		return tls.Certificate{}, false
-	}
-	if ip := net.ParseIP(wantHost); ip != nil {
-		for _, certIP := range leaf.IPAddresses {
-			if certIP.Equal(ip) {
-				return tlsCert, true
-			}
-		}
-		return tls.Certificate{}, false
-	}
-	for _, name := range leaf.DNSNames {
-		if name == wantHost {
-			return tlsCert, true
-		}
-	}
-	return tls.Certificate{}, false
-}
+	defer unlock()
 
-func canonicalHost(host string) (string, net.IP, error) {
-	host = strings.TrimSpace(strings.ToLower(host))
-	if strings.Contains(host, ":") {
-		if splitHost, _, err := net.SplitHostPort(host); err == nil {
-			host = strings.Trim(splitHost, "[]")
-		}
+	root, err := os.OpenRoot(s.StateDir)
+	if err != nil {
+		return err
 	}
-	if host == "" {
-		return "", nil, fmt.Errorf("invalid certificate host %q", host)
+	defer root.Close()
+	if err := root.RemoveAll(filepath.Join("tls", "certs")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if !ip.IsLoopback() {
-			return "", nil, fmt.Errorf("invalid certificate host %q: only loopback IPs are supported", host)
-		}
-		return ip.String(), ip, nil
-	}
-	if host != "localhost" && !strings.HasSuffix(host, ".localhost") {
-		return "", nil, fmt.Errorf("invalid certificate host %q: expected localhost or .localhost", host)
-	}
-	if !validLocalhostName(host) {
-		return "", nil, fmt.Errorf("invalid certificate host %q", host)
-	}
-	return host, nil, nil
+	return nil
 }
 
 func validLocalhostName(host string) bool {
+	if len(host) > 253 {
+		return false
+	}
 	labels := strings.Split(host, ".")
 	for _, label := range labels {
-		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+		if label == "" ||
+			len(label) > 63 ||
+			strings.HasPrefix(label, "-") ||
+			strings.HasSuffix(label, "-") {
 			return false
 		}
 		for _, r := range label {
@@ -332,15 +363,6 @@ func validLocalhostName(host string) bool {
 		}
 	}
 	return true
-}
-
-func hostCacheKey(host string) string {
-	canonical, _, err := canonicalHost(host)
-	if err != nil {
-		canonical = strings.TrimSpace(strings.ToLower(host))
-	}
-	sum := sha256.Sum256([]byte(canonical))
-	return hex.EncodeToString(sum[:])
 }
 
 func fingerprint(der []byte) string {
@@ -357,21 +379,19 @@ func serialNumber() *big.Int {
 	return n
 }
 
-func readPEMBlock(path, blockType string) ([]byte, error) {
+func readSinglePEMBlock(path, blockType string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	for {
-		block, rest := pem.Decode(data)
-		if block == nil {
-			return nil, fmt.Errorf("missing %s PEM block in %s", blockType, path)
-		}
-		if block.Type == blockType {
-			return block.Bytes, nil
-		}
-		data = rest
+	block, rest := pem.Decode(data)
+	if block == nil || block.Type != blockType {
+		return nil, fmt.Errorf("expected one %s PEM block in %s", blockType, path)
 	}
+	if len(bytes.TrimSpace(rest)) != 0 {
+		return nil, fmt.Errorf("unexpected data after %s PEM block in %s", blockType, path)
+	}
+	return block.Bytes, nil
 }
 
 func writePEMFile(path string, mode os.FileMode, blockType string, der []byte) error {
@@ -405,6 +425,10 @@ func writeRawFile(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return err
 	}
