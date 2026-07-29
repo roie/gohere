@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/roie/gohere/internal/cli"
+	"github.com/roie/gohere/internal/laninterface"
 	"github.com/roie/gohere/internal/router"
 )
 
@@ -77,6 +79,22 @@ func TestLANProgressIsTransientOnTerminal(t *testing.T) {
 	finish()
 	if output.String() != "Preparing LAN access…\r                     \r" {
 		t.Fatalf("progress finish = %q", output.String())
+	}
+}
+
+func TestCreateLANShareExplainsWindowsPublicNetwork(t *testing.T) {
+	publicError := laninterface.ErrPublicNetwork.Error()
+	for name, createErr := range map[string]error{
+		"native Windows": fmt.Errorf("POST /v2/lan-shares returned 409 Conflict: %s", publicError),
+		"WSL companion":  fmt.Errorf("companion authority_error: POST /v2/lan-shares returned 409 Conflict: %s", publicError),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := createLANShare(t.Context(), &fakeLANShareClient{createErr: createErr}, cli.Command{ShareMode: "lan"}, router.RouteRef{ID: "route-1", Generation: 1}, nil)
+			const want = "gohere error: LAN sharing was blocked because Windows marks the active network as Public; on a trusted network, change its Windows network profile to Private, then run the command again"
+			if err == nil || err.Error() != want {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+		})
 	}
 }
 
