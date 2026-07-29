@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/roie/gohere/internal/cli"
+	"github.com/roie/gohere/internal/laninterface"
 	"github.com/roie/gohere/internal/router"
 )
 
@@ -33,6 +34,9 @@ func createLANShare(ctx context.Context, client adminClient, cmd cli.Command, re
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout exceeded") {
 			return nil, errors.New("gohere error: LAN setup timed out while waiting for Windows firewall approval; approve the Windows prompt, then run the command again")
+		}
+		if strings.Contains(err.Error(), laninterface.ErrPublicNetwork.Error()) {
+			return nil, errors.New("gohere error: LAN sharing was blocked because Windows marks the active network as Public; on a trusted network, change its Windows network profile to Private, then run the command again")
 		}
 		return nil, err
 	}
