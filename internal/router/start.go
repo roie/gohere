@@ -268,10 +268,18 @@ func listenHTTPForGOOS(goos, addr string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	if goos == "darwin" && addr == "[::]:80" {
-		return loopbackOnlyListener{Listener: ln}, nil
+	return restrictHTTPListenerForGOOS(goos, ln), nil
+}
+
+func restrictHTTPListenerForGOOS(goos string, ln net.Listener) net.Listener {
+	if goos != "darwin" {
+		return ln
 	}
-	return ln, nil
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok || !addr.IP.IsUnspecified() {
+		return ln
+	}
+	return loopbackOnlyListener{Listener: ln}
 }
 
 type loopbackOnlyListener struct {
