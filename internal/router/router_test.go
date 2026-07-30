@@ -2386,23 +2386,80 @@ func TestDefaultHTTPAddrUsesDarwinWildcard(t *testing.T) {
 	}
 }
 
-func TestLoopbackOnlyListenerRejectsNonLoopbackBeforeHTTP(t *testing.T) {
-	rejected := &fakeConn{remote: tcpAddr("192.168.1.187")}
-	accepted := &fakeConn{remote: tcpAddr("127.0.0.1")}
-	listener := &fakeListener{conns: []net.Conn{rejected, accepted}}
+func TestRestrictHTTPListenerForGOOSWrapsOnlyDarwinWildcard(t *testing.T) {
+	tests := []struct {
+		name    string
+		goos    string
+		addr    net.Addr
+		wrapped bool
+	}{
+		{name: "darwin IPv6 wildcard", goos: "darwin", addr: tcpAddr("::"), wrapped: true},
+		{name: "darwin IPv4 wildcard", goos: "darwin", addr: tcpAddr("0.0.0.0"), wrapped: true},
+		{name: "darwin IPv6 loopback", goos: "darwin", addr: tcpAddr("::1")},
+		{name: "darwin IPv4 loopback", goos: "darwin", addr: tcpAddr("127.0.0.1")},
+		{name: "linux wildcard", goos: "linux", addr: tcpAddr("::")},
+		{name: "windows wildcard", goos: "windows", addr: tcpAddr("0.0.0.0")},
+		{name: "non TCP address", goos: "darwin", addr: &net.UnixAddr{Name: "gohere-test", Net: "unix"}},
+	}
 
-	conn, err := (loopbackOnlyListener{Listener: listener}).Accept()
-	if err != nil {
-		t.Fatal(err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			listener := &fakeListener{addr: test.addr}
+			got := restrictHTTPListenerForGOOS(test.goos, listener)
+			_, wrapped := got.(loopbackOnlyListener)
+			if wrapped != test.wrapped {
+				t.Fatalf("wrapped = %t, want %t", wrapped, test.wrapped)
+			}
+		})
 	}
-	if conn != accepted {
-		t.Fatalf("accepted conn = %#v, want loopback conn", conn)
+}
+
+func TestLoopbackOnlyListenerAcceptsIPv4AndIPv6Loopback(t *testing.T) {
+	for _, ip := range []string{"127.0.0.1", "::1", "::ffff:127.0.0.1"} {
+		t.Run(ip, func(t *testing.T) {
+			accepted := &fakeConn{remote: tcpAddr(ip)}
+			listener := &fakeListener{conns: []net.Conn{accepted}}
+
+			conn, err := (loopbackOnlyListener{Listener: listener}).Accept()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if conn != accepted || accepted.closed {
+				t.Fatalf("accepted conn = %#v closed=%t", conn, accepted.closed)
+			}
+		})
 	}
-	if !rejected.closed {
-		t.Fatal("non-loopback connection was not closed")
+}
+
+func TestLoopbackOnlyListenerRejectsDisallowedPeersBeforeHTTP(t *testing.T) {
+	tests := []struct {
+		name   string
+		remote net.Addr
+	}{
+		{name: "non-loopback TCP", remote: tcpAddr("192.168.1.187")},
+		{name: "non-TCP", remote: &net.UnixAddr{Name: "gohere-peer", Net: "unix"}},
 	}
-	if accepted.closed {
-		t.Fatal("loopback connection should not be closed")
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rejected := &fakeConn{remote: test.remote}
+			accepted := &fakeConn{remote: tcpAddr("127.0.0.1")}
+			listener := &fakeListener{conns: []net.Conn{rejected, accepted}}
+
+			conn, err := (loopbackOnlyListener{Listener: listener}).Accept()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if conn != accepted {
+				t.Fatalf("accepted conn = %#v, want loopback conn", conn)
+			}
+			if !rejected.closed {
+				t.Fatal("rejected connection was not closed")
+			}
+			if accepted.closed {
+				t.Fatal("loopback connection should not be closed")
+			}
+		})
 	}
 }
 
@@ -2699,6 +2756,7 @@ func (r *countingReader) Read(p []byte) (int, error) {
 
 type fakeListener struct {
 	conns []net.Conn
+	addr  net.Addr
 }
 
 func (l *fakeListener) Accept() (net.Conn, error) {
@@ -2715,6 +2773,9 @@ func (l *fakeListener) Close() error {
 }
 
 func (l *fakeListener) Addr() net.Addr {
+	if l.addr != nil {
+		return l.addr
+	}
 	return tcpAddr("127.0.0.1")
 }
 
