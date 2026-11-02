@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -26,8 +25,8 @@ type UninstallConfig struct {
 	StateDir       string
 	ConfigDir      string
 	CommandRunner  setup.CommandRunner
-	ProcessSignal  func(int) error
-	ProcessMatches func(int, string) bool
+	OpenProcess    func(int) routerProcess
+	Sleep          func(context.Context, time.Duration) error
 	UntrustCA      func(context.Context, string) error
 	RemoveUserPath func(context.Context, string) error
 	RemoveState    *bool
@@ -113,12 +112,6 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 	if cfg.CommandRunner == nil {
 		cfg.CommandRunner = uninstallRealRunner{}
 	}
-	if cfg.ProcessSignal == nil {
-		cfg.ProcessSignal = signalProcess
-	}
-	if cfg.ProcessMatches == nil {
-		cfg.ProcessMatches = processMatchesInstalledBinary
-	}
 	if cfg.UntrustCA == nil {
 		cfg.UntrustCA = func(ctx context.Context, fingerprint string) error {
 			if runtime.GOOS == "linux" && detectWSLFunc() {
@@ -136,22 +129,22 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 		}
 	}
 
-	_ = shutdownInstalledService(ctx, cfg.StateDir)
+	if _, err := stopInstalledRouter(ctx, newRouterStopConfig(cfg.StateDir, cfg.ConfigDir, cfg.CommandRunner, cfg.OpenProcess, cfg.Sleep)); err != nil {
+		return fmt.Errorf("gohere error: uninstall stopped before removing anything because the gohere service could not be confirmed stopped: %w", err)
+	}
+
 	servicePath := filepath.Join(cfg.ConfigDir, "systemd", "user", "gohere-router.service")
 	if exists(servicePath) {
-		_ = cfg.CommandRunner.Run(ctx, "systemctl", "--user", "stop", "gohere-router")
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		_ = cfg.CommandRunner.Run(ctx, "systemctl", "--user", "disable", "gohere-router")
 		if err := os.Remove(servicePath); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
-
-	pidPath := filepath.Join(cfg.StateDir, "router.pid")
-	if pid, ok := readRouterPID(pidPath); ok {
-		stableBinary := filepath.Join(cfg.StateDir, "bin", stableBinaryName(runtime.GOOS))
-		if cfg.ProcessMatches(pid, stableBinary) {
-			_ = cfg.ProcessSignal(pid)
-		}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	binDir := filepath.Join(cfg.StateDir, "bin")
 	if err := cfg.RemoveUserPath(ctx, binDir); err != nil {
@@ -162,7 +155,7 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 			return err
 		}
 	}
-	if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := untrustHTTPSCAIfEnabled(ctx, cfg.StateDir, cfg.UntrustCA); err != nil {
@@ -179,6 +172,9 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 		removeState = shouldRemoveStateFromAnswer(answer)
 	}
 	if removeState {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := os.RemoveAll(cfg.StateDir); err != nil {
 			return err
 		}
@@ -212,18 +208,6 @@ func caUntrustFingerprint(stateDir string) (string, error) {
 	return store.TrustFingerprint()
 }
 
-func readRouterPID(path string) (int, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0, false
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
-		return 0, false
-	}
-	return pid, true
-}
-
 func shouldRemoveStateFromAnswer(answer string) bool {
 	answer = strings.TrimSpace(strings.ToLower(answer))
 	return answer == "y" || answer == "yes"
@@ -239,22 +223,6 @@ func shutdownInstalledService(ctx context.Context, stateDir string) error {
 
 var adminShutdown = func(ctx context.Context, token string) error {
 	return admin.NewClient("http://127.0.0.1:39399", token).Shutdown(ctx)
-}
-
-func signalProcess(pid int) error {
-	process := openRouterProcess(pid)
-	defer process.Close()
-	return process.Terminate()
-}
-
-func processMatchesInstalledBinary(pid int, stableBinary string) bool {
-	if pid <= 0 || stableBinary == "" {
-		return false
-	}
-	process := openRouterProcess(pid)
-	defer process.Close()
-	state, _ := process.Inspect(stableBinary)
-	return state == processMatched
 }
 
 func removeInstalledFile(path string) error {

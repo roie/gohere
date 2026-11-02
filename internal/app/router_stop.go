@@ -81,9 +81,9 @@ func stopInstalledRouter(ctx context.Context, cfg routerStopConfig) (bool, error
 	}
 	managerStopped := false
 	var managerErr error
-	if exists(filepath.Join(cfg.configDir, "systemd", "user", "gohere-router.service")) {
+	if servicePath := filepath.Join(cfg.configDir, "systemd", "user", "gohere-router.service"); exists(servicePath) {
 		if err := cfg.commandRunner.Run(ctx, "systemctl", "--user", "stop", "gohere-router"); err != nil {
-			managerErr = fmt.Errorf("systemd could not stop gohere-router: %w", err)
+			managerErr = fmt.Errorf("systemd could not stop gohere-router (if systemd no longer manages it, remove %s): %w", servicePath, err)
 		} else {
 			managerStopped = true
 		}

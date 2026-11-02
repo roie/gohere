@@ -5,9 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	localcert "github.com/roie/gohere/internal/cert"
 	appconfig "github.com/roie/gohere/internal/config"
@@ -36,7 +36,7 @@ func TestUninstallRemovesRouterInstallButKeepsStateByDefault(t *testing.T) {
 	writeFile(t, filepath.Join(stateDir, "routes.json"), "[]")
 	writeFile(t, filepath.Join(configDir, "systemd", "user", "gohere-router.service"), "service")
 	runner := &uninstallRecordingRunner{}
-	process := &uninstallRecordingProcess{}
+	process := &fakeRouterProcess{after: []processState{processAbsent}}
 	oldPromptInput := promptInput
 	oldAdminShutdown := adminShutdown
 	defer func() {
@@ -51,10 +51,13 @@ func TestUninstallRemovesRouterInstallButKeepsStateByDefault(t *testing.T) {
 		StateDir:      stateDir,
 		ConfigDir:     configDir,
 		CommandRunner: runner,
-		ProcessSignal: process.Signal,
-		ProcessMatches: func(pid int, binary string) bool {
-			return pid == 12345 && strings.HasSuffix(binary, filepath.Join("bin", stableBinaryName(runtime.GOOS)))
+		OpenProcess: func(pid int) routerProcess {
+			if pid != 12345 {
+				t.Fatalf("opened PID %d, want 12345", pid)
+			}
+			return process
 		},
+		Sleep: func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -80,8 +83,8 @@ func TestUninstallRemovesRouterInstallButKeepsStateByDefault(t *testing.T) {
 	if !runner.saw("systemctl", "--user", "disable", "gohere-router") {
 		t.Fatalf("missing systemctl disable: %#v", runner.commands)
 	}
-	if !process.saw(12345) {
-		t.Fatalf("missing process signal: %#v", process.pids)
+	if process.terminated != 1 {
+		t.Fatalf("terminated = %d, want 1", process.terminated)
 	}
 	if !strings.Contains(out.String(), "gohere service removed") {
 		t.Fatalf("output = %q", out.String())
@@ -278,24 +281,6 @@ func (r *uninstallRecordingRunner) Run(ctx context.Context, command string, args
 func (r *uninstallRecordingRunner) saw(items ...string) bool {
 	for _, cmd := range r.commands {
 		if sameStrings(cmd, items) {
-			return true
-		}
-	}
-	return false
-}
-
-type uninstallRecordingProcess struct {
-	pids []int
-}
-
-func (p *uninstallRecordingProcess) Signal(pid int) error {
-	p.pids = append(p.pids, pid)
-	return nil
-}
-
-func (p *uninstallRecordingProcess) saw(pid int) bool {
-	for _, got := range p.pids {
-		if got == pid {
 			return true
 		}
 	}
