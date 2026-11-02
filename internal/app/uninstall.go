@@ -3,7 +3,6 @@ package app
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -35,11 +34,11 @@ type UninstallConfig struct {
 }
 
 type ServiceStopConfig struct {
-	StateDir       string
-	ConfigDir      string
-	CommandRunner  setup.CommandRunner
-	ProcessSignal  func(int) error
-	ProcessMatches func(int, string) bool
+	StateDir      string
+	ConfigDir     string
+	CommandRunner setup.CommandRunner
+	OpenProcess   func(int) routerProcess
+	Sleep         func(context.Context, time.Duration) error
 }
 
 func Uninstall(ctx context.Context, stdout io.Writer) error {
@@ -69,60 +68,36 @@ func ServiceStopWithConfig(ctx context.Context, stdout io.Writer, cfg ServiceSto
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if cfg.StateDir == "" {
-		cfg.StateDir = router.DefaultStateDir()
+	stopped, err := stopInstalledRouter(ctx, newRouterStopConfig(cfg.StateDir, cfg.ConfigDir, cfg.CommandRunner, cfg.OpenProcess, cfg.Sleep))
+	if err != nil {
+		return fmt.Errorf("gohere error: could not stop gohere service: %w", err)
 	}
-	if cfg.ConfigDir == "" {
-		cfg.ConfigDir = filepath.Join(userpath.HomeDir(), ".config")
-	}
-	if cfg.CommandRunner == nil {
-		cfg.CommandRunner = uninstallRealRunner{}
-	}
-	if cfg.ProcessSignal == nil {
-		cfg.ProcessSignal = signalProcess
-	}
-	if cfg.ProcessMatches == nil {
-		cfg.ProcessMatches = processMatchesInstalledBinary
-	}
-
-	stopped := false
-	if shutdownInstalledService(ctx, cfg.StateDir) == nil {
-		stopped = true
-	}
-	var stopErr error
-	servicePath := filepath.Join(cfg.ConfigDir, "systemd", "user", "gohere-router.service")
-	if exists(servicePath) {
-		if err := cfg.CommandRunner.Run(ctx, "systemctl", "--user", "stop", "gohere-router"); err != nil {
-			stopErr = errors.Join(stopErr, err)
-		} else {
-			stopped = true
-		}
-	}
-
-	pidPath := filepath.Join(cfg.StateDir, "router.pid")
-	if pid, ok := readRouterPID(pidPath); ok {
-		stableBinary := filepath.Join(cfg.StateDir, "bin", stableBinaryName(runtime.GOOS))
-		if cfg.ProcessMatches(pid, stableBinary) {
-			if err := cfg.ProcessSignal(pid); err != nil {
-				stopErr = errors.Join(stopErr, err)
-			} else {
-				stopped = true
-			}
-		}
-	}
-	if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
 	if stopped {
 		fmt.Fprintln(stdout, "gohere service stopped.")
 		return nil
 	}
-	if stopErr != nil {
-		return fmt.Errorf("gohere error: could not stop gohere service: %w", stopErr)
-	}
 	fmt.Fprintln(stdout, "No gohere service is running.")
 	return nil
+}
+
+func newRouterStopConfig(stateDir, configDir string, runner setup.CommandRunner, openProcess func(int) routerProcess, sleep func(context.Context, time.Duration) error) routerStopConfig {
+	cfg := routerStopConfig{stateDir: stateDir, configDir: configDir, commandRunner: runner, openProcess: openProcess, sleep: sleep}
+	if cfg.stateDir == "" {
+		cfg.stateDir = router.DefaultStateDir()
+	}
+	if cfg.configDir == "" {
+		cfg.configDir = filepath.Join(userpath.HomeDir(), ".config")
+	}
+	if cfg.commandRunner == nil {
+		cfg.commandRunner = uninstallRealRunner{}
+	}
+	if cfg.openProcess == nil {
+		cfg.openProcess = openRouterProcess
+	}
+	if cfg.sleep == nil {
+		cfg.sleep = sleepContext
+	}
+	return cfg
 }
 
 func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallConfig) error {

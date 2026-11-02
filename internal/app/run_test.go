@@ -63,6 +63,7 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	detectWSLFunc = func() bool { return false }
+	adminHealth = func(context.Context) error { return errors.New("router health is unreachable in tests") }
 	os.Exit(m.Run())
 }
 
