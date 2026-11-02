@@ -297,7 +297,10 @@ func startDetached(ctx context.Context, runner CommandRunner, command string, ar
 }
 
 func writeDetachedRouterPID(stateDir string, pid int) error {
-	if err := os.WriteFile(filepath.Join(stateDir, "router.pid"), []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
+	if pid <= 0 {
+		return nil
+	}
+	if err := router.WritePIDRecord(stateDir, pid); err != nil {
 		stopDetachedProcess(pid)
 		return err
 	}
