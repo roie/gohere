@@ -45,8 +45,10 @@ type Running struct {
 	httpLn          net.Listener
 	httpsLn         net.Listener
 	adminLn         net.Listener
-	pidPath         string
-	instancePath    string
+	stateDir        string
+	pid             int
+	instanceID      string
+	releaseOnce     sync.Once
 	logFile         *os.File
 	done            chan struct{}
 	doneOnce        sync.Once
@@ -164,24 +166,13 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		logFile.Close()
 		return nil, err
 	}
-	pidPath := filepath.Join(cfg.StateDir, "router.pid")
-	if err := writeRouterPID(pidPath); err != nil {
+	pid := os.Getpid()
+	if err := publishRuntimeRecords(cfg.StateDir, pid, instanceID); err != nil {
 		httpLn.Close()
 		if httpsLn != nil {
 			httpsLn.Close()
 		}
 		adminLn.Close()
-		logFile.Close()
-		return nil, err
-	}
-	instancePath := filepath.Join(cfg.StateDir, RouterInstanceFilename)
-	if err := writeRouterInstance(instancePath, instanceID); err != nil {
-		httpLn.Close()
-		if httpsLn != nil {
-			httpsLn.Close()
-		}
-		adminLn.Close()
-		_ = os.Remove(pidPath)
 		logFile.Close()
 		return nil, err
 	}
@@ -213,8 +204,9 @@ func Start(ctx context.Context, cfg StartConfig) (*Running, error) {
 		adminLn:         adminLn,
 		lanManager:      lanManager,
 		lanRecoveryDone: make(chan struct{}),
-		pidPath:         pidPath,
-		instancePath:    instancePath,
+		stateDir:        cfg.StateDir,
+		pid:             pid,
+		instanceID:      instanceID,
 		logFile:         logFile,
 		done:            make(chan struct{}),
 	}
@@ -401,11 +393,13 @@ func (r *Running) Close() error {
 	if r.adminLn != nil {
 		r.adminLn.Close()
 	}
-	if r.pidPath != "" {
-		os.Remove(r.pidPath)
-	}
-	if r.instancePath != "" {
-		os.Remove(r.instancePath)
+	if r.stateDir != "" {
+		r.releaseOnce.Do(func() {
+			err := releaseRuntimeRecords(r.stateDir, r.pid, r.instanceID)
+			if err != nil && !errors.Is(err, ErrRuntimeRecordChanged) && r.logFile != nil {
+				fmt.Fprintf(r.logFile, "gohere router could not release runtime records: %v\n", err)
+			}
+		})
 	}
 	if r.logFile != nil {
 		r.logFile.Close()
@@ -426,7 +420,7 @@ func DefaultStateDir() string {
 	return filepath.Join(userpath.HomeDir(), ".gohere")
 }
 
-func writeRouterPID(pidPath string) error {
+func writePIDFile(pidPath string, pid int) error {
 	if err := os.MkdirAll(filepath.Dir(pidPath), 0700); err != nil {
 		return err
 	}
@@ -441,7 +435,7 @@ func writeRouterPID(pidPath string) error {
 			os.Remove(tmpPath)
 		}
 	}()
-	if _, err := tmp.Write([]byte(strconv.Itoa(os.Getpid()) + "\n")); err != nil {
+	if _, err := tmp.Write([]byte(strconv.Itoa(pid) + "\n")); err != nil {
 		tmp.Close()
 		return err
 	}
