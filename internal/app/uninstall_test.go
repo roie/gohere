@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 
 	localcert "github.com/roie/gohere/internal/cert"
@@ -393,54 +392,6 @@ func TestUninstallRemovesWindowsStableBinary(t *testing.T) {
 	}
 }
 
-func TestTerminateProcessUsesKillOnWindows(t *testing.T) {
-	process := &fakeProcess{}
-
-	if err := terminateProcess(process, "windows"); err != nil {
-		t.Fatal(err)
-	}
-	if !process.killed {
-		t.Fatal("expected Windows process termination to use Kill")
-	}
-	if process.signaled != nil {
-		t.Fatalf("expected no signal, got %v", process.signaled)
-	}
-}
-
-func TestProcessMatchesInstalledBinaryUsesWindowsExecutablePath(t *testing.T) {
-	oldWindowsProcessExecutable := windowsProcessExecutable
-	defer func() {
-		windowsProcessExecutable = oldWindowsProcessExecutable
-	}()
-	windowsProcessExecutable = func(pid int) (string, bool) {
-		if pid != 12345 {
-			return "", false
-		}
-		return `C:\Users\Alice\.gohere\bin\gohere.exe`, true
-	}
-
-	if !processMatchesInstalledBinaryForGOOS("windows", 12345, `C:\Users\Alice\.gohere\bin\gohere.exe`) {
-		t.Fatal("expected Windows process executable to match stable binary")
-	}
-	if processMatchesInstalledBinaryForGOOS("windows", 12345, `C:\Other\gohere.exe`) {
-		t.Fatal("expected different Windows executable to be rejected")
-	}
-}
-
-func TestTerminateProcessUsesSigtermOnLinux(t *testing.T) {
-	process := &fakeProcess{}
-
-	if err := terminateProcess(process, "linux"); err != nil {
-		t.Fatal(err)
-	}
-	if process.killed {
-		t.Fatal("expected Linux process termination not to use Kill")
-	}
-	if process.signaled != syscall.SIGTERM {
-		t.Fatalf("signal = %v, want SIGTERM", process.signaled)
-	}
-}
-
 func TestRemovePathWithRetryRetriesTemporaryFailure(t *testing.T) {
 	attempts := 0
 	errBusy := errors.New("busy")
@@ -507,21 +458,6 @@ func (p *uninstallRecordingProcess) saw(pid int) bool {
 		}
 	}
 	return false
-}
-
-type fakeProcess struct {
-	killed   bool
-	signaled os.Signal
-}
-
-func (p *fakeProcess) Kill() error {
-	p.killed = true
-	return nil
-}
-
-func (p *fakeProcess) Signal(signal os.Signal) error {
-	p.signaled = signal
-	return nil
 }
 
 func writeFile(t *testing.T, path, contents string) {

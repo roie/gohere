@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/roie/gohere/internal/admin"
@@ -267,74 +266,20 @@ var adminShutdown = func(ctx context.Context, token string) error {
 	return admin.NewClient("http://127.0.0.1:39399", token).Shutdown(ctx)
 }
 
-var windowsProcessExecutable = realWindowsProcessExecutable
-
 func signalProcess(pid int) error {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	return terminateProcess(process, runtime.GOOS)
-}
-
-type terminableProcess interface {
-	Kill() error
-	Signal(os.Signal) error
-}
-
-func terminateProcess(process terminableProcess, goos string) error {
-	if goos == "windows" {
-		return process.Kill()
-	}
-	return process.Signal(syscall.SIGTERM)
+	process := openRouterProcess(pid)
+	defer process.Close()
+	return process.Terminate()
 }
 
 func processMatchesInstalledBinary(pid int, stableBinary string) bool {
-	return processMatchesInstalledBinaryForGOOS(runtime.GOOS, pid, stableBinary)
-}
-
-func processMatchesInstalledBinaryForGOOS(goos string, pid int, stableBinary string) bool {
 	if pid <= 0 || stableBinary == "" {
 		return false
 	}
-	switch goos {
-	case "linux":
-		exe, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
-		if err != nil {
-			return false
-		}
-		exe, err = filepath.EvalSymlinks(exe)
-		if err != nil {
-			return false
-		}
-		stableBinary, err = filepath.EvalSymlinks(stableBinary)
-		if err != nil {
-			return false
-		}
-		return exe == stableBinary
-	case "windows":
-		exe, ok := windowsProcessExecutable(pid)
-		if !ok {
-			return false
-		}
-		return strings.EqualFold(filepath.Clean(exe), filepath.Clean(stableBinary))
-	default:
-		return false
-	}
-}
-
-func realWindowsProcessExecutable(pid int) (string, bool) {
-	output, err := exec.Command(
-		"powershell.exe",
-		"-NoProfile",
-		"-Command",
-		fmt.Sprintf("(Get-CimInstance Win32_Process -Filter 'ProcessId = %d').ExecutablePath", pid),
-	).Output()
-	if err != nil {
-		return "", false
-	}
-	exe := strings.TrimSpace(string(output))
-	return exe, exe != ""
+	process := openRouterProcess(pid)
+	defer process.Close()
+	state, _ := process.Inspect(stableBinary)
+	return state == processMatched
 }
 
 func removeInstalledFile(path string) error {
