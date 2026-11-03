@@ -28,3 +28,17 @@ func TestPowerShellSingleQuoteEscapesExecutablePath(t *testing.T) {
 		t.Fatalf("quoted path = %q", got)
 	}
 }
+
+func TestWindowsFirewallRemovalScriptRemovesOnlyRulesForExecutable(t *testing.T) {
+	script := windowsFirewallRemovalScript(`C:\Users\O'Brien\.gohere\bin\gohere.exe`)
+	for _, want := range []string{
+		"'gohere LAN HTTPS', 'gohere LAN onboarding', 'gohere LAN mDNS'",
+		`$program = 'C:\Users\O''Brien\.gohere\bin\gohere.exe'`,
+		"(($rule | Get-NetFirewallApplicationFilter).Program -eq $program)",
+		"$rule | Remove-NetFirewallRule",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script missing %q:\n%s", want, script)
+		}
+	}
+}

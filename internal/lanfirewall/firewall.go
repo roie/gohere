@@ -30,6 +30,20 @@ foreach ($spec in $rules) {
 `
 }
 
+func windowsFirewallRemovalScript(executable string) string {
+	program := powerShellQuote(executable)
+	return `$ErrorActionPreference = 'Stop'
+$program = ` + program + `
+foreach ($name in @('gohere LAN HTTPS', 'gohere LAN onboarding', 'gohere LAN mDNS')) {
+  foreach ($rule in @(Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue)) {
+    if (($rule | Get-NetFirewallApplicationFilter).Program -eq $program) {
+      $rule | Remove-NetFirewallRule
+    }
+  }
+}
+`
+}
+
 func powerShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
