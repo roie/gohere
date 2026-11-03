@@ -174,7 +174,7 @@ func prepareRunWithHost(cmd cli.Command, cwd, childHost string) (RunPlan, error)
 		}
 	}
 
-	env := runner.ChildEnvForHost(os.Environ(), port, childHost)
+	env := runner.ChildEnvForHost(childBaseEnv(), port, childHost)
 	if cmd.Kind == cli.CommandRaw {
 		host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
 		return applyRunOptions(cmd, RunPlan{
@@ -233,7 +233,7 @@ func prepareRunWithHost(cmd cli.Command, cwd, childHost string) (RunPlan, error)
 	if cmd.TargetPort == 0 {
 		if explicitPort, ok := runner.ExplicitPort(scriptCommand); ok {
 			port = explicitPort
-			env = runner.ChildEnvForHost(os.Environ(), port, childHost)
+			env = runner.ChildEnvForHost(childBaseEnv(), port, childHost)
 		}
 	}
 	fixedPort := cmd.TargetPort != 0
@@ -535,12 +535,12 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 	if err != nil {
 		return RunPlan{}, err
 	}
-	env := runner.ChildEnvForHost(os.Environ(), port, childHost)
+	env := runner.ChildEnvForHost(childBaseEnv(), port, childHost)
 	fixedPort := cmd.TargetPort != 0
 	if explicitPort, ok := runner.ExplicitPort(workspacePackage.Script); ok {
 		port = explicitPort
 		fixedPort = true
-		env = runner.ChildEnvForHost(os.Environ(), port, childHost)
+		env = runner.ChildEnvForHost(childBaseEnv(), port, childHost)
 	}
 	injected := runner.InjectPortArgsForHost(workspacePackage.Script, port, cmd.PortFlag, childHost)
 	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
@@ -778,7 +778,7 @@ func appendMissingEnv(env []string, values map[string]string) []string {
 	for _, item := range env {
 		key, _, ok := strings.Cut(item, "=")
 		if ok {
-			seen[key] = true
+			seen[envKey(key)] = true
 		}
 	}
 
@@ -790,11 +790,36 @@ func appendMissingEnv(env []string, values map[string]string) []string {
 
 	out := append([]string(nil), env...)
 	for _, key := range keys {
-		if !seen[key] {
+		if !seen[envKey(key)] {
 			out = append(out, key+"="+values[key])
 		}
 	}
 	return out
+}
+
+// Windows environment names are case-insensitive.
+func envKey(key string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(key)
+	}
+	return key
+}
+
+// childBaseEnv lets Node.js child processes trust the gohere CA without
+// replacing a NODE_EXTRA_CA_CERTS value the user already set.
+func childBaseEnv() []string {
+	return appendMissingEnv(os.Environ(), nodeCAEnv(router.DefaultStateDir()))
+}
+
+func nodeCAEnv(stateDir string) map[string]string {
+	caPath := localcert.Store{StateDir: stateDir}.CACertPath()
+	if detectWSLFunc() {
+		caPath = filepath.Join(stateDir, wslIntegrationDirname, "windows-ca.pem")
+	}
+	if !exists(caPath) {
+		return nil
+	}
+	return map[string]string{"NODE_EXTRA_CA_CERTS": caPath}
 }
 
 func formatMultiRunError(cmd cli.Command, err error) error {

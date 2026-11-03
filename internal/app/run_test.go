@@ -285,6 +285,79 @@ func TestPrepareRawCommandRequiresTargetWhenNoPortDetected(t *testing.T) {
 	}
 }
 
+func useTestHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("NODE_EXTRA_CA_CERTS", "")
+	os.Unsetenv("NODE_EXTRA_CA_CERTS")
+	return home
+}
+
+func writeTestFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("ca"), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrepareRunTrustsGohereCAInNode(t *testing.T) {
+	home := useTestHome(t)
+	cmd := cli.Command{Kind: cli.CommandRaw, Raw: []string{"node", "server.js"}, TargetPort: 5173}
+
+	plan, err := PrepareRun(cmd, tempProject(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMissingEnv(t, plan.Env, "NODE_EXTRA_CA_CERTS")
+
+	caPath := localcert.Store{StateDir: filepath.Join(home, ".gohere")}.CACertPath()
+	writeTestFile(t, caPath)
+	plan, err = PrepareRun(cmd, tempProject(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEnv(t, plan.Env, "NODE_EXTRA_CA_CERTS", caPath)
+
+	t.Setenv("NODE_EXTRA_CA_CERTS", "/custom/node-ca.pem")
+	plan, err = PrepareRun(cmd, tempProject(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEnv(t, plan.Env, "NODE_EXTRA_CA_CERTS", "/custom/node-ca.pem")
+}
+
+func TestNodeCAEnvUsesWindowsCAInWSL(t *testing.T) {
+	stateDir := t.TempDir()
+	writeTestFile(t, localcert.Store{StateDir: stateDir}.CACertPath())
+	oldDetectWSL := detectWSLFunc
+	defer func() { detectWSLFunc = oldDetectWSL }()
+	detectWSLFunc = func() bool { return true }
+
+	if env := nodeCAEnv(stateDir); env != nil {
+		t.Fatalf("WSL without the Windows CA = %v", env)
+	}
+	windowsCA := filepath.Join(stateDir, wslIntegrationDirname, "windows-ca.pem")
+	writeTestFile(t, windowsCA)
+	if got := nodeCAEnv(stateDir)["NODE_EXTRA_CA_CERTS"]; got != windowsCA {
+		t.Fatalf("NODE_EXTRA_CA_CERTS = %q, want %q", got, windowsCA)
+	}
+}
+
+func TestAppendMissingEnvKeepsExistingValueOnWindowsRegardlessOfCase(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("environment names are case-insensitive only on Windows")
+	}
+	env := appendMissingEnv([]string{"Node_Extra_CA_Certs=C:\\custom.pem"}, map[string]string{"NODE_EXTRA_CA_CERTS": "C:\\gohere.pem"})
+	if len(env) != 1 {
+		t.Fatalf("env = %v", env)
+	}
+}
+
 func TestPrepareRunFailsWithoutPackageJSON(t *testing.T) {
 	// The .git directory stops the package.json search at the test project.
 	dir := tempProject(t, map[string]string{".git/HEAD": ""})

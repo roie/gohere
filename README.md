@@ -241,6 +241,8 @@ Route traffic always connects directly to the route's target. `HTTP_PROXY`, `HTT
 
 HTTPS certificates are issued only for active routes and are kept in memory.
 
+Node.js processes started by `gohere` trust the local certificate authority through `NODE_EXTRA_CA_CERTS`, unless you already set it.
+
 State is stored in:
 
 ```text
