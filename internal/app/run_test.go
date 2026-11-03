@@ -281,7 +281,8 @@ func TestPrepareRawCommandRequiresTargetWhenNoPortDetected(t *testing.T) {
 }
 
 func TestPrepareRunFailsWithoutPackageJSON(t *testing.T) {
-	dir := tempProject(t, nil)
+	// The .git directory stops the package.json search at the test project.
+	dir := tempProject(t, map[string]string{".git/HEAD": ""})
 	_, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "dev"}, dir)
 	if err == nil {
 		t.Fatal("expected error")
@@ -534,13 +535,13 @@ func TestPrepareStaticFileTargetErrors(t *testing.T) {
 	}{
 		{
 			name:  "missing extension file",
-			files: map[string]string{"index.html": "<h1>Hello</h1>"},
+			files: map[string]string{".git/HEAD": "", "index.html": "<h1>Hello</h1>"},
 			arg:   "missing.html",
 			want:  "File not found: missing.html",
 		},
 		{
 			name:  "extensionless static arg",
-			files: map[string]string{"index.html": "<h1>Hello</h1>"},
+			files: map[string]string{".git/HEAD": "", "index.html": "<h1>Hello</h1>"},
 			arg:   "pages",
 			want:  "Static files need a file extension: pages",
 		},
