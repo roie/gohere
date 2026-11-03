@@ -138,6 +138,14 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 	if _, err := stopInstalledRouter(ctx, newRouterStopConfig(cfg.StateDir, cfg.ConfigDir, cfg.CommandRunner, cfg.OpenProcess, cfg.Sleep)); err != nil {
 		return fmt.Errorf("gohere error: uninstall stopped before removing anything because the gohere service could not be confirmed stopped: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The CA goes first: until it is verified and removed from system trust,
+	// the binary and state stay so a normal uninstall can retry.
+	if err := untrustHTTPSCAIfEnabled(ctx, cfg.StateDir, cfg.UntrustCA); err != nil {
+		return fmt.Errorf("gohere error: uninstall stopped before removing the gohere binary or state because the certificate authority could not be removed from system trust: %w", err)
+	}
 
 	servicePath := filepath.Join(cfg.ConfigDir, "systemd", "user", "gohere-router.service")
 	if exists(servicePath) {
@@ -166,12 +174,6 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 		if err := removeInstalledFile(filepath.Join(binDir, binary)); err != nil {
 			return err
 		}
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := untrustHTTPSCAIfEnabled(ctx, cfg.StateDir, cfg.UntrustCA); err != nil {
-		return err
 	}
 	fmt.Fprintln(stdout, "gohere service removed.")
 
@@ -209,7 +211,12 @@ func untrustHTTPSCAIfEnabled(ctx context.Context, stateDir string, untrustCA fun
 	if err != nil {
 		return err
 	}
-	return untrustCA(ctx, fingerprint)
+	if err := untrustCA(ctx, fingerprint); err != nil {
+		return err
+	}
+	// A retry after a later failure must not untrust again: deleting an
+	// already removed certificate fails on macOS and Windows.
+	return appconfig.Save(stateDir, appconfig.Config{HTTPS: false})
 }
 
 func caUntrustFingerprint(stateDir string) (string, error) {

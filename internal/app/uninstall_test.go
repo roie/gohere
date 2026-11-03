@@ -3,13 +3,16 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	localcert "github.com/roie/gohere/internal/cert"
+	"github.com/roie/gohere/internal/certtrust"
 	appconfig "github.com/roie/gohere/internal/config"
 )
 
@@ -179,6 +182,105 @@ func TestUninstallUntrustsHTTPSCAWhenEnabled(t *testing.T) {
 	if len(fingerprints) != 1 || fingerprints[0] != wantFingerprint {
 		t.Fatalf("untrusted fingerprints = %#v, want %q", fingerprints, wantFingerprint)
 	}
+	if cfg, err := appconfig.Load(stateDir); err != nil || cfg.HTTPS {
+		t.Fatalf("HTTPS config = %#v, %v; want disabled so a retry does not untrust again", cfg, err)
+	}
+}
+
+func TestUninstallKeepsInstallWhenCARemovalFails(t *testing.T) {
+	otherCA, _ := testCA(t)
+	tests := []struct {
+		name         string
+		installedCA  func(ours string) string
+		failCommand  string
+		wantCommands [][]string
+		wantErr      string
+	}{
+		{
+			name:         "fingerprint mismatch",
+			installedCA:  func(string) string { return otherCA },
+			wantCommands: nil,
+			wantErr:      "is not the certificate authority this gohere installation trusted",
+		},
+		{
+			name:        "trust refresh fails",
+			installedCA: func(ours string) string { return ours },
+			failCommand: "update-ca-certificates",
+			wantCommands: [][]string{
+				{"sudo", "rm", "-f", "/usr/local/share/ca-certificates/gohere-local-ca.crt"},
+				{"sudo", "update-ca-certificates"},
+			},
+			wantErr: "refresh failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			configDir := t.TempDir()
+			servicePath := filepath.Join(configDir, "systemd", "user", "gohere-router.service")
+			writeFile(t, servicePath, "service")
+			writeFile(t, filepath.Join(stateDir, "bin", "gohere"), "binary")
+			if err := appconfig.Save(stateDir, appconfig.Config{HTTPS: true}); err != nil {
+				t.Fatal(err)
+			}
+			store := localcert.Store{StateDir: stateDir}
+			if _, err := store.EnsureCA(); err != nil {
+				t.Fatal(err)
+			}
+			ours, err := os.ReadFile(store.CACertPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			installed := tt.installedCA(string(ours))
+			oldHost := certtrust.LinuxHost
+			defer func() { certtrust.LinuxHost = oldHost }()
+			certtrust.LinuxHost.FileExists = func(path string) bool { return path == "/usr/local/share/ca-certificates/gohere-local-ca.crt" }
+			certtrust.LinuxHost.ReadFile = func(string) ([]byte, error) { return []byte(installed), nil }
+			trustRunner := &failingCommandRunner{fail: tt.failCommand, err: errors.New("refresh failed")}
+			removeState := true
+			var pathRemoved, firewallRun bool
+
+			err = UninstallWithConfig(t.Context(), io.Discard, UninstallConfig{
+				StateDir:      stateDir,
+				ConfigDir:     configDir,
+				CommandRunner: &uninstallRecordingRunner{},
+				UntrustCA: func(ctx context.Context, fingerprint string) error {
+					return certtrust.UntrustCA(ctx, "linux", trustRunner, fingerprint)
+				},
+				RemoveUserPath:      func(context.Context, string) error { pathRemoved = true; return nil },
+				RemoveFirewallRules: func(context.Context, string) error { firewallRun = true; return nil },
+				RemoveState:         &removeState,
+			})
+
+			if err == nil || !strings.Contains(err.Error(), "could not be removed from system trust") || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v", err)
+			}
+			if !reflect.DeepEqual(trustRunner.commands, tt.wantCommands) {
+				t.Fatalf("trust commands = %#v, want %#v", trustRunner.commands, tt.wantCommands)
+			}
+			if !exists(filepath.Join(stateDir, "bin", "gohere")) || !exists(servicePath) || pathRemoved || firewallRun {
+				t.Fatalf("install changed: binary %v, service %v, PATH removed %v, firewall %v",
+					exists(filepath.Join(stateDir, "bin", "gohere")), exists(servicePath), pathRemoved, firewallRun)
+			}
+			if cfg, err := appconfig.Load(stateDir); err != nil || !cfg.HTTPS {
+				t.Fatalf("HTTPS config = %#v, %v; want it kept so a retry untrusts again", cfg, err)
+			}
+		})
+	}
+}
+
+type failingCommandRunner struct {
+	commands [][]string
+	fail     string
+	err      error
+}
+
+func (r *failingCommandRunner) Run(_ context.Context, command string, args ...string) error {
+	r.commands = append(r.commands, append([]string{command}, args...))
+	if len(args) > 0 && args[0] == r.fail {
+		return r.err
+	}
+	return nil
 }
 
 func TestUninstallDoesNotUntrustWhenHTTPSDisabled(t *testing.T) {
