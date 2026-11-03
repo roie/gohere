@@ -2,9 +2,151 @@ package certtrust
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path"
+	"slices"
 	"strings"
 )
+
+const linuxCAFilename = "gohere-local-ca.crt"
+
+type linuxTrustStore struct {
+	dir     string
+	command []string
+	// createDir allows the Debian layout when ca-certificates has not created its directory yet.
+	createDir bool
+}
+
+// linuxTrustStores is ordered so that a distribution-specific anchor directory
+// wins over the Debian fallback, which only needs update-ca-certificates.
+var linuxTrustStores = []linuxTrustStore{
+	{dir: "/usr/local/share/ca-certificates", command: []string{"update-ca-certificates"}},
+	{dir: "/etc/pki/ca-trust/source/anchors", command: []string{"update-ca-trust", "extract"}},
+	{dir: "/etc/ca-certificates/trust-source/anchors", command: []string{"update-ca-trust", "extract"}},
+	{dir: "/etc/pki/trust/anchors", command: []string{"update-ca-certificates"}},
+	{dir: "/usr/local/share/ca-certificates", command: []string{"update-ca-certificates"}, createDir: true},
+}
+
+var errNoLinuxTrustStore = errors.New("no supported system trust store found; gohere needs either update-ca-certificates (Debian, Ubuntu, Alpine, openSUSE) or update-ca-trust (Fedora, RHEL, CentOS, Arch). Install your distribution's ca-certificates package, then run gohere again")
+
+// LinuxHost inspects the machine for trust stores; tests replace it to simulate a distribution.
+var LinuxHost = struct {
+	DirExists     func(string) bool
+	FileExists    func(string) bool
+	CommandExists func(string) bool
+}{
+	DirExists: func(path string) bool {
+		info, err := os.Stat(path)
+		return err == nil && info.IsDir()
+	},
+	FileExists: func(path string) bool {
+		info, err := os.Stat(path)
+		return err == nil && info.Mode().IsRegular()
+	},
+	CommandExists: func(name string) bool {
+		if _, err := exec.LookPath(name); err == nil {
+			return true
+		}
+		// sudo's secure_path includes sbin directories that a normal user's PATH may not.
+		for _, dir := range []string{"/usr/sbin", "/usr/bin", "/sbin", "/bin"} {
+			if info, err := os.Stat(path.Join(dir, name)); err == nil && info.Mode().IsRegular() {
+				return true
+			}
+		}
+		return false
+	},
+}
+
+func detectLinuxTrustStore() (linuxTrustStore, error) {
+	for _, store := range linuxTrustStores {
+		if LinuxHost.CommandExists(store.command[0]) && (store.createDir || LinuxHost.DirExists(store.dir)) {
+			return store, nil
+		}
+	}
+	return linuxTrustStore{}, errNoLinuxTrustStore
+}
+
+// InstalledLinuxCAPath returns the gohere CA file in a known Linux trust
+// store, or "" when none is installed.
+func InstalledLinuxCAPath() string {
+	for _, path := range linuxCAPaths() {
+		if LinuxHost.FileExists(path) {
+			return path
+		}
+	}
+	return ""
+}
+
+func linuxCAPaths() []string {
+	var paths []string
+	for _, store := range linuxTrustStores {
+		candidate := path.Join(store.dir, linuxCAFilename)
+		if !slices.Contains(paths, candidate) {
+			paths = append(paths, candidate)
+		}
+	}
+	return paths
+}
+
+func refreshLinuxTrust(ctx context.Context, runner CommandRunner, store linuxTrustStore) error {
+	return runner.Run(ctx, "sudo", store.command...)
+}
+
+func trustLinuxCA(ctx context.Context, runner CommandRunner, caPath string) error {
+	store, err := detectLinuxTrustStore()
+	if err != nil {
+		return err
+	}
+	target := path.Join(store.dir, linuxCAFilename)
+	if store.createDir {
+		if err := runner.Run(ctx, "sudo", "mkdir", "-p", store.dir); err != nil {
+			return err
+		}
+	}
+	if err := runner.Run(ctx, "sudo", "cp", caPath, target); err != nil {
+		return errors.Join(err, rollbackLinuxCA(ctx, runner, store, target))
+	}
+	if err := refreshLinuxTrust(ctx, runner, store); err != nil {
+		return errors.Join(err, rollbackLinuxCA(ctx, runner, store, target))
+	}
+	return nil
+}
+
+// rollbackLinuxCA removes a copied CA so a failed install does not leave an
+// anchor that the next system trust refresh would silently trust.
+func rollbackLinuxCA(ctx context.Context, runner CommandRunner, store linuxTrustStore, target string) error {
+	if err := runner.Run(ctx, "sudo", "rm", "-f", target); err != nil {
+		return fmt.Errorf("could not roll back %s; remove it and run sudo %s: %w", target, strings.Join(store.command, " "), err)
+	}
+	if err := refreshLinuxTrust(ctx, runner, store); err != nil {
+		return fmt.Errorf("removed %s but could not refresh the system trust store; run sudo %s: %w", target, strings.Join(store.command, " "), err)
+	}
+	return nil
+}
+
+func untrustLinuxCA(ctx context.Context, runner CommandRunner) error {
+	removed := false
+	for _, path := range linuxCAPaths() {
+		if !LinuxHost.FileExists(path) {
+			continue
+		}
+		if err := runner.Run(ctx, "sudo", "rm", "-f", path); err != nil {
+			return err
+		}
+		removed = true
+	}
+	store, err := detectLinuxTrustStore()
+	if err != nil {
+		if removed {
+			return fmt.Errorf("removed the gohere CA file, but %w", err)
+		}
+		return nil
+	}
+	return refreshLinuxTrust(ctx, runner, store)
+}
 
 type CommandRunner interface {
 	Run(ctx context.Context, command string, args ...string) error
@@ -17,10 +159,7 @@ func UntrustCA(ctx context.Context, goos string, runner CommandRunner, fingerpri
 	fingerprint = strings.TrimSpace(fingerprint)
 	switch goos {
 	case "linux":
-		if err := runner.Run(ctx, "sudo", "rm", "-f", "/usr/local/share/ca-certificates/gohere-local-ca.crt"); err != nil {
-			return err
-		}
-		return runner.Run(ctx, "sudo", "update-ca-certificates")
+		return untrustLinuxCA(ctx, runner)
 	case "darwin":
 		if fingerprint == "" {
 			return fmt.Errorf("certificate fingerprint is required")
@@ -42,13 +181,7 @@ func TrustCA(ctx context.Context, goos string, runner CommandRunner, caPath stri
 	}
 	switch goos {
 	case "linux":
-		if err := runner.Run(ctx, "sudo", "mkdir", "-p", "/usr/local/share/ca-certificates"); err != nil {
-			return err
-		}
-		if err := runner.Run(ctx, "sudo", "cp", caPath, "/usr/local/share/ca-certificates/gohere-local-ca.crt"); err != nil {
-			return err
-		}
-		return runner.Run(ctx, "sudo", "update-ca-certificates")
+		return trustLinuxCA(ctx, runner, caPath)
 	case "darwin":
 		return runner.Run(ctx, "sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", "/Library/Keychains/System.keychain", caPath)
 	case "windows":

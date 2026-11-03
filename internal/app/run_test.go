@@ -21,6 +21,7 @@ import (
 
 	"github.com/roie/gohere/internal/admin"
 	localcert "github.com/roie/gohere/internal/cert"
+	"github.com/roie/gohere/internal/certtrust"
 	"github.com/roie/gohere/internal/cli"
 	"github.com/roie/gohere/internal/companion"
 	appconfig "github.com/roie/gohere/internal/config"
@@ -64,6 +65,10 @@ func TestMain(m *testing.M) {
 	}
 	detectWSLFunc = func() bool { return false }
 	adminHealth = func(context.Context) error { return errors.New("router health is unreachable in tests") }
+	// Every OS runs the Linux trust paths against a Debian host without the CA installed.
+	certtrust.LinuxHost.DirExists = func(string) bool { return false }
+	certtrust.LinuxHost.FileExists = func(string) bool { return false }
+	certtrust.LinuxHost.CommandExists = func(name string) bool { return name == "update-ca-certificates" }
 	os.Exit(m.Run())
 }
 

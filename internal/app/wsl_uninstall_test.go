@@ -6,9 +6,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/roie/gohere/internal/certtrust"
 	"github.com/roie/gohere/internal/companion"
 	"github.com/roie/gohere/internal/router"
 )
@@ -64,6 +66,9 @@ func TestUninstallWSLIntegrationRemovesOnlyLocalEdgeWhenCompanionUnavailable(t *
 	runner := &wslSetupRecordingRunner{}
 	wslUntrustCARunner = runner
 	wslTrustedCAPathFunc = func() string { return trustedPath }
+	oldFileExists := certtrust.LinuxHost.FileExists
+	certtrust.LinuxHost.FileExists = func(path string) bool { return path == "/usr/local/share/ca-certificates/gohere-local-ca.crt" }
+	defer func() { certtrust.LinuxHost.FileExists = oldFileExists }()
 	promptInput = strings.NewReader("")
 	var output strings.Builder
 
@@ -84,8 +89,8 @@ func TestUninstallWSLIntegrationRemovesOnlyLocalEdgeWhenCompanionUnavailable(t *
 		{"sudo", "rm", "-f", "/usr/local/share/ca-certificates/gohere-local-ca.crt"},
 		{"sudo", "update-ca-certificates"},
 	}
-	if len(runner.commands) != len(wantCommands) {
-		t.Fatalf("commands = %#v", runner.commands)
+	if !reflect.DeepEqual(runner.commands, wantCommands) {
+		t.Fatalf("commands = %#v, want %#v", runner.commands, wantCommands)
 	}
 }
 

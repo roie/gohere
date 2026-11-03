@@ -19,7 +19,7 @@ import (
 var (
 	wslStopEdgeFunc                          = wsledge.Stop
 	wslUntrustCARunner   setup.CommandRunner = appCommandRunner{}
-	wslTrustedCAPathFunc                     = func() string { return "/usr/local/share/ca-certificates/gohere-local-ca.crt" }
+	wslTrustedCAPathFunc                     = certtrust.InstalledLinuxCAPath
 )
 
 func uninstallWSLIntegration(ctx context.Context, stdout io.Writer) error {
@@ -59,8 +59,7 @@ func uninstallWSLIntegration(ctx context.Context, stdout io.Writer) error {
 		return err
 	}
 	if metadataErr == nil && metadata.CAFingerprint != "" {
-		trustedPath := wslTrustedCAPathFunc()
-		if certificate, err := os.ReadFile(trustedPath); err == nil {
+		if certificate, err := os.ReadFile(wslTrustedCAPathFunc()); err == nil {
 			fingerprint, fingerprintErr := certificateFingerprint(string(certificate))
 			if fingerprintErr != nil {
 				return fingerprintErr
