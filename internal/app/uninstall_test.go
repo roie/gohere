@@ -296,3 +296,30 @@ func writeFile(t *testing.T, path, contents string) {
 		t.Fatal(err)
 	}
 }
+
+func TestMoveAsideRunningExecutable(t *testing.T) {
+	binDir := t.TempDir()
+	tempDir := t.TempDir()
+	installed := filepath.Join(binDir, "gohere.exe")
+	other := filepath.Join(binDir, "other.exe")
+	writeFile(t, installed, "binary")
+	writeFile(t, other, "other")
+
+	if moved, err := moveAsideRunningExecutable("windows", installed, other, tempDir); moved || err != nil {
+		t.Fatalf("different executable: moved %v, err %v", moved, err)
+	}
+	if moved, err := moveAsideRunningExecutable("linux", installed, installed, tempDir); moved || err != nil {
+		t.Fatalf("non-Windows: moved %v, err %v", moved, err)
+	}
+	moved, err := moveAsideRunningExecutable("windows", installed, installed, tempDir)
+	if !moved || err != nil {
+		t.Fatalf("running executable: moved %v, err %v", moved, err)
+	}
+	if exists(installed) {
+		t.Fatal("installed binary still in bin dir")
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil || len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "gohere-uninstalled-") || filepath.Ext(entries[0].Name()) != ".exe" {
+		t.Fatalf("temp dir entries = %v, err %v", entries, err)
+	}
+}

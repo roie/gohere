@@ -226,7 +226,33 @@ var adminShutdown = func(ctx context.Context, token string) error {
 }
 
 func removeInstalledFile(path string) error {
+	exe, _ := os.Executable()
+	if moved, err := moveAsideRunningExecutable(runtime.GOOS, path, exe, os.TempDir()); moved || err != nil {
+		return err
+	}
 	return removePathWithRetry(path, os.Remove, 30, 100*time.Millisecond)
+}
+
+// moveAsideRunningExecutable handles uninstall run from the installed binary
+// itself: Windows cannot delete a running executable but can rename it, so it
+// is moved into the temp directory instead.
+func moveAsideRunningExecutable(goos, path, executable, tempDir string) (bool, error) {
+	if goos != "windows" || executable == "" {
+		return false, nil
+	}
+	pathInfo, err := os.Stat(path)
+	if err != nil {
+		return false, nil
+	}
+	exeInfo, err := os.Stat(executable)
+	if err != nil || !os.SameFile(pathInfo, exeInfo) {
+		return false, nil
+	}
+	target := filepath.Join(tempDir, fmt.Sprintf("gohere-uninstalled-%d%s", time.Now().UnixNano(), filepath.Ext(path)))
+	if err := os.Rename(path, target); err != nil {
+		return true, fmt.Errorf("could not move the running gohere binary %s out of the install directory; run uninstall from another gohere copy: %w", path, err)
+	}
+	return true, nil
 }
 
 func removePathWithRetry(path string, remove func(string) error, attempts int, delay time.Duration) error {
