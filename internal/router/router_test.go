@@ -939,11 +939,12 @@ func TestProxyRejectsExpiredNativeRoute(t *testing.T) {
 }
 
 func TestProxyWebSocketUpstreamErrorDoesNotReturnHTMLPage(t *testing.T) {
+	target := failingUpstreamTarget(t)
 	store := NewMemoryStore()
 	if err := store.Save([]Route{{
 		Host:            "web.localhost",
 		PreferredScheme: "http",
-		Target:          "http://127.0.0.1:1",
+		Target:          target,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -965,11 +966,12 @@ func TestProxyWebSocketUpstreamErrorDoesNotReturnHTMLPage(t *testing.T) {
 }
 
 func TestProxyHTTPUpstreamErrorDoesNotReturnMissingRoutePage(t *testing.T) {
+	target := failingUpstreamTarget(t)
 	store := NewMemoryStore()
 	if err := store.Save([]Route{{
 		Host:            "web.localhost",
 		PreferredScheme: "http",
-		Target:          "http://127.0.0.1:1",
+		Target:          target,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -992,11 +994,12 @@ func TestProxyHTTPUpstreamErrorDoesNotReturnMissingRoutePage(t *testing.T) {
 }
 
 func TestProxyHTTPUpstreamErrorReturnsJSONForAPIClient(t *testing.T) {
+	target := failingUpstreamTarget(t)
 	store := NewMemoryStore()
 	if err := store.Save([]Route{{
 		Host:            "web.localhost",
 		PreferredScheme: "http",
-		Target:          "http://127.0.0.1:1",
+		Target:          target,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1018,9 +1021,31 @@ func TestProxyHTTPUpstreamErrorReturnsJSONForAPIClient(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Error != "upstream_unavailable" || payload.Host != "web.localhost" || payload.Target != "http://127.0.0.1:1" {
+	if payload.Error != "upstream_unavailable" || payload.Host != "web.localhost" || payload.Target != target {
 		t.Fatalf("payload = %#v", payload)
 	}
+}
+
+// failingUpstreamTarget returns an upstream that closes every connection.
+// A closed port is not used because some networks (WSL mirrored mode) drop
+// connections to it instead of refusing them, stalling until the dial timeout.
+func failingUpstreamTarget(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+	return "http://" + listener.Addr().String()
 }
 
 func TestMissingRoutePageStripsIPv6Port(t *testing.T) {
