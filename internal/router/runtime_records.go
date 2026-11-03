@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 )
 
 const (
@@ -29,9 +30,10 @@ const (
 // PIDRecord is router.pid as read once. Unknown records are never removed by
 // gohere; they need diagnosis.
 type PIDRecord struct {
-	State PIDRecordState
-	PID   int
-	Err   error
+	State   PIDRecordState
+	PID     int
+	ModTime time.Time
+	Err     error
 }
 
 var ErrRuntimeRecordChanged = errors.New("router runtime record changed")
@@ -49,7 +51,11 @@ func ReadPIDRecord(stateDir string) PIDRecord {
 	if err != nil {
 		return PIDRecord{State: PIDRecordUnknown, Err: fmt.Errorf("%s: %w", path, err)}
 	}
-	return PIDRecord{State: PIDRecordPresent, PID: pid}
+	record := PIDRecord{State: PIDRecordPresent, PID: pid}
+	if info, err := os.Stat(path); err == nil {
+		record.ModTime = info.ModTime()
+	}
+	return record
 }
 
 func parsePIDRecord(data []byte) (int, error) {

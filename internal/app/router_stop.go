@@ -64,14 +64,20 @@ func stopInstalledRouter(ctx context.Context, cfg routerStopConfig) (bool, error
 	// still be recognized as the process whose exit confirms the stop.
 	var process routerProcess
 	state := processAbsent
+	staleSinceBoot := false
+	var inspectErr error
 	pid := record.PID
 	stableBinary := filepath.Join(cfg.stateDir, "bin", stableBinaryName(runtime.GOOS))
 	if record.State == router.PIDRecordPresent {
 		process = cfg.openProcess(pid)
 		defer process.Close()
 		var err error
-		if state, err = process.Inspect(stableBinary); state == processUnknown {
-			return false, fmt.Errorf("unable to verify router process %d: %w", pid, err)
+		state, err = process.Inspect(stableBinary)
+		if state == processUnknown && recordPredatesBoot(record) {
+			state, staleSinceBoot, inspectErr = processMismatched, true, err
+		}
+		if state == processUnknown {
+			return false, unverifiedRouterError(cfg, pid, err)
 		}
 	}
 
@@ -93,6 +99,11 @@ func stopInstalledRouter(ctx context.Context, cfg routerStopConfig) (bool, error
 	}
 
 	if state != processMatched {
+		// Boot time follows the wall clock, so a stale-since-boot inference is
+		// trusted only when no router accepts shutdown or answers health.
+		if staleSinceBoot && (adminErr == nil || adminHealth(ctx) == nil) {
+			return false, unverifiedRouterError(cfg, pid, inspectErr)
+		}
 		if record.State == router.PIDRecordPresent {
 			if err := router.RemovePIDRecordIf(cfg.stateDir, pid); err != nil {
 				return false, errors.Join(managerErr, err)
@@ -190,4 +201,19 @@ func waitForRouterExit(ctx context.Context, cfg routerStopConfig, process router
 		}
 	}
 	return false, nil
+}
+
+// recordPredatesBoot proves a record stale when its process cannot be
+// inspected: no process survives a reboot, so a PID recorded before the last
+// boot now names some unrelated process (often a protected system process).
+func recordPredatesBoot(record router.PIDRecord) bool {
+	if record.ModTime.IsZero() {
+		return false
+	}
+	boot, err := systemBootTime()
+	return err == nil && record.ModTime.Before(boot)
+}
+
+func unverifiedRouterError(cfg routerStopConfig, pid int, err error) error {
+	return fmt.Errorf("unable to verify router process %d (if no gohere router is running, remove %s): %w", pid, filepath.Join(cfg.stateDir, router.RouterPIDFilename), err)
 }
