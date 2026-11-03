@@ -34,22 +34,24 @@ func uninstallWSLIntegration(ctx context.Context, stdout io.Writer) error {
 	attemptedWindowsRemoval := false
 	var windowsRemovalErr error
 	resolved, companionErr := openWindowsCompanion(ctx, "control.routes", "control.uninstall")
-	if companionErr == nil && confirmPrompt(stdout, "Remove the shared Windows gohere router too? [y/N] ") {
+	windowsInstalled := companionErr == nil && resolved.Info.RouterInstalled
+	if windowsInstalled && confirmPrompt(stdout, "Remove the shared Windows gohere router too? [y/N] ") {
 		attemptedWindowsRemoval = true
 		routes, err := resolved.Control.Routes(ctx)
-		if err != nil {
-			return err
-		}
-		if len(routes) > 0 {
+		switch {
+		case err != nil:
+			windowsRemovalErr = windowsCompanionUnavailableError(fmt.Errorf("could not list Windows routes, so the Windows router was kept: %w", err))
+		case len(routes) > 0:
 			return fmt.Errorf("the shared Windows authority still has %d route%s; stop or prune them before removing it", len(routes), pluralS(len(routes)))
-		}
-		removeState := confirmPrompt(stdout, "Remove Windows routes, token, and logs too? [y/N] ")
-		output, err := resolved.Control.Uninstall(ctx, removeState)
-		if err != nil {
-			windowsRemovalErr = windowsCompanionUnavailableError(err)
-		} else {
-			fmt.Fprint(stdout, output)
-			removedWindows = true
+		default:
+			removeState := confirmPrompt(stdout, "Remove Windows routes, token, and logs too? [y/N] ")
+			output, err := resolved.Control.Uninstall(ctx, removeState)
+			if err != nil {
+				windowsRemovalErr = windowsCompanionUnavailableError(err)
+			} else {
+				fmt.Fprint(stdout, output)
+				removedWindows = true
+			}
 		}
 	}
 
@@ -82,6 +84,8 @@ func uninstallWSLIntegration(ctx context.Context, stdout io.Writer) error {
 	if !removedWindows {
 		if attemptedWindowsRemoval {
 			fmt.Fprintln(stdout, "Windows gohere authority may require cleanup.")
+		} else if companionErr == nil && !windowsInstalled {
+			fmt.Fprintln(stdout, "No complete Windows gohere router installation was found.")
 		} else {
 			fmt.Fprintln(stdout, "Windows gohere authority kept.")
 		}

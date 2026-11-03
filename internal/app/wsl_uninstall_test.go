@@ -88,3 +88,90 @@ func TestUninstallWSLIntegrationRemovesOnlyLocalEdgeWhenCompanionUnavailable(t *
 		t.Fatalf("commands = %#v", runner.commands)
 	}
 }
+
+func TestUninstallWSLIntegrationSkipsWindowsRemovalWhenRouterNotInstalled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	integrationDir := filepath.Join(router.DefaultStateDir(), wslIntegrationDirname)
+	if err := os.MkdirAll(integrationDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	oldFactory := newWindowsCompanionControlFunc
+	oldDetectWSL2 := detectWSL2Func
+	oldStopEdge := wslStopEdgeFunc
+	oldPromptInput := promptInput
+	defer func() {
+		newWindowsCompanionControlFunc = oldFactory
+		detectWSL2Func = oldDetectWSL2
+		wslStopEdgeFunc = oldStopEdge
+		promptInput = oldPromptInput
+	}()
+	detectWSL2Func = func() bool { return true }
+	newWindowsCompanionControlFunc = func(context.Context) (windowsCompanionControl, error) {
+		return &testWindowsCompanionControl{installed: false}, nil
+	}
+	wslStopEdgeFunc = func(string) error { return nil }
+	promptInput = strings.NewReader("y\ny\n")
+	var output strings.Builder
+
+	if err := uninstallWSLIntegration(t.Context(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "Remove the shared Windows gohere router too?") {
+		t.Fatalf("offered to remove a Windows router that is not installed: %q", output.String())
+	}
+	if !strings.Contains(output.String(), "No complete Windows gohere router installation was found.") {
+		t.Fatalf("output = %q", output.String())
+	}
+	if _, err := os.Stat(integrationDir); !os.IsNotExist(err) {
+		t.Fatalf("integration dir remains: %v", err)
+	}
+}
+
+type routesFailingAdminClient struct{ fakeAdminClient }
+
+func (routesFailingAdminClient) Routes(context.Context) ([]router.Route, error) {
+	return nil, errors.New("connection refused")
+}
+
+func TestUninstallWSLIntegrationFinishesLocalCleanupWhenWindowsRoutesUnavailable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	integrationDir := filepath.Join(router.DefaultStateDir(), wslIntegrationDirname)
+	if err := os.MkdirAll(integrationDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	oldFactory := newWindowsCompanionControlFunc
+	oldDetectWSL2 := detectWSL2Func
+	oldStopEdge := wslStopEdgeFunc
+	oldPromptInput := promptInput
+	defer func() {
+		newWindowsCompanionControlFunc = oldFactory
+		detectWSL2Func = oldDetectWSL2
+		wslStopEdgeFunc = oldStopEdge
+		promptInput = oldPromptInput
+	}()
+	detectWSL2Func = func() bool { return true }
+	newWindowsCompanionControlFunc = func(context.Context) (windowsCompanionControl, error) {
+		return &testWindowsCompanionControl{installed: true, admin: routesFailingAdminClient{}}, nil
+	}
+	stopped := false
+	wslStopEdgeFunc = func(string) error { stopped = true; return nil }
+	promptInput = strings.NewReader("y\n")
+	var output strings.Builder
+
+	err := uninstallWSLIntegration(t.Context(), &output)
+
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("err = %v, want Windows route listing failure", err)
+	}
+	if !stopped {
+		t.Fatal("WSL edge was not stopped")
+	}
+	if _, statErr := os.Stat(integrationDir); !os.IsNotExist(statErr) {
+		t.Fatalf("integration dir remains: %v", statErr)
+	}
+	if !strings.Contains(output.String(), "Windows authority removal failed; WSL cleanup completed.") {
+		t.Fatalf("output = %q", output.String())
+	}
+}
