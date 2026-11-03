@@ -42,6 +42,8 @@ type Config struct {
 	EnsureUserPath   func(context.Context, string) error
 }
 
+var writePIDRecord = router.WritePIDRecord
+
 var stopDetachedProcess = func(pid int) {
 	if pid <= 0 {
 		return
@@ -300,7 +302,7 @@ func writeDetachedRouterPID(stateDir string, pid int) error {
 	if pid <= 0 {
 		return nil
 	}
-	if err := router.WritePIDRecord(stateDir, pid); err != nil {
+	if err := writePIDRecord(stateDir, pid); err != nil {
 		stopDetachedProcess(pid)
 		return err
 	}
