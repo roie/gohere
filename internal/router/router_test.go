@@ -1048,6 +1048,88 @@ func failingUpstreamTarget(t *testing.T) string {
 	return "http://" + listener.Addr().String()
 }
 
+func TestProxyRejectsRouteWithExpiredLease(t *testing.T) {
+	var contacted atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contacted.Store(true)
+	}))
+	defer upstream.Close()
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{
+		Host:            "web.localhost",
+		PreferredScheme: "http",
+		Target:          upstream.URL,
+		LeaseExpiresAt:  time.Now().Add(-time.Second),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Token: "secret", Store: store})
+
+	req := httptest.NewRequest(http.MethodGet, "http://web.localhost/", nil)
+	req.Host = "web.localhost"
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+	srv.HTTPHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "route_owner_offline") {
+		t.Fatalf("expired lease response = %d %q", rec.Code, rec.Body.String())
+	}
+	if contacted.Load() {
+		t.Fatal("expired route was proxied to its upstream")
+	}
+}
+
+func TestProxyForwardsEarlyUpstreamResponseToLargeUpload(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				if _, err := http.ReadRequest(bufio.NewReader(conn)); err != nil {
+					return
+				}
+				io.WriteString(conn, "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 8\r\nConnection: close\r\n\r\ntoo big!")
+				conn.(*net.TCPConn).CloseWrite()
+				conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				io.Copy(io.Discard, conn)
+			}()
+		}
+	}()
+	store := NewMemoryStore()
+	if err := store.Save([]Route{{
+		Host:            "web.localhost",
+		PreferredScheme: "http",
+		Target:          "http://" + listener.Addr().String(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(NewServer(Config{Token: "secret", Store: store}).HTTPHandler())
+	defer front.Close()
+
+	req, err := http.NewRequest(http.MethodPost, front.URL+"/upload", bytes.NewReader(make([]byte, 16<<20)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "web.localhost"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge || string(body) != "too big!" {
+		t.Fatalf("early upstream response = %d %q", resp.StatusCode, body)
+	}
+}
+
 func TestMissingRoutePageStripsIPv6Port(t *testing.T) {
 	rec := httptest.NewRecorder()
 
