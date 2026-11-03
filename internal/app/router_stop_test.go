@@ -72,6 +72,7 @@ type stopHarness struct {
 	adminCalls   int
 	sleepHook    func(int)
 	onShutdown   func()
+	beforeRun    func()
 	shutdownErr  error
 	healthErr    error
 	withPID      string
@@ -111,6 +112,9 @@ func (h *stopHarness) run(t *testing.T, ctx context.Context) (string, error) {
 		writeFile(t, filepath.Join(h.configDir, "systemd", "user", "gohere-router.service"), "service")
 	}
 	h.runner = &uninstallRecordingRunner{err: h.systemdError}
+	if h.beforeRun != nil {
+		h.beforeRun()
+	}
 	var out strings.Builder
 	err := ServiceStopWithConfig(ctx, &out, ServiceStopConfig{
 		StateDir:      h.stateDir,
@@ -408,6 +412,84 @@ func TestConfirmedStopWithoutLiveRecordedProcess(t *testing.T) {
 			}
 			if _, ok := h.pidRecord(t); ok {
 				t.Fatal("stale router.pid should be removed")
+			}
+		})
+	}
+}
+
+func TestConfirmedStopTreatsUninspectableRecordFromBeforeBootAsStale(t *testing.T) {
+	h := newStopHarness(t)
+	h.shutdownErr = errors.New("down")
+	h.process.before = []processState{processUnknown}
+	h.process.inspectErr = errors.New("Access is denied.")
+	h.beforeRun = func() {
+		old := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+		if err := os.Chtimes(filepath.Join(h.stateDir, router.RouterPIDFilename), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out, err := h.run(t, t.Context())
+
+	if err != nil || out != "No gohere service is running.\n" {
+		t.Fatalf("out %q, err %v; want stale record cleaned up", out, err)
+	}
+	if _, ok := h.pidRecord(t); ok || h.process.terminated != 0 {
+		t.Fatalf("record kept %v, terminated %d", ok, h.process.terminated)
+	}
+}
+
+func TestConfirmedStopKeepsUninspectableRecordFromThisBoot(t *testing.T) {
+	h := newStopHarness(t)
+	h.shutdownErr = errors.New("down")
+	h.process.before = []processState{processUnknown}
+	h.process.inspectErr = errors.New("Access is denied.")
+
+	out, err := h.run(t, t.Context())
+
+	assertStopFailedPreservingPID(t, h, out, err, "if no gohere router is running, remove")
+	if h.adminCalls != 0 || h.process.terminated != 0 {
+		t.Fatalf("admin calls %d, terminated %d", h.adminCalls, h.process.terminated)
+	}
+}
+
+func TestSystemBootTimeIsInThePast(t *testing.T) {
+	boot, err := systemBootTime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !boot.Before(time.Now()) || boot.Before(time.Date(2000, 1, 2, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("boot time = %v", boot)
+	}
+}
+
+func TestConfirmedStopKeepsPreBootRecordWhileARouterResponds(t *testing.T) {
+	tests := []struct {
+		name        string
+		shutdownErr error
+		healthErr   error
+	}{
+		{name: "shutdown accepted"},
+		{name: "health responds", shutdownErr: errors.New("401 unauthorized")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newStopHarness(t)
+			h.shutdownErr = tt.shutdownErr
+			h.healthErr = tt.healthErr
+			h.process.before = []processState{processUnknown}
+			h.beforeRun = func() {
+				old := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+				if err := os.Chtimes(filepath.Join(h.stateDir, router.RouterPIDFilename), old, old); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			out, err := h.run(t, t.Context())
+
+			assertStopFailedPreservingPID(t, h, out, err, "unable to verify router process 4242")
+			if h.process.terminated != 0 {
+				t.Fatalf("terminated = %d", h.process.terminated)
 			}
 		})
 	}

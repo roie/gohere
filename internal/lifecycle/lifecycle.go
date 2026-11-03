@@ -514,7 +514,7 @@ func realProcessStartTime(pid int) (time.Time, bool) {
 	if !ok {
 		return time.Time{}, false
 	}
-	bootTime, ok := linuxBootTime()
+	bootTime, ok := LinuxBootTime()
 	if !ok {
 		return time.Time{}, false
 	}
@@ -599,7 +599,7 @@ func linuxProcessStartTicks(pid int) (uint64, bool) {
 	return ticks, err == nil
 }
 
-func linuxBootTime() (time.Time, bool) {
+func LinuxBootTime() (time.Time, bool) {
 	data, err := os.ReadFile("/proc/stat")
 	if err != nil {
 		return time.Time{}, false
