@@ -16,20 +16,22 @@ import (
 	localcert "github.com/roie/gohere/internal/cert"
 	"github.com/roie/gohere/internal/certtrust"
 	appconfig "github.com/roie/gohere/internal/config"
+	"github.com/roie/gohere/internal/lanfirewall"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/setup"
 	"github.com/roie/gohere/internal/userpath"
 )
 
 type UninstallConfig struct {
-	StateDir       string
-	ConfigDir      string
-	CommandRunner  setup.CommandRunner
-	OpenProcess    func(int) routerProcess
-	Sleep          func(context.Context, time.Duration) error
-	UntrustCA      func(context.Context, string) error
-	RemoveUserPath func(context.Context, string) error
-	RemoveState    *bool
+	StateDir            string
+	ConfigDir           string
+	CommandRunner       setup.CommandRunner
+	OpenProcess         func(int) routerProcess
+	Sleep               func(context.Context, time.Duration) error
+	UntrustCA           func(context.Context, string) error
+	RemoveUserPath      func(context.Context, string) error
+	RemoveFirewallRules func(context.Context, string) error
+	RemoveState         *bool
 }
 
 type ServiceStopConfig struct {
@@ -129,6 +131,10 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 		}
 	}
 
+	if cfg.RemoveFirewallRules == nil {
+		cfg.RemoveFirewallRules = lanfirewall.Remove
+	}
+
 	if _, err := stopInstalledRouter(ctx, newRouterStopConfig(cfg.StateDir, cfg.ConfigDir, cfg.CommandRunner, cfg.OpenProcess, cfg.Sleep)); err != nil {
 		return fmt.Errorf("gohere error: uninstall stopped before removing anything because the gohere service could not be confirmed stopped: %w", err)
 	}
@@ -149,6 +155,12 @@ func UninstallWithConfig(ctx context.Context, stdout io.Writer, cfg UninstallCon
 	binDir := filepath.Join(cfg.StateDir, "bin")
 	if err := cfg.RemoveUserPath(ctx, binDir); err != nil {
 		return err
+	}
+	if err := cfg.RemoveFirewallRules(ctx, filepath.Join(binDir, "gohere.exe")); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		fmt.Fprintf(stdout, "Could not remove the \"gohere LAN\" Windows firewall rules; remove them in Windows Defender Firewall: %v\n", err)
 	}
 	for _, binary := range []string{"gohere", "gohere.exe"} {
 		if err := removeInstalledFile(filepath.Join(binDir, binary)); err != nil {

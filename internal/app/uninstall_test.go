@@ -237,6 +237,36 @@ func TestUninstallRemovesWindowsStableBinary(t *testing.T) {
 	}
 }
 
+func TestUninstallRemovesFirewallRulesAndContinuesWhenThatFails(t *testing.T) {
+	stateDir := t.TempDir()
+	writeFile(t, filepath.Join(stateDir, "bin", "gohere.exe"), "binary")
+	removeState := false
+	var program string
+	var out strings.Builder
+	if err := UninstallWithConfig(t.Context(), &out, UninstallConfig{
+		StateDir:       stateDir,
+		ConfigDir:      t.TempDir(),
+		RemoveUserPath: func(context.Context, string) error { return nil },
+		RemoveFirewallRules: func(_ context.Context, path string) error {
+			program = path
+			return errors.New("elevation declined")
+		},
+		RemoveState: &removeState,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if want := filepath.Join(stateDir, "bin", "gohere.exe"); program != want {
+		t.Fatalf("firewall program = %q, want %q", program, want)
+	}
+	if !strings.Contains(out.String(), "elevation declined") || !strings.Contains(out.String(), "gohere service removed.") {
+		t.Fatalf("output = %q", out.String())
+	}
+	if exists(filepath.Join(stateDir, "bin", "gohere.exe")) {
+		t.Fatal("binary still exists after firewall removal failed")
+	}
+}
+
 func TestRemovePathWithRetryRetriesTemporaryFailure(t *testing.T) {
 	attempts := 0
 	errBusy := errors.New("busy")

@@ -5,6 +5,7 @@ package lanfirewall
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,23 +18,37 @@ func Ensure(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	script := windowsFirewallScript(executable)
-	if output, err := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedPowerShell(script)).CombinedOutput(); err == nil {
-		return nil
-	} else if ctx.Err() != nil {
-		return ctx.Err()
-	} else {
-		elevated := `$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand','` + encodedPowerShell(script) + `'); exit $process.ExitCode`
-		elevatedOutput, elevatedErr := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", elevated).CombinedOutput()
-		if elevatedErr != nil {
-			detail := strings.TrimSpace(string(elevatedOutput))
-			if detail == "" {
-				detail = strings.TrimSpace(string(output))
-			}
-			return fmt.Errorf("permission to configure LAN sharing was not granted: %s", detail)
-		}
+	if err := runElevatedOnFailure(ctx, windowsFirewallScript(executable)); err != nil {
+		return fmt.Errorf("permission to configure LAN sharing was not granted: %w", err)
+	}
+	return nil
+}
+
+// Remove deletes the LAN sharing firewall rules that allow executable. Rules
+// owned by another program are kept. Elevation is requested only when a
+// matching rule exists and cannot be removed without it.
+func Remove(ctx context.Context, executable string) error {
+	return runElevatedOnFailure(ctx, windowsFirewallRemovalScript(executable))
+}
+
+func runElevatedOnFailure(ctx context.Context, script string) error {
+	output, err := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedPowerShell(script)).CombinedOutput()
+	if err == nil {
 		return nil
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	elevated := `$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand','` + encodedPowerShell(script) + `'); exit $process.ExitCode`
+	elevatedOutput, elevatedErr := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", elevated).CombinedOutput()
+	if elevatedErr == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(elevatedOutput))
+	if detail == "" {
+		detail = strings.TrimSpace(string(output))
+	}
+	return errors.New(detail)
 }
 
 func encodedPowerShell(script string) string {

@@ -19,6 +19,7 @@ type uninstallOutcome struct {
 	out          string
 	untrusted    bool
 	pathRemoved  bool
+	firewallRun  bool
 	stateRemoved bool
 }
 
@@ -62,6 +63,10 @@ func (h *stopHarness) runUninstall(t *testing.T, ctx context.Context) uninstallO
 		},
 		RemoveUserPath: func(context.Context, string) error {
 			outcome.pathRemoved = true
+			return nil
+		},
+		RemoveFirewallRules: func(context.Context, string) error {
+			outcome.firewallRun = true
 			return nil
 		},
 		RemoveState: &removeState,
@@ -162,7 +167,7 @@ func TestUninstallRefusesDestructiveCleanupWhenStopIsUncertain(t *testing.T) {
 			if got.err == nil || !strings.Contains(got.err.Error(), tt.want) {
 				t.Fatalf("uninstall error = %v, want %q", got.err, tt.want)
 			}
-			if got.untrusted || got.pathRemoved || got.stateRemoved || got.out != "" {
+			if got.untrusted || got.pathRemoved || got.firewallRun || got.stateRemoved || got.out != "" {
 				t.Fatalf("destructive work ran: %+v", got)
 			}
 			for _, path := range []string{
