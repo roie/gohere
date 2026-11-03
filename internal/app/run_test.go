@@ -5842,6 +5842,42 @@ func TestDoctorReportsDeadServicePID(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsUnverifiedServiceProcess(t *testing.T) {
+	tests := []struct {
+		state processState
+		want  []string
+	}{
+		{processMatched, []string{"ok service process running"}},
+		{processMismatched, []string{"fail service process pid belongs to another program", "gohere service stop"}},
+		{processUnknown, []string{"fail service process cannot verify: access denied", "If no gohere router is running, remove "}},
+	}
+	for _, tt := range tests {
+		stateDir := t.TempDir()
+		writeFile(t, filepath.Join(stateDir, router.RouterPIDFilename), "4242\n")
+		process := &fakeRouterProcess{before: []processState{tt.state}, inspectErr: errors.New("access denied")}
+		var openedPID int
+		var out strings.Builder
+
+		if err := DoctorWithChecks(t.Context(), &out, stateDir, router.NewMemoryStore(), fakeAdminClient{}, DoctorChecks{
+			Port80Available: func() bool { return true },
+			OpenProcess: func(pid int) routerProcess {
+				openedPID = pid
+				return process
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if openedPID != 4242 || !process.closed {
+			t.Fatalf("opened pid %d, closed %v", openedPID, process.closed)
+		}
+		for _, want := range tt.want {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("doctor output missing %q:\n%s", want, out.String())
+			}
+		}
+	}
+}
+
 func TestDoctorWithStoreReportsLocalhostHTTPProbe(t *testing.T) {
 	restoreLocalhostHTTP := stubLocalhostHTTPStatus(t, LocalhostHTTPStatus{OK: true, Detail: "reached gohere router"})
 	defer restoreLocalhostHTTP()
