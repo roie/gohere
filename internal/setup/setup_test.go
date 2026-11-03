@@ -176,16 +176,14 @@ func TestLinuxSetupStopsDetachedServiceWhenRouterPIDWriteFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	stateDir := filepath.Join(dir, "state")
-	if err := os.MkdirAll(filepath.Join(stateDir, "router.pid"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	oldStop := stopDetachedProcess
+	oldStop, oldWrite := stopDetachedProcess, writePIDRecord
 	var stopped []int
 	stopDetachedProcess = func(pid int) {
 		stopped = append(stopped, pid)
 	}
+	writePIDRecord = func(string, int) error { return errors.New("disk full") }
 	defer func() {
-		stopDetachedProcess = oldStop
+		stopDetachedProcess, writePIDRecord = oldStop, oldWrite
 	}()
 
 	err := Linux(context.Background(), Config{
