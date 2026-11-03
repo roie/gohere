@@ -2882,6 +2882,7 @@ type DoctorChecks struct {
 	LocalhostHTTPStatus  func(context.Context) LocalhostHTTPStatus
 	SetcapEnabled        func(string) bool
 	SystemdUserServiceOK func() (bool, bool)
+	OpenProcess          func(int) routerProcess
 	GOOS                 string
 }
 
@@ -2899,9 +2900,11 @@ func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, st
 	if extra.SystemdUserServiceOK == nil {
 		extra.SystemdUserServiceOK = systemdUserServiceOK
 	}
+	if extra.OpenProcess == nil {
+		extra.OpenProcess = openRouterProcess
+	}
 	tokenPath := filepath.Join(stateDir, "token")
 	binaryPath := filepath.Join(stateDir, "bin", stableBinaryName(goos))
-	pidPath := filepath.Join(stateDir, "router.pid")
 	usingWindowsBridge := goos == "linux" && wslWindowsServiceAvailable(ctx)
 	checks := []lifecycle.DoctorCheck{
 		{Name: "state dir", OK: exists(stateDir), Detail: stateDir, Hint: "Try: run gohere once to finish setup."},
@@ -2927,20 +2930,8 @@ func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, st
 	}
 	if usingWindowsBridge {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "local service", OK: true, Detail: "not required; using Windows service"})
-	} else if pidData, err := os.ReadFile(pidPath); err == nil {
-		pidText := strings.TrimSpace(string(pidData))
-		checks = append(checks, lifecycle.DoctorCheck{Name: "service pid", OK: true, Detail: pidText})
-		pid, err := strconv.Atoi(pidText)
-		switch {
-		case err != nil || pid <= 0:
-			checks = append(checks, lifecycle.DoctorCheck{Name: "service process", OK: false, Detail: "invalid pid", Hint: "Try: gohere service stop, then run gohere again."})
-		case lifecycle.PIDAlive(pid):
-			checks = append(checks, lifecycle.DoctorCheck{Name: "service process", OK: true, Detail: "running"})
-		default:
-			checks = append(checks, lifecycle.DoctorCheck{Name: "service process", OK: false, Detail: "dead", Hint: "Try: run gohere once to restart the service."})
-		}
 	} else {
-		checks = append(checks, lifecycle.DoctorCheck{Name: "service pid", OK: false, Detail: pidPath, Hint: "Try: run gohere once to start the service."})
+		checks = append(checks, servicePIDChecks(stateDir, binaryPath, extra.OpenProcess)...)
 	}
 	if routes, err := store.Load(); err == nil {
 		checks = append(checks, lifecycle.DoctorCheck{Name: "route store", OK: true, Detail: "valid"})
@@ -2991,6 +2982,34 @@ func DoctorWithChecks(ctx context.Context, stdout io.Writer, stateDir string, st
 	checks = append(checks, bridgeDoctorChecks(ctx)...)
 	fmt.Fprint(stdout, lifecycle.FormatDoctor(checks))
 	return nil
+}
+
+func servicePIDChecks(stateDir, binaryPath string, openProcess func(int) routerProcess) []lifecycle.DoctorCheck {
+	pidPath := filepath.Join(stateDir, router.RouterPIDFilename)
+	record := router.ReadPIDRecord(stateDir)
+	switch record.State {
+	case router.PIDRecordMissing:
+		return []lifecycle.DoctorCheck{{Name: "service pid", OK: false, Detail: pidPath, Hint: "Try: run gohere once to start the service."}}
+	case router.PIDRecordUnknown:
+		return []lifecycle.DoctorCheck{{Name: "service process", OK: false, Detail: "invalid pid", Hint: "Try: gohere service stop, then run gohere again."}}
+	}
+	pidCheck := lifecycle.DoctorCheck{Name: "service pid", OK: true, Detail: strconv.Itoa(record.PID)}
+	process := openProcess(record.PID)
+	defer process.Close()
+	state, err := process.Inspect(binaryPath)
+	processCheck := lifecycle.DoctorCheck{Name: "service process"}
+	switch state {
+	case processMatched:
+		processCheck.OK, processCheck.Detail = true, "running"
+	case processAbsent:
+		processCheck.Detail, processCheck.Hint = "dead", "Try: run gohere once to restart the service."
+	case processMismatched:
+		processCheck.Detail, processCheck.Hint = "pid belongs to another program", "Try: gohere service stop, then run gohere again."
+	default:
+		processCheck.Detail = compactDoctorDetail(fmt.Sprintf("cannot verify: %v", err))
+		processCheck.Hint = fmt.Sprintf("Try: gohere service stop. If no gohere router is running, remove %s.", pidPath)
+	}
+	return []lifecycle.DoctorCheck{pidCheck, processCheck}
 }
 
 func httpsDoctorCheck(stateDir string) lifecycle.DoctorCheck {
