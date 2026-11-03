@@ -14,7 +14,7 @@ import (
 )
 
 func TestUninstallWSLIntegrationRemovesOnlyLocalEdgeWhenCompanionUnavailable(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateHome(t)
 	certificate, fingerprint := testCA(t)
 	stateDir := router.DefaultStateDir()
 	integrationDir := filepath.Join(stateDir, wslIntegrationDirname)
@@ -90,7 +90,7 @@ func TestUninstallWSLIntegrationRemovesOnlyLocalEdgeWhenCompanionUnavailable(t *
 }
 
 func TestUninstallWSLIntegrationSkipsWindowsRemovalWhenRouterNotInstalled(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateHome(t)
 	integrationDir := filepath.Join(router.DefaultStateDir(), wslIntegrationDirname)
 	if err := os.MkdirAll(integrationDir, 0700); err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func (routesFailingAdminClient) Routes(context.Context) ([]router.Route, error) 
 }
 
 func TestUninstallWSLIntegrationFinishesLocalCleanupWhenWindowsRoutesUnavailable(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateHome(t)
 	integrationDir := filepath.Join(router.DefaultStateDir(), wslIntegrationDirname)
 	if err := os.MkdirAll(integrationDir, 0700); err != nil {
 		t.Fatal(err)
@@ -174,4 +174,14 @@ func TestUninstallWSLIntegrationFinishesLocalCleanupWhenWindowsRoutesUnavailable
 	if !strings.Contains(output.String(), "Windows authority removal failed; WSL cleanup completed.") {
 		t.Fatalf("output = %q", output.String())
 	}
+}
+
+// isolateHome points the user home at a temp dir on every OS; Windows reads
+// USERPROFILE rather than HOME.
+func isolateHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return home
 }
