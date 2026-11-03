@@ -269,6 +269,7 @@ The npm package includes x64 and arm64 binaries for these platforms.
 - no project config files
 - no browser auto-open by default
 - WSL1 is not supported
+- if `gohere` is killed without a chance to clean up, its route can keep serving the dev server for up to 90 seconds before it returns `503`
 - the first WSL2 release permits one active integrated distribution/Linux user per Windows authority
 
 ## License
