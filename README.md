@@ -167,7 +167,7 @@ After one-time trust setup, scan the QR again or open the persistent LAN URL. Sh
 
 Windows LAN sharing requires the selected network profile to be Private. The first share may show a Windows Firewall approval prompt. In WSL, the Windows gohere authority owns the LAN listeners, certificate, mDNS responder, and firewall rules.
 
-For static folders, `gohere` serves `index.html`. You can also open a specific file, for example `gohere about.html`, which routes to `https://myproject.localhost/about.html`.
+For static folders, `gohere` serves `index.html`. Files are served only from inside the static folder; symlinks that point outside it are not followed. You can also open a specific file, for example `gohere about.html`, which routes to `https://myproject.localhost/about.html`.
 
 CSS, images, and scripts are served normally.
 
@@ -219,7 +219,11 @@ gohere uninstall
 npm uninstall -g gohere
 ```
 
-`gohere uninstall` removes the local service install and asks before deleting routes, logs, and token state.
+`gohere service stop` reports success only after the router process has exited. Gohere checks that the recorded PID still belongs to the installed gohere binary before it stops it.
+
+`gohere uninstall` first stops the router the same way. If gohere cannot confirm that the router stopped, uninstall removes nothing and explains what to check. It then removes the local service install and asks before deleting routes, logs, and token state.
+
+In WSL, `gohere uninstall` removes the WSL edge and certificate trust, and asks before removing the shared Windows router. The Windows router is kept while it still has routes.
 
 ## How it works
 
@@ -231,7 +235,11 @@ Each project gets a hidden local port. The service maps the clean `.localhost` h
 
 First-time setup installs the local service in `~/.gohere/`, installs a local trusted certificate authority, and starts the service in the background. After that, `gohere` only starts your project and registers its route.
 
-The service only serves local machine traffic. On macOS, gohere uses a port `80` listener that rejects non-loopback connections before requests reach the router.
+The service only serves local machine traffic. On macOS, its listeners reject non-loopback connections before requests reach the router.
+
+Route traffic always connects directly to the route's target. `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` do not apply to it.
+
+HTTPS certificates are issued only for active routes and are kept in memory.
 
 State is stored in:
 
@@ -256,7 +264,7 @@ The npm package includes x64 and arm64 binaries for these platforms.
 - `.localhost` only
 - HTTPS uses a local trusted certificate authority
 - HTTP remains available with `--http`
-- no LAN sharing
+- LAN sharing only with `--share=lan`, one project per command
 - no custom TLDs
 - no project config files
 - no browser auto-open by default
