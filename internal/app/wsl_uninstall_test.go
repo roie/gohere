@@ -66,9 +66,10 @@ func TestUninstallWSLIntegrationRemovesOnlyLocalEdgeWhenCompanionUnavailable(t *
 	runner := &wslSetupRecordingRunner{}
 	wslUntrustCARunner = runner
 	wslTrustedCAPathFunc = func() string { return trustedPath }
-	oldFileExists := certtrust.LinuxHost.FileExists
+	oldFileExists, oldReadFile := certtrust.LinuxHost.FileExists, certtrust.LinuxHost.ReadFile
 	certtrust.LinuxHost.FileExists = func(path string) bool { return path == "/usr/local/share/ca-certificates/gohere-local-ca.crt" }
-	defer func() { certtrust.LinuxHost.FileExists = oldFileExists }()
+	certtrust.LinuxHost.ReadFile = func(string) ([]byte, error) { return []byte(certificate), nil }
+	defer func() { certtrust.LinuxHost.FileExists, certtrust.LinuxHost.ReadFile = oldFileExists, oldReadFile }()
 	promptInput = strings.NewReader("")
 	var output strings.Builder
 

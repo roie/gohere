@@ -2,15 +2,27 @@ package certtrust
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha1"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
+	"math/big"
+	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 type linuxHostSpec struct {
 	dirs     []string
-	files    []string
+	files    map[string]string
 	commands []string
 }
 
@@ -19,7 +31,14 @@ func simulateLinuxHost(t *testing.T, spec linuxHostSpec) {
 	old := LinuxHost
 	t.Cleanup(func() { LinuxHost = old })
 	LinuxHost.DirExists = func(path string) bool { return slices.Contains(spec.dirs, path) }
-	LinuxHost.FileExists = func(path string) bool { return slices.Contains(spec.files, path) }
+	LinuxHost.FileExists = func(path string) bool { _, ok := spec.files[path]; return ok }
+	LinuxHost.ReadFile = func(path string) ([]byte, error) {
+		content, ok := spec.files[path]
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+		return []byte(content), nil
+	}
 	LinuxHost.CommandExists = func(name string) bool { return slices.Contains(spec.commands, name) }
 }
 
@@ -112,18 +131,25 @@ func TestTrustCALinuxRollsBackWhenCopyFails(t *testing.T) {
 	)
 }
 
-func TestUntrustCALinuxRemovesFromDetectedTrustStore(t *testing.T) {
+const (
+	debianCAPath = "/usr/local/share/ca-certificates/gohere-local-ca.crt"
+	fedoraCAPath = "/etc/pki/ca-trust/source/anchors/gohere-local-ca.crt"
+)
+
+func TestUntrustCALinuxRemovesMatchingCA(t *testing.T) {
+	ca, sha256Hex, sha1Hex := testCertificate(t)
 	tests := []struct {
-		name string
-		host linuxHostSpec
-		want [][]string
+		name        string
+		host        linuxHostSpec
+		fingerprint string
+		want        [][]string
 	}{
-		{"debian", linuxHostSpec{dirs: debianHost.dirs, commands: debianHost.commands, files: []string{"/usr/local/share/ca-certificates/gohere-local-ca.crt"}}, [][]string{
-			{"sudo", "rm", "-f", "/usr/local/share/ca-certificates/gohere-local-ca.crt"},
+		{"debian with sha256", linuxHostSpec{dirs: debianHost.dirs, commands: debianHost.commands, files: map[string]string{debianCAPath: ca}}, sha256Hex, [][]string{
+			{"sudo", "rm", "-f", debianCAPath},
 			{"sudo", "update-ca-certificates"},
 		}},
-		{"fedora", linuxHostSpec{dirs: fedoraHost.dirs, commands: fedoraHost.commands, files: []string{"/etc/pki/ca-trust/source/anchors/gohere-local-ca.crt"}}, [][]string{
-			{"sudo", "rm", "-f", "/etc/pki/ca-trust/source/anchors/gohere-local-ca.crt"},
+		{"fedora with sha1 thumbprint", linuxHostSpec{dirs: fedoraHost.dirs, commands: fedoraHost.commands, files: map[string]string{fedoraCAPath: ca}}, strings.ToUpper(sha1Hex), [][]string{
+			{"sudo", "rm", "-f", fedoraCAPath},
 			{"sudo", "update-ca-trust", "extract"},
 		}},
 	}
@@ -131,7 +157,7 @@ func TestUntrustCALinuxRemovesFromDetectedTrustStore(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			simulateLinuxHost(t, tt.host)
 			runner := &recordingRunner{}
-			if err := UntrustCA(t.Context(), "linux", runner, "abc123"); err != nil {
+			if err := UntrustCA(t.Context(), "linux", runner, tt.fingerprint); err != nil {
 				t.Fatal(err)
 			}
 			runner.want(t, tt.want...)
@@ -139,18 +165,78 @@ func TestUntrustCALinuxRemovesFromDetectedTrustStore(t *testing.T) {
 	}
 }
 
-func TestUntrustCALinuxWithoutTrustStoreOrCAChangesNothing(t *testing.T) {
-	simulateLinuxHost(t, linuxHostSpec{})
+func TestUntrustCALinuxPreservesUnverifiedCA(t *testing.T) {
+	ours, oursSHA256, _ := testCertificate(t)
+	other, _, _ := testCertificate(t)
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"mismatched", map[string]string{fedoraCAPath: other}, "is not the certificate authority this gohere installation trusted"},
+		{"not a certificate", map[string]string{fedoraCAPath: "garbage"}, "is not a PEM certificate"},
+		{"mismatch in a second store", map[string]string{debianCAPath: ours, fedoraCAPath: other}, fedoraCAPath},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			simulateLinuxHost(t, linuxHostSpec{dirs: fedoraHost.dirs, commands: fedoraHost.commands, files: tt.files})
+			runner := &recordingRunner{}
+
+			err := UntrustCA(t.Context(), "linux", runner, oursSHA256)
+			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "left in place") {
+				t.Fatalf("err = %v", err)
+			}
+			runner.want(t)
+		})
+	}
+}
+
+func TestUntrustCALinuxWithMissingCAOnlyRefreshes(t *testing.T) {
+	_, sha256Hex, _ := testCertificate(t)
+	simulateLinuxHost(t, fedoraHost)
 	runner := &recordingRunner{}
 
-	if err := UntrustCA(t.Context(), "linux", runner, "abc123"); err != nil {
+	if err := UntrustCA(t.Context(), "linux", runner, sha256Hex); err != nil {
 		t.Fatal(err)
+	}
+	runner.want(t, []string{"sudo", "update-ca-trust", "extract"})
+}
+
+func TestUntrustCALinuxRequiresFingerprint(t *testing.T) {
+	simulateLinuxHost(t, debianHost)
+	runner := &recordingRunner{}
+
+	if err := UntrustCA(t.Context(), "linux", runner, " "); err == nil {
+		t.Fatal("expected fingerprint error")
 	}
 	runner.want(t)
 }
 
+func testCertificate(t *testing.T) (string, string, string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: "test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha256Sum := sha256.Sum256(der)
+	sha1Sum := sha1.Sum(der)
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), hex.EncodeToString(sha256Sum[:]), hex.EncodeToString(sha1Sum[:])
+}
+
 func TestInstalledLinuxCAPathFindsFedoraAnchor(t *testing.T) {
-	simulateLinuxHost(t, linuxHostSpec{files: []string{"/etc/pki/ca-trust/source/anchors/gohere-local-ca.crt"}})
+	simulateLinuxHost(t, linuxHostSpec{files: map[string]string{fedoraCAPath: ""}})
 	if got := InstalledLinuxCAPath(); got != "/etc/pki/ca-trust/source/anchors/gohere-local-ca.crt" {
 		t.Fatalf("path = %q", got)
 	}

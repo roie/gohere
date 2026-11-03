@@ -2,6 +2,10 @@ package certtrust
 
 import (
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -36,6 +40,7 @@ var errNoLinuxTrustStore = errors.New("no supported system trust store found; go
 var LinuxHost = struct {
 	DirExists     func(string) bool
 	FileExists    func(string) bool
+	ReadFile      func(string) ([]byte, error)
 	CommandExists func(string) bool
 }{
 	DirExists: func(path string) bool {
@@ -46,6 +51,7 @@ var LinuxHost = struct {
 		info, err := os.Stat(path)
 		return err == nil && info.Mode().IsRegular()
 	},
+	ReadFile: os.ReadFile,
 	CommandExists: func(name string) bool {
 		if _, err := exec.LookPath(name); err == nil {
 			return true
@@ -91,6 +97,25 @@ func linuxCAPaths() []string {
 	return paths
 }
 
+// verifyLinuxCA accepts a SHA-256 or SHA-1 hex fingerprint: native Linux
+// passes SHA-256, while WSL passes the SHA-1 thumbprint it also gives certutil.
+func verifyLinuxCA(path, fingerprint string) error {
+	data, err := LinuxHost.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("could not verify %s, so it was left in place: %w", path, err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return fmt.Errorf("%s is not a PEM certificate, so it was left in place; remove it manually if gohere installed it", path)
+	}
+	sha256Sum := sha256.Sum256(block.Bytes)
+	sha1Sum := sha1.Sum(block.Bytes)
+	if !strings.EqualFold(fingerprint, hex.EncodeToString(sha256Sum[:])) && !strings.EqualFold(fingerprint, hex.EncodeToString(sha1Sum[:])) {
+		return fmt.Errorf("%s is not the certificate authority this gohere installation trusted, so it was left in place; remove it manually if it is no longer needed", path)
+	}
+	return nil
+}
+
 func refreshLinuxTrust(ctx context.Context, runner CommandRunner, store linuxTrustStore) error {
 	return runner.Run(ctx, "sudo", store.command...)
 }
@@ -127,12 +152,24 @@ func rollbackLinuxCA(ctx context.Context, runner CommandRunner, store linuxTrust
 	return nil
 }
 
-func untrustLinuxCA(ctx context.Context, runner CommandRunner) error {
-	removed := false
+// untrustLinuxCA removes only CA files that match fingerprint. Every installed
+// file is verified before any is removed, so a mismatch changes nothing.
+func untrustLinuxCA(ctx context.Context, runner CommandRunner, fingerprint string) error {
+	if fingerprint == "" {
+		return fmt.Errorf("certificate fingerprint is required")
+	}
+	var installed []string
 	for _, path := range linuxCAPaths() {
 		if !LinuxHost.FileExists(path) {
 			continue
 		}
+		if err := verifyLinuxCA(path, fingerprint); err != nil {
+			return err
+		}
+		installed = append(installed, path)
+	}
+	removed := false
+	for _, path := range installed {
 		if err := runner.Run(ctx, "sudo", "rm", "-f", path); err != nil {
 			return err
 		}
@@ -159,7 +196,7 @@ func UntrustCA(ctx context.Context, goos string, runner CommandRunner, fingerpri
 	fingerprint = strings.TrimSpace(fingerprint)
 	switch goos {
 	case "linux":
-		return untrustLinuxCA(ctx, runner)
+		return untrustLinuxCA(ctx, runner, fingerprint)
 	case "darwin":
 		if fingerprint == "" {
 			return fmt.Errorf("certificate fingerprint is required")
