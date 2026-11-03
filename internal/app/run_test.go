@@ -6283,6 +6283,7 @@ func TestDoctorIgnoresStaleProfileTokenWhenCompanionWorks(t *testing.T) {
 }
 
 func TestDoctorDoesNotPanicWhenAdminClientCannotBeCreated(t *testing.T) {
+	isolateHome(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	restoreLocalhostHTTP := stubLocalhostHTTPStatus(t, LocalhostHTTPStatus{OK: false, Detail: "unreachable"})
 	defer func() {

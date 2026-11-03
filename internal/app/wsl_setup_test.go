@@ -288,8 +288,7 @@ func TestPromptAndSetupWSLAuthorityUsesEnvironmentNeutralCopy(t *testing.T) {
 }
 
 func TestSetupWSLAuthorityBootstrapsWindowsFirstWithoutLocalRouterState(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateHome(t)
 	certificate, fingerprint := testCA(t)
 	executable := filepath.Join(t.TempDir(), "npm-gohere")
 	if err := os.WriteFile(executable, []byte("linux-cli"), 0755); err != nil {
