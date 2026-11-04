@@ -62,7 +62,7 @@ func TestPrintUsageIndentsExamples(t *testing.T) {
 	var out bytes.Buffer
 	printUsage(&out, "")
 
-	if !bytes.Contains(out.Bytes(), []byte("\n  gohere --target 5173 -- npm run dev\n")) {
+	if !bytes.Contains(out.Bytes(), []byte("\n  gohere :5173 -- npm run dev\n")) {
 		t.Fatalf("usage output = %q", out.String())
 	}
 }
@@ -82,8 +82,6 @@ func TestPrintUsageDescribesFlags(t *testing.T) {
 		"share this route on the local network",
 		"--verbose",
 		"show target, command, and service details",
-		"--target PORT",
-		"use an existing local port",
 		"--port-flag FLAG",
 		"override the dev server port flag",
 	} {

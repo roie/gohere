@@ -65,7 +65,7 @@ func TestParseMultiRejectsUnsupportedOptions(t *testing.T) {
 		want string
 	}{
 		{name: "as", args: []string{"gohere", "dev:web", "dev:api", "--as", "web"}, want: "gohere error: --as can only be used with one project"},
-		{name: "target", args: []string{"gohere", "dev:web", "dev:api", "--target", "5173"}, want: "gohere error: --target can only be used with one project"},
+		{name: "port", args: []string{"gohere", "dev:web", "dev:api", ":5173"}, want: "gohere error: :PORT can only be used with one project"},
 	}
 
 	for _, tt := range tests {
@@ -87,8 +87,8 @@ func TestParseValueFlagsRejectOptionAsValue(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "as", args: []string{"gohere", "--as", "--target", "3000"}, want: "gohere error: --as requires a name"},
-		{name: "port flag", args: []string{"gohere", "--port-flag", "--target", "3000"}, want: "gohere error: --port-flag requires a flag"},
+		{name: "as", args: []string{"gohere", "--as", "--http"}, want: "gohere error: --as requires a name"},
+		{name: "port flag", args: []string{"gohere", "--port-flag", "--http"}, want: "gohere error: --port-flag requires a flag"},
 	}
 
 	for _, tt := range tests {
@@ -534,7 +534,7 @@ func TestParseRejectsHTTPAfterFixedCommand(t *testing.T) {
 }
 
 func TestParseOptions(t *testing.T) {
-	cmd, err := Parse([]string{"gohere", "--verbose", "--target", "5173", "--port-flag", "-p", "dev"})
+	cmd, err := Parse([]string{"gohere", "--verbose", ":5173", "--port-flag", "-p", "dev"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,8 +549,8 @@ func TestParseOptionErrorsUseGoherePrefix(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "missing target", args: []string{"gohere", "--target"}, want: "gohere error: --target requires a port"},
-		{name: "invalid target", args: []string{"gohere", "--target", "nope"}, want: "gohere error: --target must be a valid port"},
+		{name: "removed target flag", args: []string{"gohere", "--target", "5173"}, want: "gohere error: unknown option \"--target\""},
+		{name: "invalid port", args: []string{"gohere", ":nope"}, want: "gohere error: :PORT and +PORT require a valid port (1-65535)"},
 		{name: "missing port flag", args: []string{"gohere", "--port-flag"}, want: "gohere error: --port-flag requires a flag"},
 	}
 
@@ -568,7 +568,7 @@ func TestParseOptionErrorsUseGoherePrefix(t *testing.T) {
 }
 
 func TestParseOptionsAfterScript(t *testing.T) {
-	cmd, err := Parse([]string{"gohere", "dev:web", "--target", "5173", "--port-flag", "--listen", "--verbose"})
+	cmd, err := Parse([]string{"gohere", "dev:web", ":5173", "--port-flag", "--listen", "--verbose"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -589,7 +589,7 @@ func TestParseRejectsUnknownFlag(t *testing.T) {
 }
 
 func TestParseRawCommandPreservesTrailingFlags(t *testing.T) {
-	cmd, err := Parse([]string{"gohere", "--target", "5173", "--", "npm", "run", "dev", "--", "--host", "0.0.0.0"})
+	cmd, err := Parse([]string{"gohere", ":5173", "--", "npm", "run", "dev", "--", "--host", "0.0.0.0"})
 	if err != nil {
 		t.Fatal(err)
 	}

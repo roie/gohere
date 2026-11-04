@@ -119,7 +119,13 @@ gohere --as api
 Route to a known target port:
 
 ```bash
-gohere --target 5173 -- npm run dev
+gohere :5173 -- npm run dev
+```
+
+Connect to an existing server:
+
+```bash
+gohere +5173
 ```
 
 Use `--http` when a route must stay on HTTP. It makes HTTP the advertised and canonical scheme for that route and disables automatic HTTP upgrading; the shared HTTPS listener remains available.

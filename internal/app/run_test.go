@@ -281,7 +281,7 @@ func TestPrepareRawCommandRequiresTargetWhenNoPortDetected(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !plan.RequireDetectedPort {
-		t.Fatalf("raw plan should require detected port without --target: %#v", plan)
+		t.Fatalf("raw plan should require detected port without :PORT: %#v", plan)
 	}
 }
 
@@ -3806,7 +3806,7 @@ func TestRunReplaysChildOutputOnStartupFailure(t *testing.T) {
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
 		cfg.Stdout.Write([]byte("starting dev server\n"))
 		cfg.Stderr.Write([]byte("Error: config is invalid\n"))
-		return nil, errors.New("started dev script, but could not detect a local URL; try: gohere --target 5173")
+		return nil, errors.New("started dev script, but could not detect a local URL; try: gohere :5173")
 	}
 
 	dir := tempProject(t, map[string]string{
@@ -3820,7 +3820,7 @@ func TestRunReplaysChildOutputOnStartupFailure(t *testing.T) {
 	if !strings.Contains(stderr.String(), "starting dev server") || !strings.Contains(stderr.String(), "Error: config is invalid") {
 		t.Fatalf("startup failure should replay child output, stderr=%q", stderr.String())
 	}
-	wantErr := "gohere error: started \"dev\", but no local URL was detected.\nTry:\n  gohere --target 5173 dev"
+	wantErr := "gohere error: started \"dev\", but no local URL was detected.\nTry:\n  gohere :5173 dev"
 	if err.Error() != wantErr {
 		t.Fatalf("error = %q, want %q", err.Error(), wantErr)
 	}
@@ -3881,7 +3881,7 @@ func TestRunFormatsNoURLTimeoutWithScriptName(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected startup error")
 	}
-	want := "gohere error: started \"worker\", but no local URL was detected.\nTry:\n  gohere --target 5173 worker"
+	want := "gohere error: started \"worker\", but no local URL was detected.\nTry:\n  gohere :5173 worker"
 	if err.Error() != want {
 		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}

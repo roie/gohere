@@ -174,6 +174,18 @@ func prepareRunWithHost(cmd cli.Command, cwd, childHost string) (RunPlan, error)
 		}
 	}
 
+	if cmd.Connect {
+		host, err := project.HostnameForProject(cwd)
+		if err != nil {
+			return RunPlan{}, err
+		}
+		return applyRunOptions(cmd, RunPlan{
+			Port: port, Host: host, Name: strings.TrimSuffix(host, ".localhost"),
+			CWD: cwd, ProjectRoot: cwd, ProjectName: project.NormalizeHostnameName(filepath.Base(cwd)),
+			Mode: "connect",
+		})
+	}
+
 	env := runner.ChildEnvForHost(childBaseEnv(), port, childHost)
 	if cmd.Kind == cli.CommandRaw {
 		host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
@@ -344,6 +356,20 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 	plan, err = PrepareRun(cmd, cwd)
 	if err != nil {
 		return err
+	}
+
+	if cmd.Connect {
+		if err := ensureRunRouter(); err != nil {
+			return err
+		}
+		applyPublicURLScheme(&plan, cmd)
+		cleanup, err := registerRoute(ctx, adminClient, cmd, plan, plan.Port, 0, stdout, stderr)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		<-ctx.Done()
+		return nil
 	}
 
 	if classifyRunIntent(cmd, plan) == runIntentPlanned {
@@ -1628,7 +1654,7 @@ func formatRunError(cmd cli.Command, err error) error {
 	}
 	if errors.Is(err, runner.ErrNoLocalURL) || strings.Contains(err.Error(), "could not detect a local URL") {
 		name := runName(cmd)
-		return fmt.Errorf("gohere error: started %q, but no local URL was detected.\nTry:\n  gohere --target 5173 %s", name, name)
+		return fmt.Errorf("gohere error: started %q, but no local URL was detected.\nTry:\n  gohere :5173 %s", name, name)
 	}
 	return fmt.Errorf("gohere error: %w", err)
 }

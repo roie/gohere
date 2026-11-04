@@ -88,7 +88,7 @@ func runPlannedGroup(ctx context.Context, cmdVerbose bool, items []multiRunItem,
 			}
 		}
 		if !reused && !plan.ManagedPort && !plan.FixedPort {
-			return fmt.Errorf("gohere error: %s does not expose a controllable port; use --target or --port-flag", serviceDiscoverySource(items[i]))
+			return fmt.Errorf("gohere error: %s does not expose a controllable port; run it separately with :PORT or use --port-flag", serviceDiscoverySource(items[i]))
 		}
 		request.Routes = append(request.Routes, candidate)
 	}

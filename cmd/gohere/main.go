@@ -166,18 +166,22 @@ func printUsage(out io.Writer, topic string) {
 		fmt.Fprintf(out, "Usage:\n  gohere %s\n\n", topic)
 	}
 	fmt.Fprint(out, `Usage:
-  gohere [script|file] [script ...] [--as NAME] [--share=lan] [--open] [--live] [--verbose] [--target PORT] [--port-flag FLAG]
-  gohere --target PORT -- command [args...]
+  gohere [script|file] [script ...] [--as NAME] [--share=lan] [--open] [--live] [--verbose] [--port-flag FLAG]
+  gohere :PORT [script|file]
+  gohere +PORT [--as NAME] [--open] [--verbose]
+  gohere [:PORT] -- command [args...]
   gohere list [--verbose|--json]
   gohere stop|prune|doctor|service stop|setup|uninstall
 
 Examples:
   gohere
+  gohere :5173
+  gohere +5173
   gohere --open
   gohere dev:web
   gohere dev:web dev:api
   gohere pages/about.html
-  gohere --target 5173 -- npm run dev
+  gohere :5173 -- npm run dev
 
 Flags:
   --open, -o        open the URL in your browser
@@ -185,7 +189,6 @@ Flags:
   --as NAME         use NAME.localhost for this run
   --share=lan       share this route on the local network
   --verbose         show target, command, and service details
-  --target PORT     use an existing local port
   --port-flag FLAG  override the dev server port flag
 `)
 }

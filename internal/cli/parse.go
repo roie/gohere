@@ -38,6 +38,7 @@ type Command struct {
 	HTTP           bool
 	As             string
 	TargetPort     int
+	Connect        bool
 	PortFlag       string
 	URLScheme      string
 	ShareMode      string
@@ -62,8 +63,15 @@ func Parse(args []string) (Command, error) {
 			return Command{}, pathTargetCombinationError()
 		}
 
+		if cmd.Connect && !strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "+") && !strings.HasPrefix(arg, ":") {
+			return Command{}, parseError("+PORT cannot be combined with a command")
+		}
+
 		switch arg {
 		case "--":
+			if cmd.Connect {
+				return Command{}, parseError("+PORT cannot be combined with a command")
+			}
 			if cmd.TargetPath != "" {
 				return Command{}, pathTargetCombinationError()
 			}
@@ -89,16 +97,6 @@ func Parse(args []string) (Command, error) {
 				return Command{}, parseError("--as requires a name")
 			}
 			cmd.As = rest[0]
-			rest = rest[1:]
-		case "--target":
-			if len(rest) == 0 {
-				return Command{}, parseError("--target requires a port")
-			}
-			port, err := strconv.Atoi(rest[0])
-			if err != nil || port <= 0 || port > 65535 {
-				return Command{}, parseError("--target must be a valid port")
-			}
-			cmd.TargetPort = port
 			rest = rest[1:]
 		case "--port-flag":
 			if len(rest) == 0 || isReservedValueFlag(rest[0]) {
@@ -185,6 +183,18 @@ func Parse(args []string) (Command, error) {
 			}
 			return fixedCommand(CommandUninstall, arg, rest)
 		default:
+			if strings.HasPrefix(arg, ":") || strings.HasPrefix(arg, "+") {
+				port, err := strconv.Atoi(arg[1:])
+				if err != nil || port <= 0 || port > 65535 || strings.ContainsAny(arg[1:], "+-") {
+					return Command{}, parseError(":PORT and +PORT require a valid port (1-65535)")
+				}
+				if cmd.TargetPort != 0 {
+					return Command{}, parseError("specify only one port")
+				}
+				cmd.TargetPort = port
+				cmd.Connect = arg[0] == '+'
+				continue
+			}
 			if strings.HasPrefix(arg, "--share=") {
 				mode := strings.TrimPrefix(arg, "--share=")
 				if mode == "" {
@@ -225,6 +235,9 @@ func Parse(args []string) (Command, error) {
 }
 
 func validateMultiRun(cmd Command) error {
+	if cmd.Connect && (cmd.TargetPath != "" || len(cmd.Scripts) > 0 || cmd.Live || cmd.PortFlag != "") {
+		return parseError("+PORT cannot be combined with scripts, paths, --live, or --port-flag")
+	}
 	if cmd.TargetPath != "" && len(cmd.Scripts) > 0 {
 		return pathTargetCombinationError()
 	}
@@ -235,7 +248,7 @@ func validateMultiRun(cmd Command) error {
 		return parseError("--as can only be used with one project")
 	}
 	if cmd.TargetPort != 0 {
-		return parseError("--target can only be used with one project")
+		return parseError(":PORT can only be used with one project")
 	}
 	if cmd.ShareMode != "" {
 		return parseError("--share=lan can only be used with one project")
@@ -367,7 +380,7 @@ func openRequested(args []string) bool {
 
 func isReservedValueFlag(arg string) bool {
 	switch arg {
-	case "--verbose", "--open", "-o", "--live", "--http", "--as", "--target", "--port-flag", "--help", "-h", "--version", "-v":
+	case "--verbose", "--open", "-o", "--live", "--http", "--as", "--port-flag", "--help", "-h", "--version", "-v":
 		return true
 	default:
 		return false

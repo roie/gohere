@@ -12,7 +12,8 @@ func FuzzParse(f *testing.F) {
 		"list --verbose",
 		"stop --all",
 		"dev:web dev:api --open",
-		"--target 5173 -- npm run dev",
+		":5173 -- npm run dev",
+		"+5173",
 		"./dist --live",
 		"service stop",
 	} {
