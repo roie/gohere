@@ -59,6 +59,8 @@ Run a named package script:
 gohere dev:web
 ```
 
+For package scripts, gohere sets the port automatically for Vite, SvelteKit, Astro, Vite+, Next.js, Nuxt, and Wrangler. It also supports Angular CLI (`ng serve`), webpack-dev-server, Parcel, Vue CLI, Rsbuild, and Rspack.
+
 Run multiple server scripts:
 
 ```bash

@@ -103,6 +103,36 @@ func TestPrepareScriptRun(t *testing.T) {
 	assertEnv(t, plan.Env, "HOST", "127.0.0.1")
 }
 
+func TestPrepareRunAdditionalAdapters(t *testing.T) {
+	for _, command := range []string{"ng serve", "webpack serve", "webpack-dev-server", "parcel src/index.html", "vue-cli-service serve", "rsbuild dev", "rspack dev"} {
+		for _, targetPort := range []int{0, 5173} {
+			t.Run(fmt.Sprintf("%s/port=%d", command, targetPort), func(t *testing.T) {
+				dir := tempProject(t, map[string]string{
+					"package.json": `{"scripts":{"dev":"` + command + `"}}`,
+				})
+				plan, err := PrepareRun(cli.Command{Kind: cli.CommandRun, Script: "dev", TargetPort: targetPort}, dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if plan.Port == 0 || (targetPort != 0 && plan.Port != targetPort) {
+					t.Fatalf("port = %d, requested %d", plan.Port, targetPort)
+				}
+				want := []string{"npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", itoa(plan.Port)}
+				if command == "rsbuild dev" {
+					want = append(want, "--strict-port")
+				}
+				if !sameStrings(plan.Command, want) {
+					t.Fatalf("command = %#v, want %#v", plan.Command, want)
+				}
+				if !plan.ManagedPort || plan.FixedPort != (targetPort != 0) {
+					t.Fatalf("ManagedPort = %v, FixedPort = %v", plan.ManagedPort, plan.FixedPort)
+				}
+				assertEnv(t, plan.Env, "PORT", itoa(plan.Port))
+			})
+		}
+	}
+}
+
 func TestDefaultAdminClientDoesNotCreateMissingToken(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

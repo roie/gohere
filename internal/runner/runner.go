@@ -227,7 +227,9 @@ func InjectPortArgsForHost(command string, port int, portFlag string, host strin
 		return []string{"--", "--host", host, "--port", portValue, "--strictPort"}
 	case tool == "next":
 		return []string{"--", "-p", portValue}
-	case tool == "nuxt":
+	case tool == "rsbuild" && supportsExplicitHostArg(tool, command):
+		return []string{"--", "--host", host, "--port", portValue, "--strict-port"}
+	case supportsExplicitHostArg(tool, command):
 		return []string{"--", "--host", host, "--port", portValue}
 	case tool == "wrangler":
 		return []string{"--", "--port", portValue}
@@ -237,7 +239,30 @@ func InjectPortArgsForHost(command string, port int, portFlag string, host strin
 }
 
 func supportsExplicitHostArg(tool, command string) bool {
-	return isViteLikeTool(tool, command) || tool == "nuxt"
+	if isViteLikeTool(tool, command) || tool == "nuxt" {
+		return true
+	}
+	words := commandWords(command)
+	subcommand := ""
+	if len(words) > 1 {
+		subcommand = words[1]
+	}
+	switch tool {
+	case "ng", "vue-cli-service":
+		return subcommand == "serve"
+	case "webpack", "webpack-cli":
+		return subcommand == "serve"
+	case "webpack-dev-server":
+		return true
+	case "rspack":
+		return subcommand == "dev" || subcommand == "serve" || subcommand == "s" || subcommand == "preview"
+	case "rsbuild":
+		return subcommand == "" || strings.HasPrefix(subcommand, "-") || subcommand == "dev" || subcommand == "preview"
+	case "parcel":
+		return subcommand != "build" && subcommand != "watch" && subcommand != "help"
+	default:
+		return false
+	}
 }
 
 func isViteLikeTool(tool, command string) bool {
@@ -448,22 +473,27 @@ func DetectPortFromOutput(line string) (int, bool) {
 }
 
 func firstCommandWord(command string) string {
+	if words := commandWords(command); len(words) > 0 {
+		return words[0]
+	}
+	return ""
+}
+
+func commandWords(command string) []string {
 	fields := strings.Fields(command)
 	for len(fields) > 0 {
 		word := fields[0]
-		fields = fields[1:]
-		if word == "env" {
+		if word == "env" || isEnvAssignment(word) {
+			fields = fields[1:]
 			continue
 		}
-		if isEnvAssignment(word) {
-			continue
+		if _, base, ok := strings.CutLast(word, "/"); ok {
+			word = base
 		}
-		if slash := strings.LastIndex(word, "/"); slash >= 0 {
-			word = word[slash+1:]
-		}
-		return strings.ToLower(word)
+		fields[0] = strings.ToLower(word)
+		return fields
 	}
-	return ""
+	return nil
 }
 
 func isEnvAssignment(word string) bool {

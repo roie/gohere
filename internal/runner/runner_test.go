@@ -136,6 +136,30 @@ func TestInjectPortArgs(t *testing.T) {
 		{"next", "next dev", "", []string{"--", "-p", "49231"}},
 		{"nuxt", "nuxt dev", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
 		{"wrangler", "wrangler dev", "", []string{"--", "--port", "49231"}},
+		{"angular", "ng serve", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
+		{"webpack", "webpack serve", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
+		{"webpack cli", "webpack-cli serve", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
+		{"webpack dev server", "webpack-dev-server", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
+		{"parcel", "parcel src/index.html", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
+		{"parcel serve", "parcel serve src/index.html", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
+		{"vue cli", "vue-cli-service serve", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
+		{"rsbuild", "rsbuild", "", []string{"--", "--host", "127.0.0.1", "--port", "49231", "--strict-port"}},
+		{"rsbuild options", "rsbuild --config rsbuild.dev.ts", "", []string{"--", "--host", "127.0.0.1", "--port", "49231", "--strict-port"}},
+		{"rsbuild dev", "rsbuild dev", "", []string{"--", "--host", "127.0.0.1", "--port", "49231", "--strict-port"}},
+		{"rsbuild preview", "rsbuild preview", "", []string{"--", "--host", "127.0.0.1", "--port", "49231", "--strict-port"}},
+		{"rspack", "rspack dev", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
+		{"rspack serve", "rspack serve", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
+		{"rspack alias", "rspack s", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
+		{"rspack preview", "rspack preview", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
+		{"env and binary path", "env NODE_ENV=development ./node_modules/.bin/ng serve", "", []string{"--", "--host", "127.0.0.1", "--port", "49231"}},
+		{"angular build", "ng build", "", nil},
+		{"webpack build", "webpack --mode production", "", nil},
+		{"parcel build", "parcel build src/index.html", "", nil},
+		{"parcel watch", "parcel watch src/index.html", "", nil},
+		{"vue build", "vue-cli-service build", "", nil},
+		{"rsbuild build", "rsbuild build", "", nil},
+		{"rsbuild inspect", "rsbuild inspect", "", nil},
+		{"rspack build", "rspack build", "", nil},
 		{"explicit flag wins", "vite --port 3000", "", nil},
 		{"escape hatch", "custom dev", "--listen", []string{"--", "--listen", "49231"}},
 	}
@@ -160,6 +184,24 @@ func TestInjectPortArgsForHostAddsHostWhenOnlyPortIsExplicit(t *testing.T) {
 	got = InjectPortArgsForHost("vite --port 3000 --host 127.0.0.1", 49231, "", "0.0.0.0")
 	if got != nil {
 		t.Fatalf("explicit host should still win, got %#v", got)
+	}
+}
+
+func TestAdditionalAdaptersRespectExplicitFlags(t *testing.T) {
+	for _, command := range []string{"ng serve", "webpack serve", "webpack-dev-server", "parcel src/index.html", "vue-cli-service serve", "rsbuild dev", "rspack dev"} {
+		t.Run(command, func(t *testing.T) {
+			if got := InjectPortArgs(command+" --port 3000", 49231, ""); got != nil {
+				t.Fatalf("explicit port should win, got %#v", got)
+			}
+			if got := InjectPortArgs(command+" --host localhost", 49231, ""); got != nil {
+				t.Fatalf("explicit host should win, got %#v", got)
+			}
+			got := InjectPortArgsForHost(command+" --port 3000", 49231, "", "0.0.0.0")
+			want := []string{"--", "--host", "0.0.0.0"}
+			if !sameStrings(got, want) {
+				t.Fatalf("custom host with explicit port = %#v, want %#v", got, want)
+			}
+		})
 	}
 }
 
