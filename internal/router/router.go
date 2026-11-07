@@ -37,6 +37,8 @@ const RouterInstanceFilename = "router.instance"
 const RouterIdentityPath = "/.well-known/gohere/router"
 const gohereRouteHeader = "X-Gohere-Route"
 const proxyResponseHeaderTimeout = 30 * time.Second
+const maxUpstreamConnections = 64
+const maxProxyRequests = 1024
 const routeStoreLockTimeout = 10 * time.Second
 const tokenLockTimeout = 10 * time.Second
 const stateLockPoll = 10 * time.Millisecond
@@ -168,6 +170,7 @@ type Server struct {
 	lanManager              *LANManager
 	currentLANCAFingerprint func() (string, error)
 	proxyTransport          *http.Transport
+	proxyRequests           chan struct{}
 }
 
 func NewServer(cfg Config) *Server {
@@ -175,20 +178,22 @@ func NewServer(cfg Config) *Server {
 		token: cfg.Token, instanceID: cfg.InstanceID, store: cfg.Store, shutdown: cfg.Shutdown,
 		lanRoutes: make(map[string]lanRouteBinding), lanTrustSessions: make(map[string]LANTrustSession),
 		lanTrustAttempts: make(map[string]lanTrustAttempt), proxyTransport: newProxyTransport(),
+		proxyRequests: make(chan struct{}, maxProxyRequests),
 	}
 }
 
 func newProxyTransport() *http.Transport {
-	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
-		clone := transport.Clone()
-		clone.Proxy = nil
-		clone.ResponseHeaderTimeout = proxyResponseHeaderTimeout
-		return clone
+	transport := &http.Transport{}
+	if defaults, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = defaults.Clone()
 	}
-	return &http.Transport{
-		Proxy:                 nil,
-		ResponseHeaderTimeout: proxyResponseHeaderTimeout,
-	}
+	transport.Proxy = nil
+	transport.ResponseHeaderTimeout = proxyResponseHeaderTimeout
+	transport.MaxConnsPerHost = maxUpstreamConnections
+	transport.MaxIdleConnsPerHost = maxUpstreamConnections
+	transport.MaxIdleConns = 256
+	transport.IdleConnTimeout = 90 * time.Second
+	return transport
 }
 
 func EnsureToken(stateDir string) (string, error) {
@@ -618,6 +623,14 @@ func (s *Server) HTTPHandler() http.Handler {
 				Host:    route.Host,
 				Target:  route.Target,
 			})
+			return
+		}
+		// Bound admitted work as well as sockets; Transport queues honor request cancellation.
+		select {
+		case s.proxyRequests <- struct{}{}:
+			defer func() { <-s.proxyRequests }()
+		default:
+			http.Error(w, "gohere proxy is busy; retry shortly", http.StatusServiceUnavailable)
 			return
 		}
 		proxy := httputil.NewSingleHostReverseProxy(target)
