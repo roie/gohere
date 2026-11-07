@@ -41,7 +41,8 @@ func TestRunConnectDoesNotStartServer(t *testing.T) {
 		return nil, runner.ErrProcessFinished
 	}
 
-	dir := t.TempDir()
+	// The .git directory stops the package.json search at the test folder.
+	dir := tempProject(t, map[string]string{".git/HEAD": ""})
 	cmd, err := cli.Parse([]string{"gohere", "+5173"})
 	if err != nil {
 		t.Fatal(err)
