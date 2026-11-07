@@ -198,6 +198,8 @@ func plannedReusableRoute(ctx context.Context, client adminClient, plan RunPlan)
 	return route, true, nil
 }
 
+var errTargetUnreachable = errors.New("router cannot reach target")
+
 func verifyPlannedTarget(ctx context.Context, client adminClient, target string, retry bool) error {
 	probeClient, ok := client.(bridgeProbeClient)
 	if !ok {
@@ -209,7 +211,7 @@ func verifyPlannedTarget(ctx context.Context, client adminClient, target string,
 			return err
 		}
 		if !reachable {
-			return fmt.Errorf("router cannot reach target %s", target)
+			return fmt.Errorf("%w %s", errTargetUnreachable, target)
 		}
 		return nil
 	}
@@ -218,7 +220,7 @@ func verifyPlannedTarget(ctx context.Context, client adminClient, target string,
 		return err
 	}
 	if !reachable {
-		return fmt.Errorf("router cannot reach target %s", target)
+		return fmt.Errorf("%w %s", errTargetUnreachable, target)
 	}
 	return nil
 }

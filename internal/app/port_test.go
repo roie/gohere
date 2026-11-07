@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/roie/gohere/internal/cli"
 	"github.com/roie/gohere/internal/runner"
@@ -77,7 +78,57 @@ func TestRunConnectRejectsUnreachableTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = Run(t.Context(), cmd, t.TempDir(), io.Discard, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "cannot reach target") {
+	if err == nil || !strings.Contains(err.Error(), "no server is reachable on port 5173") || strings.Contains(err.Error(), "0.0.0.0") {
+		t.Fatalf("error = %v", err)
+	}
+	if client.activateCalls != 0 || len(client.routes) != 0 {
+		t.Fatalf("unreachable target left a route: %#v", client.routes)
+	}
+}
+
+func TestRunConnectFromWSLRoutesThroughWindows(t *testing.T) {
+	client := &recordingAdminClient{}
+	t.Cleanup(stubBridgeDetection(t, bridgeStub{
+		isWSL: true, token: "windows-token", wslIP: "172.20.10.2", reachable: true,
+		windowsBinary: true, admin: client, localAdmin: fakeAdminClient{},
+	}))
+	cmd, err := cli.Parse([]string{"gohere", "+5173"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, cmd, t.TempDir(), io.Discard, io.Discard) }()
+	client.waitForUpsert(t)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if client.route.Target != "http://127.0.0.1:5173" || client.route.OwnerEnv != "wsl" || client.route.Mode != "connect" || client.route.PID != 0 {
+		t.Fatalf("route = %#v", client.route)
+	}
+	if client.deleteRefCalls != 1 || len(client.routes) != 0 {
+		t.Fatalf("route was not cleaned up: deletes=%d routes=%#v", client.deleteRefCalls, client.routes)
+	}
+}
+
+func TestRunConnectFromWSLExplainsLoopbackOnlyServer(t *testing.T) {
+	oldTimeout, oldInterval := wslTargetProbeTimeout, wslTargetProbeInterval
+	wslTargetProbeTimeout, wslTargetProbeInterval = 10*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { wslTargetProbeTimeout, wslTargetProbeInterval = oldTimeout, oldInterval })
+	client := &recordingAdminClient{probeReachable: map[string]bool{}}
+	t.Cleanup(stubBridgeDetection(t, bridgeStub{
+		isWSL: true, token: "windows-token", wslIP: "172.20.10.2", windowsBinary: true,
+		probeReachable: map[string]bool{"172.20.10.2": true},
+		admin:          client, localAdmin: fakeAdminClient{},
+	}))
+	cmd, err := cli.Parse([]string{"gohere", "+5173"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = Run(t.Context(), cmd, t.TempDir(), io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "no server is reachable on port 5173") || !strings.Contains(err.Error(), "172.20.10.2") || !strings.Contains(err.Error(), "0.0.0.0") {
 		t.Fatalf("error = %v", err)
 	}
 	if client.activateCalls != 0 || len(client.routes) != 0 {

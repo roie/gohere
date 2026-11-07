@@ -364,6 +364,9 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		}
 		applyPublicURLScheme(&plan, cmd)
 		cleanup, err := registerRoute(ctx, adminClient, cmd, plan, plan.Port, 0, stdout, stderr)
+		if errors.Is(err, errTargetUnreachable) {
+			return connectUnreachableError(plan)
+		}
 		if err != nil {
 			return err
 		}
@@ -1643,6 +1646,14 @@ func missingScriptError(script string, available []string) error {
 
 func liveStaticOnlyError() error {
 	return errors.New("gohere error: --live is only supported for static files and folders.")
+}
+
+func connectUnreachableError(plan RunPlan) error {
+	message := fmt.Sprintf("gohere error: no server is reachable on port %d.\nStart your server first, then run:\n  gohere +%d", plan.Port, plan.Port)
+	if plan.OwnerEnv == "wsl" && plan.RouteTargetHost != "127.0.0.1" && !strings.EqualFold(plan.RouteTargetHost, "localhost") {
+		message += fmt.Sprintf("\n\nWindows reaches WSL at %s, so the server must listen on all interfaces (for example, --host 0.0.0.0).", plan.RouteTargetHost)
+	}
+	return errors.New(message)
 }
 
 func formatRunError(cmd cli.Command, err error) error {
