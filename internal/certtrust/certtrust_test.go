@@ -12,8 +12,10 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -257,13 +259,27 @@ func TestTrustCADarwinCommand(t *testing.T) {
 }
 
 func TestTrustCAWindowsCommand(t *testing.T) {
-	runner := &recordingRunner{}
-
-	if err := TrustCA(context.Background(), "windows", runner, `C:\Temp\ca.pem`); err != nil {
-		t.Fatal(err)
+	for _, installed := range []bool{false, true} {
+		t.Run(fmt.Sprint(installed), func(t *testing.T) {
+			certificate, _, fingerprint := testCertificate(t)
+			caPath := filepath.Join(t.TempDir(), "ca.pem")
+			if err := os.WriteFile(caPath, []byte(certificate), 0600); err != nil {
+				t.Fatal(err)
+			}
+			runner := &recordingRunner{}
+			if !installed {
+				runner.fail = map[string]error{"-user": errors.New("certificate not found")}
+			}
+			if err := TrustCA(t.Context(), "windows", runner, caPath); err != nil {
+				t.Fatal(err)
+			}
+			commands := [][]string{{"certutil", "-user", "-store", "Root", fingerprint}}
+			if !installed {
+				commands = append(commands, []string{"certutil", "-f", "-user", "-addstore", "Root", caPath})
+			}
+			runner.want(t, commands...)
+		})
 	}
-
-	runner.want(t, []string{"certutil", "-f", "-user", "-addstore", "Root", `C:\Temp\ca.pem`})
 }
 
 func TestUntrustCADarwinUsesFingerprint(t *testing.T) {

@@ -222,6 +222,22 @@ func TrustCA(ctx context.Context, goos string, runner CommandRunner, caPath stri
 	case "darwin":
 		return runner.Run(ctx, "sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", "/Library/Keychains/System.keychain", caPath)
 	case "windows":
+		data, err := os.ReadFile(caPath)
+		if err != nil {
+			return err
+		}
+		block, _ := pem.Decode(data)
+		if block == nil || block.Type != "CERTIFICATE" {
+			return fmt.Errorf("%s is not a PEM certificate", caPath)
+		}
+		// certutil identifies certificates by their Windows SHA-1 thumbprint.
+		fingerprint := sha1.Sum(block.Bytes)
+		if err := runner.Run(ctx, "certutil", "-user", "-store", "Root", hex.EncodeToString(fingerprint[:])); err == nil {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return runner.Run(ctx, "certutil", "-f", "-user", "-addstore", "Root", caPath)
 	default:
 		return fmt.Errorf("gohere HTTPS setup is not supported on %s yet", goos)
