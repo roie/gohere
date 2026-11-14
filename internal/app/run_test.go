@@ -2401,10 +2401,22 @@ func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
 		commandsMu.Lock()
 		commands = append(commands, strings.Join(cfg.Command, " "))
 		commandsMu.Unlock()
+		if cfg.Command[len(cfg.Command)-1] != "--no-open" {
+			return nil, fmt.Errorf("framework browser launch was not disabled: %q", cfg.Command)
+		}
 		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
 	var opened []string
 	openBrowserFunc = func(ctx context.Context, url string) error {
+		routes, err := admin.Routes(ctx)
+		if err != nil || len(routes) != 2 {
+			t.Fatalf("routes at browser launch = %#v, err = %v", routes, err)
+		}
+		for _, route := range routes {
+			if route.EffectiveState() != router.RouteStateActive {
+				t.Fatal("browser opened before all routes were active")
+			}
+		}
 		opened = append(opened, url)
 		return nil
 	}
@@ -3699,21 +3711,29 @@ func TestRunOpenLaunchesBrowserAfterRouteRegistration(t *testing.T) {
 	startRunnerFunc = func(ctx context.Context, cfg runner.Config) (*runner.Result, error) {
 		return &runner.Result{Port: cfg.ChosenPort}, nil
 	}
+	dir := tempProject(t, map[string]string{
+		"package.json": `{"scripts":{"dev":"vite --open"}}`,
+	})
+	desiredHost := filepath.Base(dir) + ".localhost"
+	admin := &recordingAdminClient{routes: []router.Route{{Host: desiredHost, Target: "http://127.0.0.1:49999", CWD: "/other/project"}}}
+	defaultAdminClientFunc = func() (adminClient, error) { return admin, nil }
 	var opened string
 	openBrowserFunc = func(ctx context.Context, url string) error {
+		if admin.activateCalls != 1 || admin.route.EffectiveState() != router.RouteStateActive {
+			t.Fatal("browser opened before route activation")
+		}
+		if url != "http://"+admin.route.Host || admin.route.Host == desiredHost {
+			t.Fatalf("opened %q, want active collision-safe host %q", url, admin.route.Host)
+		}
 		opened = url
 		return nil
 	}
-
-	dir := tempProject(t, map[string]string{
-		"package.json": `{"scripts":{"dev":"vite"}}`,
-	})
 	var stdout, stderr strings.Builder
 	err := Run(context.Background(), cli.Command{Kind: cli.CommandRun, Script: "dev", Open: true}, dir, &stdout, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantURL := "http://" + filepath.Base(dir) + ".localhost"
+	wantURL := "http://" + admin.route.Host
 	if opened != wantURL {
 		t.Fatalf("opened = %q, want %q", opened, wantURL)
 	}

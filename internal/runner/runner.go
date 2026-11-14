@@ -238,6 +238,22 @@ func InjectPortArgsForHost(command string, port int, portFlag string, host strin
 	}
 }
 
+func InjectBrowserArgs(command string, args []string) []string {
+	tool := firstCommandWord(command)
+	supported := isViteLikeTool(tool, command)
+	switch tool {
+	case "webpack", "webpack-cli", "webpack-dev-server", "rspack", "rsbuild":
+		supported = supportsExplicitHostArg(tool, command)
+	}
+	if !supported {
+		return args
+	}
+	if len(args) == 0 {
+		args = []string{"--"}
+	}
+	return append(args, "--no-open")
+}
+
 func supportsExplicitHostArg(tool, command string) bool {
 	if isViteLikeTool(tool, command) || tool == "nuxt" {
 		return true

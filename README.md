@@ -144,6 +144,10 @@ Open the project URL in your browser:
 gohere --open
 ```
 
+With `--open`, gohere opens each final `.localhost` URL in the OS default browser after route registration. It disables competing browser launches with `--no-open` for recognized Vite, SvelteKit, Astro, Vite+, webpack-dev-server, Rspack, and Rsbuild commands. Without `--open`, framework browser behavior stays unchanged.
+
+Other frameworks and commands hidden behind wrappers are not coordinated. Custom scripts or plugins that launch a browser independently can still open extra tabs.
+
 ### Share on your local network
 
 Expose one project to devices on the same trusted Wi-Fi network:

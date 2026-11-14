@@ -188,9 +188,13 @@ func prepareRunWithHost(cmd cli.Command, cwd, childHost string) (RunPlan, error)
 
 	env := runner.ChildEnvForHost(childBaseEnv(), port, childHost)
 	if cmd.Kind == cli.CommandRaw {
+		command := append([]string(nil), cmd.Raw...)
+		if cmd.Open {
+			command = runner.InjectBrowserArgs(strings.Join(cmd.Raw, " "), command)
+		}
 		host := project.NormalizeHostnameName(filepath.Base(cwd)) + ".localhost"
 		return applyRunOptions(cmd, RunPlan{
-			Command:             append([]string(nil), cmd.Raw...),
+			Command:             command,
 			Env:                 env,
 			Port:                port,
 			Host:                host,
@@ -258,6 +262,9 @@ func prepareRunWithHost(cmd cli.Command, cwd, childHost string) (RunPlan, error)
 		return RunPlan{}, err
 	}
 	injected := runner.InjectPortArgsForHost(scriptCommand, port, cmd.PortFlag, childHost)
+	if cmd.Open {
+		injected = runner.InjectBrowserArgs(scriptCommand, injected)
+	}
 	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
 	managedPort := injectedArgsControlPort(injected, cmd.PortFlag)
 	host, err := project.HostnameForProject(cwd)
@@ -572,6 +579,9 @@ func prepareWorkspacePackageRun(cmd cli.Command, root string, pm project.Package
 		env = runner.ChildEnvForHost(childBaseEnv(), port, childHost)
 	}
 	injected := runner.InjectPortArgsForHost(workspacePackage.Script, port, cmd.PortFlag, childHost)
+	if cmd.Open {
+		injected = runner.InjectBrowserArgs(workspacePackage.Script, injected)
+	}
 	command := runner.BuildScriptCommand(pm, cmd.Script, injected)
 	managedPort := injectedArgsControlPort(injected, cmd.PortFlag)
 	host, err := project.HostnameForProject(workspacePackage.Dir)
