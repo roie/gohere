@@ -13,6 +13,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/url"
 	"os"
@@ -186,6 +187,17 @@ func newProxyTransport() *http.Transport {
 	transport := &http.Transport{}
 	if defaults, ok := http.DefaultTransport.(*http.Transport); ok {
 		transport = defaults.Clone()
+	}
+	dial := transport.DialContext
+	if dial == nil {
+		dial = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dial(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &uploadConn{Conn: conn}, nil
 	}
 	transport.Proxy = nil
 	transport.ResponseHeaderTimeout = proxyResponseHeaderTimeout
@@ -633,6 +645,16 @@ func (s *Server) HTTPHandler() http.Handler {
 			http.Error(w, "gohere proxy is busy; retry shortly", http.StatusServiceUnavailable)
 			return
 		}
+		var upload *proxyUpload
+		if r.ProtoMajor == 1 && r.Body != nil && r.Body != http.NoBody {
+			controller := http.NewResponseController(w)
+			if err := controller.EnableFullDuplex(); err == nil {
+				upload = &proxyUpload{ReadCloser: r.Body, controller: controller}
+				r.Body = upload
+				r = r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{GotConn: upload.gotConn}))
+				defer upload.detach()
+			}
+		}
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		director := proxy.Director
 		proxy.Director = nil
@@ -643,8 +665,16 @@ func (s *Server) HTTPHandler() http.Handler {
 			appendRouteHop(proxyRequest.Out, route.Host)
 		}
 		proxy.Transport = s.proxyTransport
-		proxy.ModifyResponse = rewriteLANResponse
+		proxy.ModifyResponse = func(response *http.Response) error {
+			if upload != nil && !upload.complete.Load() && response.StatusCode != http.StatusSwitchingProtocols {
+				response.Header.Set("Connection", "close")
+			}
+			return rewriteLANResponse(response)
+		}
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			if upload != nil && !upload.complete.Load() {
+				w.Header().Set("Connection", "close")
+			}
 			if isUpgradeRequest(r) {
 				http.Error(w, "gohere websocket upstream unavailable", http.StatusBadGateway)
 				return
