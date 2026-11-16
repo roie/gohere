@@ -87,10 +87,36 @@ func localStaticPath(urlPath string) (string, bool) {
 		return "index.html", true
 	}
 	cleanPath = strings.TrimPrefix(cleanPath, "/")
-	if cleanPath == "." || cleanPath == ".." || strings.HasPrefix(cleanPath, "../") {
+	if hasHiddenSegment(cleanPath) {
 		return "", false
 	}
 	return filepath.FromSlash(cleanPath), true
+}
+
+func hasHiddenSegment(slashPath string) bool {
+	for _, segment := range strings.Split(slashPath, "/") {
+		if strings.HasPrefix(segment, ".") && segment != ".well-known" {
+			return true
+		}
+	}
+	return false
+}
+
+func resolvesToVisiblePath(root, relative string, info os.FileInfo) bool {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Join(root, relative))
+	if err != nil {
+		return false
+	}
+	resolvedRelative, err := filepath.Rel(realRoot, resolved)
+	if err != nil || hasHiddenSegment(filepath.ToSlash(resolvedRelative)) {
+		return false
+	}
+	resolvedInfo, err := os.Stat(resolved)
+	return err == nil && os.SameFile(info, resolvedInfo)
 }
 
 func Start(ctx context.Context, dir string, port int) (*Server, error) {
@@ -177,7 +203,7 @@ func openStaticFile(root, relative string) (*os.File, os.FileInfo, string, error
 		}
 		name = "index.html"
 	}
-	if !info.Mode().IsRegular() {
+	if !info.Mode().IsRegular() || !resolvesToVisiblePath(root, relative, info) {
 		file.Close()
 		return nil, nil, "", fs.ErrNotExist
 	}

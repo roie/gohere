@@ -394,3 +394,106 @@ type nonTCPAddr string
 
 func (a nonTCPAddr) Network() string { return string(a) }
 func (a nonTCPAddr) String() string  { return string(a) }
+
+func TestHandlerDoesNotServeHiddenPaths(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"index.html":               "<h1>Home</h1>",
+		".env":                     "hidden-secret",
+		".git/config":              "hidden-secret",
+		"assets/.secret":           "hidden-secret",
+		".private/index.html":      "hidden-secret",
+		"nested/.cache/data.json":  "hidden-secret",
+		".well-known/security.txt": "contact: security@example.test",
+		"assets/app.min.js":        "console.log('ok')",
+	}
+	for name, body := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, live := range []bool{false, true} {
+		handler := HandlerWithConfig(Config{Dir: root, Live: live})
+		for _, target := range []string{"/.env", "/.git/config", "/assets/.secret", "/.private/", "/nested/.cache/data.json", "/%2eenv", "/assets/../.env"} {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "hidden-secret") {
+				t.Fatalf("live=%v %s response = %d %q", live, target, rec.Code, rec.Body.String())
+			}
+		}
+		for target, want := range map[string]string{
+			"/.well-known/security.txt": "contact: security@example.test",
+			"/assets/app.min.js":        "console.log('ok')",
+		} {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			if rec.Code != http.StatusOK || rec.Body.String() != want {
+				t.Fatalf("live=%v %s response = %d %q", live, target, rec.Code, rec.Body.String())
+			}
+		}
+	}
+}
+
+func TestHandlerDoesNotServeHiddenPathsThroughSymlinks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("hidden-secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".git", "config"), []byte("hidden-secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "gitdir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "gitdir", "config"), []byte("hidden-secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	links := map[string]string{
+		"config.txt": ".env",
+		"repo":       ".git",
+		".hidden":    "gitdir",
+	}
+	for link, target := range links {
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			if runtime.GOOS == "windows" {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			t.Fatal(err)
+		}
+	}
+
+	for _, live := range []bool{false, true} {
+		handler := HandlerWithConfig(Config{Dir: root, Live: live})
+		for _, target := range []string{"/config.txt", "/repo/config", "/.hidden/config"} {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "hidden-secret") {
+				t.Fatalf("live=%v %s response = %d %q", live, target, rec.Code, rec.Body.String())
+			}
+		}
+	}
+}
+
+func TestHandlerServesFilesWhenRootIsInsideHiddenDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".config", "site")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<h1>Home</h1>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(root).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "<h1>Home</h1>" {
+		t.Fatalf("index response = %d %q", rec.Code, rec.Body.String())
+	}
+}
