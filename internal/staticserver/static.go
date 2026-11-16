@@ -87,17 +87,21 @@ func localStaticPath(urlPath string) (string, bool) {
 		return "index.html", true
 	}
 	cleanPath = strings.TrimPrefix(cleanPath, "/")
-	if hasHiddenSegment(cleanPath) {
+	if blockedStaticPath(cleanPath) {
 		return "", false
 	}
 	return filepath.FromSlash(cleanPath), true
 }
 
-func hasHiddenSegment(slashPath string) bool {
+func blockedStaticPath(slashPath string) bool {
 	for _, segment := range strings.Split(slashPath, "/") {
 		if strings.HasPrefix(segment, ".") && segment != ".well-known" {
 			return true
 		}
+	}
+	switch strings.ToLower(path.Ext(slashPath)) {
+	case ".key", ".pem", ".p12", ".pfx":
+		return true
 	}
 	return false
 }
@@ -112,7 +116,7 @@ func resolvesToVisiblePath(root, relative string, info os.FileInfo) bool {
 		return false
 	}
 	resolvedRelative, err := filepath.Rel(realRoot, resolved)
-	if err != nil || hasHiddenSegment(filepath.ToSlash(resolvedRelative)) {
+	if err != nil || blockedStaticPath(filepath.ToSlash(resolvedRelative)) {
 		return false
 	}
 	resolvedInfo, err := os.Stat(resolved)

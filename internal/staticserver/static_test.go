@@ -497,3 +497,50 @@ func TestHandlerServesFilesWhenRootIsInsideHiddenDirectory(t *testing.T) {
 		t.Fatalf("index response = %d %q", rec.Code, rec.Body.String())
 	}
 }
+
+func TestHandlerDoesNotServePrivateKeyFiles(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"server.key":           "key-secret",
+		"cert.PEM":             "key-secret",
+		"client.p12":           "key-secret",
+		"bundle.pfx":           "key-secret",
+		"certs/nested/tls.key": "key-secret",
+		"keynote.html":         "<h1>Keynote</h1>",
+		"pem.txt":              "plain",
+		"public.crt":           "public-cert",
+	}
+	for name, body := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blocked := []string{"/server.key", "/cert.PEM", "/client.p12", "/bundle.pfx", "/certs/nested/tls.key"}
+	if err := os.Symlink("server.key", filepath.Join(root, "public.txt")); err == nil {
+		blocked = append(blocked, "/public.txt")
+	} else if runtime.GOOS != "windows" {
+		t.Fatal(err)
+	}
+
+	for _, live := range []bool{false, true} {
+		handler := HandlerWithConfig(Config{Dir: root, Live: live})
+		for _, target := range blocked {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "key-secret") {
+				t.Fatalf("live=%v %s response = %d %q", live, target, rec.Code, rec.Body.String())
+			}
+		}
+		for _, target := range []string{"/keynote.html", "/pem.txt", "/public.crt"} {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("live=%v %s response = %d %q", live, target, rec.Code, rec.Body.String())
+			}
+		}
+	}
+}
