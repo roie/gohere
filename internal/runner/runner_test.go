@@ -279,8 +279,8 @@ func TestLaunchSeparatesProcessStartFromReadiness(t *testing.T) {
 	if err := result.WaitReady(); err != nil {
 		t.Fatal(err)
 	}
-	if result.Port != 47654 {
-		t.Fatalf("ready port = %d, want 47654", result.Port)
+	if result.Port <= 0 {
+		t.Fatalf("ready port = %d, want a bound port", result.Port)
 	}
 }
 
@@ -300,13 +300,13 @@ func TestRunStreamsOutputAndDetectsPort(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if result.Port != 47654 {
-		t.Fatalf("detected port = %d, want 47654", result.Port)
+	if result.Port <= 0 {
+		t.Fatalf("detected port = %d, want a bound port", result.Port)
 	}
 	if err := result.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "http://127.0.0.1:47654") {
+	if !strings.Contains(stdout.String(), "http://127.0.0.1:"+strconv.Itoa(result.Port)) {
 		t.Fatalf("stdout was not streamed: %q", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "diagnostic line") {
@@ -318,14 +318,11 @@ func TestStartDoesNotDuplicateFullEnvironment(t *testing.T) {
 	t.Setenv("GOHERE_DUP_ENV", "parent")
 	env := ChildEnv(os.Environ(), 49231)
 	env = append(env, "GOHERE_HELPER_PROCESS=1")
-	server := &http.Server{Addr: "127.0.0.1:0"}
-	ln, err := net.Listen("tcp", server.Addr)
+	port, err := ChooseFreePort()
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	go server.Serve(ln)
-	defer server.Close()
+	env = append(env, "GOHERE_HELPER_LISTEN_PORT="+strconv.Itoa(port))
 	var stdout bytes.Buffer
 
 	result, err := Start(context.Background(), Config{
@@ -376,9 +373,10 @@ func TestStopTerminatesChildProcessTree(t *testing.T) {
 	}
 	dir := t.TempDir()
 	childPIDPath := filepath.Join(dir, "child.pid")
-	script := "sleep 30 & echo $! > " + childPIDPath + "; echo Local: http://127.0.0.1:47654; wait"
+	script := `sleep 30 & echo $! > "$1"; exec "$2" -test.run=TestHelperProcess -- print-port-sleep`
 	result, err := Start(context.Background(), Config{
-		Command:        []string{"sh", "-c", script},
+		Command:        []string{"sh", "-c", script, "sh", childPIDPath, os.Args[0]},
+		Env:            append(os.Environ(), "GOHERE_HELPER_PROCESS=1"),
 		Stdout:         &bytes.Buffer{},
 		Stderr:         &bytes.Buffer{},
 		StartupTimeout: 2 * time.Second,
@@ -411,17 +409,13 @@ func TestStopTerminatesChildProcessTree(t *testing.T) {
 }
 
 func TestRunFallsBackToChosenPortWhenReachable(t *testing.T) {
-	server := &http.Server{Addr: "127.0.0.1:0"}
-	ln, err := net.Listen("tcp", server.Addr)
+	port, err := ChooseFreePort()
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	go server.Serve(ln)
-	defer server.Close()
 
 	cfg := Config{
-		Command:        []string{os.Args[0], "-test.run=TestHelperProcess", "--", "sleep"},
+		Command:        []string{os.Args[0], "-test.run=TestHelperProcess", "--", "delayed-listen", strconv.Itoa(port), "0s"},
 		Env:            []string{"GOHERE_HELPER_PROCESS=1"},
 		ChosenPort:     port,
 		Stdout:         &bytes.Buffer{},
@@ -664,17 +658,18 @@ func TestHelperProcess(t *testing.T) {
 	switch args[1] {
 	case "print-port":
 		os.Stderr.WriteString("diagnostic line\n")
-		os.Stdout.WriteString("Local: http://127.0.0.1:47654\n")
+		serveRunnerHelper(true)
 	case "print-port-sleep":
-		os.Stdout.WriteString("Local: http://127.0.0.1:47654\n")
-		time.Sleep(2 * time.Second)
+		serveRunnerHelper(true)
 	case "print-cwd-port":
 		cwd, err := os.Getwd()
 		if err != nil {
 			os.Exit(2)
 		}
 		os.Stdout.WriteString(cwd + "\n")
-		os.Stdout.WriteString("Local: http://127.0.0.1:47654\n")
+		serveRunnerHelper(true)
+	case "advertise":
+		os.Stdout.WriteString("Local: http://127.0.0.1:" + args[2] + "\n")
 		time.Sleep(2 * time.Second)
 	case "sleep":
 		time.Sleep(2 * time.Second)
@@ -706,7 +701,7 @@ func TestHelperProcess(t *testing.T) {
 			}
 		}
 		os.Stdout.WriteString(strconv.Itoa(count) + "\n")
-		time.Sleep(2 * time.Second)
+		serveRunnerHelper(false)
 	case "finish-zero":
 		os.Stdout.WriteString("finished ok\n")
 	case "finish-one":
@@ -715,6 +710,23 @@ func TestHelperProcess(t *testing.T) {
 		os.Exit(2)
 	}
 	os.Exit(0)
+}
+
+func serveRunnerHelper(announce bool) {
+	port := os.Getenv("GOHERE_HELPER_LISTEN_PORT")
+	if port == "" {
+		port = "0"
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		os.Exit(2)
+	}
+	if announce {
+		os.Stdout.WriteString("Local: http://" + listener.Addr().String() + "\n")
+	}
+	server := &http.Server{}
+	time.AfterFunc(2*time.Second, func() { server.Close() })
+	server.Serve(listener)
 }
 
 func firstNonEmptyLine(text string) string {

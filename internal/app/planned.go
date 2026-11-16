@@ -125,7 +125,7 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 	plan.Env = resolveServiceEnvironment(plan.Env, service, []resolvedService{service})
 	liveStdout := newReplayWriter(32*1024, stdout)
 	liveStderr := newReplayWriter(32*1024, stderr)
-	result, err := startRunnerFunc(ctx, runner.Config{Command: plan.Command, Dir: runnerDirForRun(cmd, plan), Env: plan.Env, ChosenPort: plan.Port, RequireDetectedPort: false, Stdout: liveStdout, Stderr: liveStderr, StartupTimeout: 15 * time.Second})
+	result, err := startRunnerFunc(ctx, runner.Config{Command: plan.Command, Dir: runnerDirForRun(cmd, plan), Env: plan.Env, ChosenPort: plan.Port, ListenHost: plan.ListenHost, RequireDetectedPort: false, Stdout: liveStdout, Stderr: liveStderr, StartupTimeout: 15 * time.Second})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil

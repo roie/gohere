@@ -24,6 +24,7 @@ type Config struct {
 	Dir                 string
 	Env                 []string
 	ChosenPort          int
+	ListenHost          string
 	RequireDetectedPort bool
 	Stdout              io.Writer
 	Stderr              io.Writer
@@ -373,19 +374,26 @@ func Launch(ctx context.Context, cfg Config) (*Result, error) {
 	return result, nil
 }
 
-func (r *Result) WaitReady() error {
+func (r *Result) WaitReady() (err error) {
+	defer func() {
+		if err != nil {
+			select {
+			case <-r.done:
+			default:
+				r.Stop()
+			}
+		}
+	}()
 	cfg := r.config
 	timeout := cfg.StartupTimeout
 	select {
 	case port := <-r.detected:
-		r.Port = port
-		return nil
+		return r.confirmListener(port)
 	case <-r.done:
 		return r.startupError()
 	case <-time.After(timeout):
 		if !cfg.RequireDetectedPort && cfg.ChosenPort != 0 && PortReachable(cfg.ChosenPort) {
-			r.Port = cfg.ChosenPort
-			return nil
+			return r.confirmListener(cfg.ChosenPort)
 		}
 		if !cfg.RequireDetectedPort && cfg.ChosenPort != 0 {
 			reachabilityTimeout := cfg.ReachabilityTimeout
@@ -394,8 +402,7 @@ func (r *Result) WaitReady() error {
 			}
 			port, err := waitForChosenPort(r, r.detected, r.done, cfg.ChosenPort, reachabilityTimeout)
 			if err == nil {
-				r.Port = port
-				return nil
+				return r.confirmListener(port)
 			}
 			if !errors.Is(err, ErrNoLocalURL) {
 				return err

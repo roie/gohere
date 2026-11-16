@@ -160,7 +160,7 @@ func runPlannedGroup(ctx context.Context, cmdVerbose bool, items []multiRunItem,
 		}
 		plan := items[i].plan
 		launched, err := launchGroupRunnerFunc(ctx, runner.Config{
-			Command: plan.Command, Dir: plan.CWD, Env: plan.Env, ChosenPort: plan.Port,
+			Command: plan.Command, Dir: plan.CWD, Env: plan.Env, ChosenPort: plan.Port, ListenHost: plan.ListenHost,
 			Stdout: outputs[i].stdout, Stderr: outputs[i].stderr, StartupTimeout: 15 * time.Second,
 		})
 		if err != nil {

@@ -3,6 +3,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -12,7 +13,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func probeListenerPIDs(host string, port int) ([]int, error) {
+func listenerPIDs(ctx context.Context, host string, port int) ([]int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	query := windows.NewLazySystemDLL("iphlpapi.dll").NewProc("GetExtendedTcpTable")
 	family, stride, portOffset, pidOffset := uintptr(windows.AF_INET), 24, 8, 20
 	if net.ParseIP(host).To4() == nil {
@@ -36,14 +40,17 @@ func probeListenerPIDs(host string, port int) ([]int, error) {
 		if family == windows.AF_INET6 {
 			address = net.IP(row[:16])
 		}
-		if int(binary.BigEndian.Uint16(row[portOffset:])) == port && address.Equal(net.ParseIP(host)) {
+		if int(binary.BigEndian.Uint16(row[portOffset:])) == port && (address.Equal(net.ParseIP(host)) || address.IsUnspecified() || net.ParseIP(host).IsUnspecified()) {
 			pids = append(pids, int(binary.LittleEndian.Uint32(row[pidOffset:])))
 		}
 	}
 	return pids, nil
 }
 
-func probeProcessParents() (map[int]int, error) {
+func processParents(ctx context.Context) (map[int]int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return nil, err

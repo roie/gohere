@@ -3,8 +3,6 @@ package runner
 import (
 	"context"
 	"encoding/json/v2"
-	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -22,28 +20,35 @@ func TestListenerOwnershipProbe(t *testing.T) {
 	if os.Getenv("GOHERE_OWNERSHIP_TEST") != "1" {
 		t.Skip("set GOHERE_OWNERSHIP_TEST=1 to run native listener ownership probes")
 	}
-	for _, wrapper := range []string{"direct", "npm", "pnpm", "detached", "ipv6"} {
+	for _, wrapper := range []string{"direct", "npm", "pnpm", "detached", "ipv6", "wildcard", "dual"} {
 		t.Run(wrapper, func(t *testing.T) {
 			host := "127.0.0.1"
 			if wrapper == "ipv6" {
 				host = "::1"
 			}
-			root, ready := startOwnershipFixture(t, wrapper, host, 0, "intended")
+			bindHost := host
+			if wrapper == "wildcard" {
+				bindHost = "0.0.0.0"
+			}
+			if wrapper == "dual" {
+				bindHost = "::"
+			}
+			root, ready := startOwnershipFixture(t, wrapper, bindHost, 0, "intended")
 			if ready.Error != "" {
 				t.Fatalf("listener startup: %s", ready.Error)
 			}
-			owners, err := probeListenerPIDs(host, ready.Port)
+			owners, err := listenerPIDs(t.Context(), host, ready.Port)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !slices.Contains(owners, ready.PID) {
 				t.Fatalf("listener owners = %v, want fixture PID %d", owners, ready.PID)
 			}
-			owned, err := probeListenerOwnership(host, ready.Port, root)
+			owned, err := listenerOwned(t.Context(), host, ready.Port, root)
 			if err != nil || !owned {
 				t.Fatalf("owned = %v, error = %v", owned, err)
 			}
-			if wrapper != "direct" && wrapper != "ipv6" && root == ready.PID {
+			if (wrapper == "npm" || wrapper == "pnpm" || wrapper == "detached") && root == ready.PID {
 				t.Fatal("wrapper fixture did not produce a descendant listener")
 			}
 			t.Logf("host=%s root=%d listener=%d owners=%v owned=%v", host, root, ready.PID, owners, owned)
@@ -75,7 +80,7 @@ func TestListenerOwnershipProbe(t *testing.T) {
 		if err != nil || string(body) != "unrelated" {
 			t.Fatalf("reachable endpoint = %q, error = %v", body, err)
 		}
-		owned, err := probeListenerOwnership("127.0.0.1", port, root)
+		owned, err := listenerOwned(t.Context(), "127.0.0.1", port, root)
 		if err != nil || owned {
 			t.Fatalf("foreign listener owned = %v, error = %v", owned, err)
 		}
@@ -83,40 +88,11 @@ func TestListenerOwnershipProbe(t *testing.T) {
 	})
 
 	t.Run("missing", func(t *testing.T) {
-		owned, err := probeListenerOwnership("127.0.0.1", 0, os.Getpid())
+		owned, err := listenerOwned(t.Context(), "127.0.0.1", 0, os.Getpid())
 		if owned || err == nil {
 			t.Fatalf("missing listener owned = %v, error = %v; want unknown", owned, err)
 		}
 	})
-}
-
-func probeListenerOwnership(host string, port, root int) (bool, error) {
-	owners, err := probeListenerPIDs(host, port)
-	if err != nil {
-		return false, err
-	}
-	if len(owners) == 0 {
-		return false, errors.New("no listener owner found")
-	}
-	parents, err := probeProcessParents()
-	if err != nil {
-		return false, err
-	}
-	for _, pid := range owners {
-		seen := make(map[int]bool)
-		for pid != root {
-			if pid == 0 || pid == os.Getpid() {
-				return false, nil
-			}
-			parent, ok := parents[pid]
-			if !ok || seen[pid] {
-				return false, fmt.Errorf("ancestry unavailable for PID %d", pid)
-			}
-			seen[pid] = true
-			pid = parent
-		}
-	}
-	return true, nil
 }
 
 type ownershipFixture struct {

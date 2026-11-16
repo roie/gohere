@@ -405,6 +405,7 @@ func Run(ctx context.Context, cmd cli.Command, cwd string, stdout, stderr io.Wri
 		Dir:                 runnerDirForRun(cmd, plan),
 		Env:                 plan.Env,
 		ChosenPort:          plan.Port,
+		ListenHost:          plan.ListenHost,
 		RequireDetectedPort: plan.RequireDetectedPort,
 		Stdout:              liveStdout,
 		Stderr:              liveStderr,
