@@ -63,3 +63,45 @@ jobs:
 
       - name: Race
         run: go test -race ./...
+
+  ownership:
+    name: Listener ownership
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f53f5227a9e83886ab598c617f3c170fab62f0d3 # v6
+        with:
+          version: 12.21.0
+          run_install: false
+
+      - name: Probe listener ownership
+        env:
+          GOHERE_OWNERSHIP_TEST: "1"
+        run: go test ./internal/runner -run '^TestListenerOwnershipProbe$' -v -count=1 -timeout=90s
+
+      - name: Report WSL capabilities (not a NAT test)
+        if: runner.os == 'Windows' && !cancelled()
+        run: |
+          node -e "const cp = require('node:child_process'); for (const args of [['--version'], ['--status'], ['--list', '--verbose']]) { const r = cp.spawnSync('wsl.exe', args, {encoding: 'utf16le', timeout: 15000}); console.log(JSON.stringify({args, status: r.status, error: r.error?.message, stdout: r.stdout, stderr: r.stderr})); }"
