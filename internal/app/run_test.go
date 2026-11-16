@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -7507,9 +7508,19 @@ func stubLocalhostHTTPStatus(t *testing.T, status LocalhostHTTPStatus) func() {
 func runFakeWindowsNPM() {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "47654"
+		port = "0"
 	}
-	fmt.Fprintf(os.Stdout, "Local: http://127.0.0.1:%s\n", port)
+	listener, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", port))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})}
+	defer server.Close()
+	go server.Serve(listener)
+	fmt.Fprintf(os.Stdout, "Local: http://%s\n", listener.Addr())
 	time.Sleep(time.Second)
 }
 
