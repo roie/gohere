@@ -4768,7 +4768,7 @@ func TestListOutput(t *testing.T) {
 	}})
 	var out strings.Builder
 
-	if err := ListWithStore(&out, store, false); err != nil {
+	if err := listFromStore(&out, store, ListOptions{}, true); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -4793,7 +4793,7 @@ func TestListVerboseOutput(t *testing.T) {
 	}})
 	var out strings.Builder
 
-	if err := ListWithStore(&out, store, true); err != nil {
+	if err := listFromStore(&out, store, ListOptions{Verbose: true}, true); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -4861,7 +4861,7 @@ func TestListJSONOutput(t *testing.T) {
 	}})
 	var out strings.Builder
 
-	if err := ListWithStoreOptions(&out, store, ListOptions{JSON: true}); err != nil {
+	if err := listFromStore(&out, store, ListOptions{JSON: true}, true); err != nil {
 		t.Fatal(err)
 	}
 	var routes []listRoute
@@ -4922,7 +4922,7 @@ func TestListShowsUnknownWhenRouterIsNotReady(t *testing.T) {
 	}})
 	var out strings.Builder
 
-	if err := ListWithStoreRouterReady(&out, store, false, false); err != nil {
+	if err := listFromStore(&out, store, ListOptions{}, false); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -5016,7 +5016,7 @@ func TestListUsesWindowsRouterFromWSL(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := List(t.Context(), &out, false); err != nil {
+	if err := List(t.Context(), &out, ListOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "web.localhost") {
@@ -5049,7 +5049,7 @@ func TestListUsesServiceComputedRouteStatusFromWSL(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	if err := List(t.Context(), &out, true); err != nil {
+	if err := List(t.Context(), &out, ListOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -5115,7 +5115,7 @@ func TestListFallsBackToServiceProbeWhenRouteStatusesEndpointIsMissing(t *testin
 	defer restore()
 
 	var out strings.Builder
-	if err := List(t.Context(), &out, true); err != nil {
+	if err := List(t.Context(), &out, ListOptions{Verbose: true}); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -5144,7 +5144,7 @@ func TestListDoesNotFallbackToProbeForRouteStatusServerError(t *testing.T) {
 	defer restore()
 
 	var out strings.Builder
-	err := List(t.Context(), &out, true)
+	err := List(t.Context(), &out, ListOptions{Verbose: true})
 	if err == nil || !strings.Contains(err.Error(), "500 Internal Server Error") {
 		t.Fatalf("List error = %v", err)
 	}

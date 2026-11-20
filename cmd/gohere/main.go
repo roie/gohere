@@ -77,7 +77,7 @@ func main() {
 			os.Exit(1)
 		}
 	case cli.CommandList:
-		if err := app.ListWithOptions(ctx, os.Stdout, app.ListOptions{Verbose: cmd.Verbose, JSON: cmd.JSON}); err != nil {
+		if err := app.List(ctx, os.Stdout, app.ListOptions{Verbose: cmd.Verbose, JSON: cmd.JSON}); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

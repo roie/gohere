@@ -2087,11 +2087,7 @@ type listRoute struct {
 	StopReason         string `json:"stopReason,omitempty"`
 }
 
-func List(ctx context.Context, stdout io.Writer, verbose bool) error {
-	return ListWithOptions(ctx, stdout, ListOptions{Verbose: verbose})
-}
-
-func ListWithOptions(ctx context.Context, stdout io.Writer, opts ListOptions) error {
+func List(ctx context.Context, stdout io.Writer, opts ListOptions) error {
 	if detectWSLFunc() {
 		resolved, err := resolveWindowsCompanion(ctx, "control.route-statuses")
 		if err != nil {
@@ -2117,22 +2113,10 @@ func ListWithOptions(ctx context.Context, stdout io.Writer, opts ListOptions) er
 		}
 		return printRouteStatuses(stdout, statuses, opts)
 	}
-	return ListWithStoreRouterReadyOptions(stdout, manager.Store, opts, manager.RouterReady)
+	return listFromStore(stdout, manager.Store, opts, manager.RouterReady)
 }
 
-func ListWithStore(stdout io.Writer, store router.Store, verbose bool) error {
-	return ListWithStoreOptions(stdout, store, ListOptions{Verbose: verbose})
-}
-
-func ListWithStoreOptions(stdout io.Writer, store router.Store, opts ListOptions) error {
-	return ListWithStoreRouterReadyOptions(stdout, store, opts, true)
-}
-
-func ListWithStoreRouterReady(stdout io.Writer, store router.Store, verbose bool, routerReady bool) error {
-	return ListWithStoreRouterReadyOptions(stdout, store, ListOptions{Verbose: verbose}, routerReady)
-}
-
-func ListWithStoreRouterReadyOptions(stdout io.Writer, store router.Store, opts ListOptions, routerReady bool) error {
+func listFromStore(stdout io.Writer, store router.Store, opts ListOptions, routerReady bool) error {
 	routes, err := store.Load()
 	if err != nil {
 		return err
