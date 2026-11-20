@@ -42,7 +42,7 @@ var launchGroupRunnerFunc = func(ctx context.Context, cfg runner.Config) (groupR
 	return &launchedGroupRunner{result: result}, nil
 }
 
-func runPlannedGroup(ctx context.Context, cmdVerbose bool, items []multiRunItem, client adminClient, stdout, stderr io.Writer) error {
+func runPlannedGroup(ctx context.Context, cmdVerbose bool, items []multiRunItem, client adminClient, stdout, stderr io.Writer) (returnErr error) {
 	lifecycleClient, ok := client.(routeLifecycleClient)
 	if !ok {
 		return errors.New("router control does not support atomic route lifecycle; update gohere")
@@ -98,9 +98,18 @@ func runPlannedGroup(ctx context.Context, cmdVerbose bool, items []multiRunItem,
 		return err
 	}
 	pendingRefs := reservation.PendingRefs()
+	ctx, cancelStartup := context.WithCancel(ctx)
+	defer cancelStartup()
+	stopPending := startPendingReservationLease(ctx, cancelStartup, lifecycleClient, runID, pendingRefs)
+	defer func() {
+		if err := stopPending(); err != nil {
+			returnErr = err
+		}
+	}()
 	activated := false
 	released := false
 	release := func() {
+		_ = stopPending()
 		if released || len(pendingRefs) == 0 {
 			return
 		}
@@ -236,6 +245,9 @@ func runPlannedGroup(ctx context.Context, cmdVerbose bool, items []multiRunItem,
 	}
 	stopLease := startReservationLease(ctx, lifecycleClient, runID, pendingRefs, stderr)
 	defer stopLease()
+	if err := stopPending(); err != nil {
+		return err
+	}
 
 	for i := range items {
 		if err := announceResolvedService(ctx, items[i].cmd, services[i], stdout, stderr); err != nil {

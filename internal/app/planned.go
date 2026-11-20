@@ -17,7 +17,7 @@ import (
 	"github.com/roie/gohere/internal/staticserver"
 )
 
-func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client adminClient, stdout, stderr io.Writer) error {
+func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client adminClient, stdout, stderr io.Writer) (returnErr error) {
 	lifecycleClient, ok := client.(routeLifecycleClient)
 	if !ok {
 		return errors.New("router control does not support atomic route lifecycle; update gohere")
@@ -40,6 +40,14 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 		}
 		return err
 	}
+	ctx, cancelStartup := context.WithCancel(ctx)
+	defer cancelStartup()
+	stopPending := startPendingReservationLease(ctx, cancelStartup, lifecycleClient, runID, reservation.PendingRefs())
+	defer func() {
+		if err := stopPending(); err != nil {
+			returnErr = err
+		}
+	}()
 	if len(reservation.Routes) != 1 {
 		return errors.New("router returned an incomplete route reservation")
 	}
@@ -54,6 +62,7 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 	released := false
 	var lanShare *router.LANShareResult
 	release := func() {
+		_ = stopPending()
 		if released || len(pendingRefs) == 0 {
 			return
 		}
@@ -109,6 +118,9 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 			return err
 		}
 		activated = true
+		if err := stopPending(); err != nil {
+			return err
+		}
 		lanShare, err = createLANShare(ctx, client, cmd, route.Ref(), stderr)
 		if err != nil {
 			return err
@@ -155,6 +167,9 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 	activated = true
 	stopLease := startReservationLease(ctx, lifecycleClient, runID, pendingRefs, stderr)
 	defer stopLease()
+	if err := stopPending(); err != nil {
+		return err
+	}
 	lanShare, err = createLANShare(ctx, client, cmd, route.Ref(), stderr)
 	if err != nil {
 		return err
