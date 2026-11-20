@@ -26,6 +26,7 @@ import (
 
 	"github.com/gofrs/flock"
 
+	"github.com/roie/gohere/internal/atomicfile"
 	"github.com/roie/gohere/internal/probe"
 )
 
@@ -269,40 +270,12 @@ func writeToken(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return "", err
-	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write([]byte(token + "\n")); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := atomicfile.Write(path, []byte(token+"\n"), 0600); err != nil {
 		return "", err
 	}
 	if err := os.Chmod(path, 0600); err != nil {
 		return "", err
 	}
-	cleanup = false
 	return token, nil
 }
 
@@ -430,36 +403,9 @@ func (s *RouteStore) save(routes []Route) error {
 		return err
 	}
 	data = append(data, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), filepath.Base(s.path)+".*.tmp")
-	if err != nil {
+	if err := atomicfile.Write(s.path, data, 0600); err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, s.path); err != nil {
-		return err
-	}
-	cleanup = false
 	return os.Chmod(s.path, 0600)
 }
 

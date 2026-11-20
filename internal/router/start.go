@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/roie/gohere/internal/atomicfile"
 	localcert "github.com/roie/gohere/internal/cert"
 	"github.com/roie/gohere/internal/userpath"
 )
@@ -424,40 +425,10 @@ func writePIDFile(pidPath string, pid int) error {
 	if err := os.MkdirAll(filepath.Dir(pidPath), 0700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(pidPath), filepath.Base(pidPath)+".*.tmp")
-	if err != nil {
+	if err := atomicfile.Write(pidPath, []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write([]byte(strconv.Itoa(pid) + "\n")); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, pidPath); err != nil {
-		return err
-	}
-	if err := os.Chmod(pidPath, 0600); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
+	return os.Chmod(pidPath, 0600)
 }
 
 func writeRouterInstance(path, instanceID string) error {
@@ -467,36 +438,9 @@ func writeRouterInstance(path, instanceID string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
-	if err != nil {
+	if err := atomicfile.Write(path, []byte(instanceID+"\n"), 0600); err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write([]byte(instanceID + "\n")); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	cleanup = false
 	return os.Chmod(path, 0600)
 }
 

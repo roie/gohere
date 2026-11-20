@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/roie/gohere/internal/atomicfile"
 	"github.com/roie/gohere/internal/certtrust"
 	"github.com/roie/gohere/internal/companion"
 	"github.com/roie/gohere/internal/router"
@@ -423,35 +424,8 @@ func writeAtomicFile(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
-	if err != nil {
+	if err := atomicfile.Write(path, data, mode); err != nil {
 		return err
 	}
-	tempPath := temp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tempPath)
-		}
-	}()
-	if _, err := temp.Write(data); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Chmod(mode); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tempPath, path); err != nil {
-		return err
-	}
-	cleanup = false
 	return os.Chmod(path, mode)
 }

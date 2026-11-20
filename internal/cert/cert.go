@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+
+	"github.com/roie/gohere/internal/atomicfile"
 )
 
 const (
@@ -409,38 +411,8 @@ func writeRawFile(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
-	if err != nil {
+	if err := atomicfile.Write(path, data, mode); err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	if err := os.Chmod(path, mode); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
+	return os.Chmod(path, mode)
 }
