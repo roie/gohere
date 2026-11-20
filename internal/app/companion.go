@@ -386,12 +386,12 @@ func (a *companionAuthority) ReserveRoutes(ctx context.Context, request router.R
 	return client.ReserveRoutes(ctx, request)
 }
 
-func (a *companionAuthority) ActivateRoutes(ctx context.Context, runID string, refs []router.RouteRef) ([]router.Route, error) {
+func (a *companionAuthority) ActivateRoutes(ctx context.Context, runID string, refs []router.RouteRef, processes []router.RouteProcess) ([]router.Route, error) {
 	client, err := a.lifecycleClient()
 	if err != nil {
 		return nil, err
 	}
-	return client.ActivateRoutes(ctx, runID, refs)
+	return client.ActivateRoutes(ctx, runID, refs, processes)
 }
 
 func (a *companionAuthority) ReleaseRoutes(ctx context.Context, runID string, refs []router.RouteRef) error {

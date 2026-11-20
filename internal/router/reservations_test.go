@@ -414,7 +414,7 @@ func TestActivateRoutesPromotesWholeRunWithoutChangingIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	refs := reservationRefs(result)
-	activated, err := ActivateRoutes(store, "run-a", refs, now.Add(time.Second), time.Minute)
+	activated, err := ActivateRoutes(store, "run-a", refs, nil, now.Add(time.Second), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestActivateAndReleaseRequireCompleteRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	one := result.PendingRefs()[:1]
-	if _, err := ActivateRoutes(store, "run-a", one, now, time.Minute); !errors.Is(err, ErrRouteRefMismatch) {
+	if _, err := ActivateRoutes(store, "run-a", one, nil, now, time.Minute); !errors.Is(err, ErrRouteRefMismatch) {
 		t.Fatalf("partial activation error = %v", err)
 	}
 	if err := ReleaseRoutes(store, "run-a", one); !errors.Is(err, ErrRouteRefMismatch) {
@@ -458,7 +458,7 @@ func TestActivateRoutesMismatchIsAtomic(t *testing.T) {
 	result := reserveTestRun(t, store, "run-a", "app.localhost", "http://127.0.0.1:46001", "/work/app", now)
 	bad := result.Routes[0].Route.Ref()
 	bad.Generation++
-	_, err := ActivateRoutes(store, "run-a", []RouteRef{bad}, now, time.Minute)
+	_, err := ActivateRoutes(store, "run-a", []RouteRef{bad}, nil, now, time.Minute)
 	if !errors.Is(err, ErrRouteRefMismatch) {
 		t.Fatalf("error = %v", err)
 	}
@@ -480,7 +480,7 @@ func TestRenewRoutesAllowsSurvivingSubsetAfterExplicitDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	refs := result.PendingRefs()
-	if _, err := ActivateRoutes(store, "group", refs, now, time.Minute); err != nil {
+	if _, err := ActivateRoutes(store, "group", refs, nil, now, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if err := DeleteRouteRef(store, refs[0]); err != nil {

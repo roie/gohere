@@ -30,8 +30,8 @@ func TestReservationLifecycleAPI(t *testing.T) {
 
 	refs := RouteRefsRequest{Refs: result.PendingRefs()}
 	body.Reset()
-	json.NewEncoder(&body).Encode(refs)
-	rec = reservationAPIRequest(t, srv, http.MethodPost, "/v2/route-reservations/run-a/activate", &body)
+	json.NewEncoder(&body).Encode(RouteActivationRequest{Refs: refs.Refs, Processes: []RouteProcess{{Ref: refs.Refs[0], PID: 123, ProcessIdentity: "root"}}})
+	rec = reservationAPIRequest(t, srv, http.MethodPost, "/v3/route-reservations/run-a/activate", &body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("activate status/body = %d/%q", rec.Code, rec.Body.String())
 	}
@@ -39,7 +39,7 @@ func TestReservationLifecycleAPI(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&active); err != nil {
 		t.Fatal(err)
 	}
-	if len(active) != 1 || active[0].EffectiveState() != RouteStateActive || active[0].Target != "http://127.0.0.1:48001" || active[0].LeaseExpiresAt.IsZero() {
+	if len(active) != 1 || active[0].EffectiveState() != RouteStateActive || active[0].Target != "http://127.0.0.1:48001" || active[0].LeaseExpiresAt.IsZero() || active[0].PID != 123 || active[0].ProcessIdentity != "root" {
 		t.Fatalf("active routes = %#v", active)
 	}
 
@@ -75,7 +75,7 @@ func TestReservationLifecycleAPIRejectsUnauthorizedAndPartialMutation(t *testing
 		path   string
 	}{
 		{http.MethodPost, "/v2/route-reservations"},
-		{http.MethodPost, "/v2/route-reservations/run-a/activate"},
+		{http.MethodPost, "/v3/route-reservations/run-a/activate"},
 		{http.MethodPost, "/v2/route-reservations/run-a/renew"},
 		{http.MethodDelete, "/v2/route-reservations/run-a"},
 		{http.MethodDelete, "/v2/routes/route-1/1"},
@@ -97,8 +97,8 @@ func TestReservationLifecycleAPIRejectsUnauthorizedAndPartialMutation(t *testing
 		t.Fatal(err)
 	}
 	var body bytes.Buffer
-	json.NewEncoder(&body).Encode(RouteRefsRequest{Refs: result.PendingRefs()[:1]})
-	rec := reservationAPIRequest(t, srv, http.MethodPost, "/v2/route-reservations/run-a/activate", &body)
+	json.NewEncoder(&body).Encode(RouteActivationRequest{Refs: result.PendingRefs()[:1]})
+	rec := reservationAPIRequest(t, srv, http.MethodPost, "/v3/route-reservations/run-a/activate", &body)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("partial activate status/body = %d/%q", rec.Code, rec.Body.String())
 	}
@@ -126,8 +126,8 @@ func TestReservationLifecycleAPIRejectsMalformedAndExpiredRequestsWithoutMutatio
 		t.Fatal(err)
 	}
 	var body bytes.Buffer
-	json.NewEncoder(&body).Encode(RouteRefsRequest{Refs: result.PendingRefs()})
-	rec = reservationAPIRequest(t, srv, http.MethodPost, "/v2/route-reservations/run-a/activate", &body)
+	json.NewEncoder(&body).Encode(RouteActivationRequest{Refs: result.PendingRefs()})
+	rec = reservationAPIRequest(t, srv, http.MethodPost, "/v3/route-reservations/run-a/activate", &body)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expired activate status/body = %d/%q", rec.Code, rec.Body.String())
 	}
@@ -174,6 +174,27 @@ func TestReservationAPIReportsSchemeConflict(t *testing.T) {
 	routes, err := store.Load()
 	if err != nil || len(routes) != 1 || routes[0].ID != existing.ID {
 		t.Fatalf("routes/error = %#v/%v", routes, err)
+	}
+}
+
+func TestReservationAPIRejectsOlderActivation(t *testing.T) {
+	store := NewMemoryStore()
+	result := reserveTestRun(t, store, "run-a", "web.localhost", "http://127.0.0.1:48001", "/web", time.Now().UTC())
+	srv := NewServer(Config{Token: "secret", Store: store})
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(RouteActivationRequest{Refs: result.PendingRefs(), Processes: []RouteProcess{{Ref: result.PendingRefs()[0], PID: 123, ProcessIdentity: "root"}}}); err != nil {
+		t.Fatal(err)
+	}
+	rec := reservationAPIRequest(t, srv, http.MethodPost, "/v2/route-reservations/run-a/activate", &body)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("older activation status/body = %d/%q", rec.Code, rec.Body.String())
+	}
+	routes, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].EffectiveState() != RouteStatePending || routes[0].PID != 0 {
+		t.Fatalf("older API changed pending route: %+v", routes)
 	}
 }
 

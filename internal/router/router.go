@@ -462,6 +462,7 @@ func (s *Server) AdminHandler() http.Handler {
 	mux.HandleFunc("/route-statuses", s.handleRouteStatuses)
 	mux.HandleFunc("/v2/route-reservations", s.handleRouteReservations)
 	mux.HandleFunc("/v2/route-reservations/", s.handleRouteReservation)
+	mux.HandleFunc("/v3/route-reservations/", s.handleRouteActivation)
 	mux.HandleFunc("/v2/routes/", s.handleRouteRef)
 	mux.HandleFunc("/v2/lan-shares", s.handleLANShare)
 	mux.HandleFunc("/routes/", s.handleRoute)

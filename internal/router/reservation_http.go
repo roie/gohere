@@ -80,14 +80,6 @@ func (s *Server) handleRouteReservation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	switch parts[1] {
-	case "activate":
-		routes, err := ActivateRoutes(s.store, runID, request.Refs, time.Now().UTC(), DefaultRouteLeaseTTL)
-		if err != nil {
-			writeReservationError(w, err)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(routes)
 	case "renew":
 		if err := RenewRoutes(s.store, runID, request.Refs, time.Now().UTC(), DefaultRouteLeaseTTL); err != nil {
 			writeReservationError(w, err)
@@ -102,6 +94,30 @@ func (s *Server) handleRouteReservation(w http.ResponseWriter, r *http.Request) 
 	default:
 		http.Error(w, "unknown reservation action", http.StatusNotFound)
 	}
+}
+
+func (s *Server) handleRouteActivation(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	runID, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/v3/route-reservations/"), "/activate")
+	if !ok || runID == "" || strings.Contains(runID, "/") || r.Method != http.MethodPost {
+		http.Error(w, "invalid activation request", http.StatusBadRequest)
+		return
+	}
+	var request RouteActivationRequest
+	if err := decodeAdminJSON(r, &request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	routes, err := ActivateRoutes(s.store, runID, request.Refs, request.Processes, time.Now().UTC(), DefaultRouteLeaseTTL)
+	if err != nil {
+		writeReservationError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(routes)
 }
 
 func (s *Server) handleRouteRef(w http.ResponseWriter, r *http.Request) {

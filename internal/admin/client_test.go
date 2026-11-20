@@ -66,11 +66,11 @@ func TestClientReservationLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	refs := result.PendingRefs()
-	active, err := client.ActivateRoutes(t.Context(), "run-a", refs)
+	active, err := client.ActivateRoutes(t.Context(), "run-a", refs, []router.RouteProcess{{Ref: refs[0], PID: 123, ProcessIdentity: "root"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(active) != 1 || active[0].Target != "http://127.0.0.1:48301" {
+	if len(active) != 1 || active[0].Target != "http://127.0.0.1:48301" || active[0].PID != 123 || active[0].ProcessIdentity != "root" {
 		t.Fatalf("active = %#v", active)
 	}
 	if err := client.RenewRoutes(t.Context(), "run-a", refs); err != nil {

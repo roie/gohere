@@ -10,7 +10,7 @@ const maxMessageBytes = 1024 * 1024
 
 const (
 	CapabilityReserveRoutes  = "control.reserve-routes-v2"
-	CapabilityActivateRoutes = "control.activate-routes-v2"
+	CapabilityActivateRoutes = "control.activate-routes-v3"
 	CapabilityReleaseRoutes  = "control.release-routes-v2"
 	CapabilityRenewRoutes    = "control.renew-routes-v2"
 	CapabilityDeleteRouteRef = "control.delete-route-ref-v2"
@@ -36,7 +36,7 @@ const (
 	OperationDeleteRoute    Operation = "delete-route"
 	OperationProbeTarget    Operation = "probe-target"
 	OperationReserveRoutes  Operation = "reserve-routes-v2"
-	OperationActivateRoutes Operation = "activate-routes-v2"
+	OperationActivateRoutes Operation = "activate-routes-v3"
 	OperationReleaseRoutes  Operation = "release-routes-v2"
 	OperationRenewRoutes    Operation = "renew-routes-v2"
 	OperationDeleteRouteRef Operation = "delete-route-ref-v2"
@@ -56,6 +56,7 @@ type Request struct {
 	Reservation     *router.ReservationRequest `json:"reservation,omitempty"`
 	RunID           string                     `json:"runId,omitempty"`
 	Refs            []router.RouteRef          `json:"refs,omitempty"`
+	Processes       []router.RouteProcess      `json:"processes,omitempty"`
 	Ref             *router.RouteRef           `json:"ref,omitempty"`
 }
 

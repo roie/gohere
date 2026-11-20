@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/roie/gohere/internal/cli"
-	"github.com/roie/gohere/internal/lifecycle"
 	"github.com/roie/gohere/internal/router"
 )
 
@@ -30,10 +29,7 @@ func routeRefMismatch(err error) bool {
 
 func registerDetectedRouteLifecycle(ctx context.Context, adminClient adminClient, lifecycleClient routeLifecycleClient, cmd cli.Command, plan RunPlan, port, pid int, stdout, stderr io.Writer) (func(), error) {
 	plan.Port = port
-	processIdentity, _ := lifecycle.ProcessIdentity(pid)
 	candidate := routeReservationForPlan(cmd, plan)
-	candidate.PID = pid
-	candidate.ProcessIdentity = processIdentity
 	runID, err := newRunID()
 	if err != nil {
 		return nil, err
@@ -61,7 +57,16 @@ func registerDetectedRouteLifecycle(ctx context.Context, adminClient adminClient
 		}
 		return nil, err
 	}
-	active, err := lifecycleClient.ActivateRoutes(ctx, runID, refs)
+	var processes []router.RouteProcess
+	if pid > 0 {
+		process, err := activationProcess(refs[0], pid)
+		if err != nil {
+			_ = lifecycleClient.ReleaseRoutes(ctx, runID, refs)
+			return nil, err
+		}
+		processes = append(processes, process)
+	}
+	active, err := lifecycleClient.ActivateRoutes(ctx, runID, refs, processes)
 	if err != nil {
 		_ = lifecycleClient.ReleaseRoutes(ctx, runID, refs)
 		return nil, err

@@ -11,6 +11,7 @@ import (
 
 	"github.com/roie/gohere/internal/admin"
 	"github.com/roie/gohere/internal/cli"
+	"github.com/roie/gohere/internal/lifecycle"
 	"github.com/roie/gohere/internal/router"
 	"github.com/roie/gohere/internal/runner"
 	"github.com/roie/gohere/internal/staticserver"
@@ -104,12 +105,10 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 		if err := verifyPlannedTarget(ctx, client, route.Target, plan.OwnerEnv == "wsl"); err != nil {
 			return err
 		}
-		if _, err := lifecycleClient.ActivateRoutes(ctx, runID, pendingRefs); err != nil {
+		if _, err := lifecycleClient.ActivateRoutes(ctx, runID, pendingRefs, nil); err != nil {
 			return err
 		}
 		activated = true
-		stopLease := startReservationLease(ctx, lifecycleClient, runID, pendingRefs, stderr)
-		defer stopLease()
 		lanShare, err = createLANShare(ctx, client, cmd, route.Ref(), stderr)
 		if err != nil {
 			return err
@@ -118,8 +117,7 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 			return err
 		}
 		printLANShare(stdout, lanShare)
-		<-ctx.Done()
-		return nil
+		return waitForStaticRoute(ctx, lifecycleClient, runID, pendingRefs, stderr)
 	}
 
 	plan.Env = resolveServiceEnvironment(plan.Env, service, []resolvedService{service})
@@ -147,7 +145,11 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 	if err := verifyPlannedTarget(ctx, client, route.Target, plan.OwnerEnv == "wsl"); err != nil {
 		return err
 	}
-	if _, err := lifecycleClient.ActivateRoutes(ctx, runID, pendingRefs); err != nil {
+	process, err := activationProcess(route.Ref(), result.PID())
+	if err != nil {
+		return err
+	}
+	if _, err := lifecycleClient.ActivateRoutes(ctx, runID, pendingRefs, []router.RouteProcess{process}); err != nil {
 		return err
 	}
 	activated = true
@@ -163,6 +165,34 @@ func runPlannedSingle(ctx context.Context, cmd cli.Command, plan RunPlan, client
 	printLANShare(stdout, lanShare)
 	startLiveOutput(liveStdout, liveStderr, cmd.Verbose)
 	return result.Wait()
+}
+
+var activationProcess = func(ref router.RouteRef, pid int) (router.RouteProcess, error) {
+	identity, ok := lifecycle.ProcessIdentity(pid)
+	if !ok || identity == "" {
+		return router.RouteProcess{}, fmt.Errorf("could not verify launched process %d", pid)
+	}
+	return router.RouteProcess{Ref: ref, PID: pid, ProcessIdentity: identity}, nil
+}
+
+func waitForStaticRoute(ctx context.Context, client routeLifecycleClient, runID string, refs []router.RouteRef, stderr io.Writer) error {
+	ticker := time.NewTicker(routeLeaseInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := client.RenewRoutes(ctx, runID, refs); err != nil {
+				if routeRefMismatch(err) {
+					return nil
+				}
+				if stderr != nil {
+					fmt.Fprintf(stderr, "gohere warning: could not renew route lease: %v\n", err)
+				}
+			}
+		}
+	}
 }
 
 func routeReservationForPlan(cmd cli.Command, plan RunPlan) router.RouteReservation {

@@ -211,11 +211,11 @@ func TestCompanionRouteLifecycleUsesWindowsRouterControl(t *testing.T) {
 		t.Fatalf("reservation = %#v", result)
 	}
 	refs := result.PendingRefs()
-	active, err := authority.ActivateRoutes(t.Context(), "run-a", refs)
+	active, err := authority.ActivateRoutes(t.Context(), "run-a", refs, []router.RouteProcess{{Ref: refs[0], PID: 123, ProcessIdentity: "linux-root"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(active) != 1 || active[0].Target != "http://127.0.0.1:49101" {
+	if len(active) != 1 || active[0].Target != "http://127.0.0.1:49101" || active[0].PID != 123 || active[0].ProcessIdentity != "linux-root" {
 		t.Fatalf("active = %#v", active)
 	}
 	if err := authority.RenewRoutes(t.Context(), "run-a", refs); err != nil {
@@ -235,7 +235,7 @@ func TestCompanionInfoAdvertisesRouteLifecycleCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, capability := range []string{"control.reserve-routes-v2", "control.activate-routes-v2", "control.release-routes-v2", "control.renew-routes-v2", "control.delete-route-ref-v2"} {
+	for _, capability := range []string{"control.reserve-routes-v2", "control.activate-routes-v3", "control.release-routes-v2", "control.renew-routes-v2", "control.delete-route-ref-v2"} {
 		if !hasCompanionCapability(info, capability) {
 			t.Fatalf("capabilities missing %q: %#v", capability, info.Capabilities)
 		}

@@ -1480,6 +1480,7 @@ func TestEnsureSingleActiveWSLOwnerRefusesExpiredUncertainRoute(t *testing.T) {
 }
 
 func TestRunStartsLocalProjectBeforeServiceRegistration(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -1510,6 +1511,7 @@ func TestRunStartsLocalProjectBeforeServiceRegistration(t *testing.T) {
 }
 
 func TestRunPlannedReservesExactEnvironmentBeforeStartupAndActivatesAfterReadiness(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
@@ -1542,6 +1544,7 @@ func TestRunPlannedReservesExactEnvironmentBeforeStartupAndActivatesAfterReadine
 }
 
 func TestRunPlannedUsesCollisionSafeReservedHostnameInEnvironment(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
@@ -1687,6 +1690,7 @@ func TestVerifyPlannedWSLTargetRetriesReachability(t *testing.T) {
 }
 
 func TestRunPlannedRollsBackReservationWhenActivationFails(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
@@ -1796,6 +1800,7 @@ func TestRunWSLReusesReadyRouteBeforeStartingRunner(t *testing.T) {
 }
 
 func TestRunReportsStaleRouterToken(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -1835,6 +1840,7 @@ func TestRunReportsStaleRouterToken(t *testing.T) {
 }
 
 func TestRunSuppressesChildStartupOutputOnSuccessfulStartup(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -1869,6 +1875,7 @@ func TestRunSuppressesChildStartupOutputOnSuccessfulStartup(t *testing.T) {
 }
 
 func TestRunSuccessOutputLabelsExplicitScriptInNormalMode(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -1899,6 +1906,7 @@ func TestRunSuccessOutputLabelsExplicitScriptInNormalMode(t *testing.T) {
 }
 
 func TestRunUsesAsAliasInOutputAndRoute(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -1942,7 +1950,7 @@ func TestGroupedCleanupDeletesRemainingSiblingAfterExplicitStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	refs := reservation.PendingRefs()
-	if _, err := admin.ActivateRoutes(t.Context(), "group", refs); err != nil {
+	if _, err := admin.ActivateRoutes(t.Context(), "group", refs, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := admin.DeleteRouteRef(t.Context(), refs[0]); err != nil {
@@ -2383,6 +2391,7 @@ func TestLinePrefixWriterPrefixesFutureLogs(t *testing.T) {
 }
 
 func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	oldOpenBrowser := openBrowserFunc
@@ -2452,6 +2461,7 @@ func TestRunMultiScriptsRegistersRoutesAndOpensAllURLs(t *testing.T) {
 }
 
 func TestRunMultiReservesOneBatchAndStartsAllChildrenBeforeActivation(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
@@ -2504,6 +2514,7 @@ func TestRunMultiReservesOneBatchAndStartsAllChildrenBeforeActivation(t *testing
 }
 
 func TestRunMultiActivationFailureReleasesNewBatchAndKeepsReusedRoute(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
@@ -2541,6 +2552,7 @@ func TestRunMultiActivationFailureReleasesNewBatchAndKeepsReusedRoute(t *testing
 }
 
 func TestRunMultiScriptsSuppressesChildStartupOutput(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -2581,6 +2593,7 @@ func TestRunMultiScriptsSuppressesChildStartupOutput(t *testing.T) {
 }
 
 func TestRunMultiScriptsVerboseReplaysPrefixedStartupOutput(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -2619,6 +2632,7 @@ func TestRunMultiScriptsVerboseReplaysPrefixedStartupOutput(t *testing.T) {
 }
 
 func TestRunImplicitDevAtWorkspaceRootLaunchesWorkspacePackages(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -2680,6 +2694,7 @@ func TestRunImplicitDevAtWorkspaceRootLaunchesWorkspacePackages(t *testing.T) {
 }
 
 func TestRunWorkspaceReusesReadyUnmanagedRouteFromSameCWD(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -2840,6 +2855,7 @@ func TestRunWorkspaceReusesUnknownManagedRouteFromSameCWD(t *testing.T) {
 }
 
 func TestRunWorkspaceInjectsServiceDiscoveryEnv(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -2889,6 +2905,7 @@ func TestRunWorkspaceInjectsServiceDiscoveryEnv(t *testing.T) {
 }
 
 func TestRunWorkspaceServiceDiscoveryEnvUsesResolvedConflictHosts(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	oldChooseFreePortForHost := chooseFreePortForHostFunc
@@ -3042,6 +3059,7 @@ func TestPrepareDistinctGroupPlansKeepsEarlierFixedPortAndRetriesLaterAutoPort(t
 }
 
 func TestRunMultiInjectsServiceDiscoveryEnv(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	oldChooseFreePortForHost := chooseFreePortForHostFunc
@@ -3106,6 +3124,7 @@ func TestRunMultiInjectsServiceDiscoveryEnv(t *testing.T) {
 }
 
 func TestRunWorkspaceFailsWhenAutoPortSelectionCannotFindDistinctPort(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	oldChooseFreePortForHost := chooseFreePortForHostFunc
@@ -3149,6 +3168,7 @@ func TestRunWorkspaceFailsWhenAutoPortSelectionCannotFindDistinctPort(t *testing
 }
 
 func TestRunServiceDiscoveryMarksExplicitPortScriptsUnmanaged(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -3185,6 +3205,7 @@ func TestRunServiceDiscoveryMarksExplicitPortScriptsUnmanaged(t *testing.T) {
 }
 
 func TestRunServiceDiscoveryMarksUnknownScriptsUnmanaged(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -3218,6 +3239,7 @@ func TestRunServiceDiscoveryMarksUnknownScriptsUnmanaged(t *testing.T) {
 }
 
 func TestRunServiceDiscoveryPreservesExistingUserEnv(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -3255,6 +3277,7 @@ func TestRunServiceDiscoveryPreservesExistingUserEnv(t *testing.T) {
 }
 
 func TestRunServiceDiscoveryEnvKeyCollisionFailsBeforeStarting(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -3291,6 +3314,7 @@ func TestRunServiceDiscoveryEnvKeyCollisionFailsBeforeStarting(t *testing.T) {
 }
 
 func TestRunLiveAtWorkspaceRootDoesNotStartWorkspacePackages(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -3335,6 +3359,7 @@ func TestRunLiveAtWorkspaceRootDoesNotStartWorkspacePackages(t *testing.T) {
 }
 
 func TestRunExplicitPathToWorkspaceRootBehavesLikeRunningThere(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -3390,6 +3415,7 @@ func TestRunExplicitPathToWorkspaceRootBehavesLikeRunningThere(t *testing.T) {
 }
 
 func TestRunExplicitPackageDirectoryUsesTargetCWDAndLabelsPath(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -3432,6 +3458,7 @@ func TestRunExplicitPackageDirectoryUsesTargetCWDAndLabelsPath(t *testing.T) {
 }
 
 func TestRunImplicitDevAtWorkspaceRootWithoutDevPackagesFallsBackToRootScript(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -3472,6 +3499,7 @@ func TestRunImplicitDevAtWorkspaceRootWithoutDevPackagesFallsBackToRootScript(t 
 }
 
 func TestRunExplicitScriptAtWorkspaceRootRunsRootScriptAsSingleRoute(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -3520,6 +3548,7 @@ func TestRunExplicitScriptAtWorkspaceRootRunsRootScriptAsSingleRoute(t *testing.
 }
 
 func TestRunMultiAppliesRouterTargetToEveryRoute(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	oldResolveWSL := detectWSLFunc
@@ -3574,6 +3603,7 @@ func TestMultiScriptHostDerivesLabelFromScriptSuffix(t *testing.T) {
 }
 
 func TestRunMultiScriptFinishedBeforeURLIsErrorAndCleansUp(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -3615,6 +3645,7 @@ func TestRunMultiScriptFinishedBeforeURLIsErrorAndCleansUp(t *testing.T) {
 }
 
 func TestRunMultiReadinessFailureReleasesBatchWithoutActivation(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() { defaultAdminClientFunc = oldDefaultAdminClient; startRunnerFunc = oldStartRunner }()
@@ -3697,6 +3728,7 @@ func TestRunMultiRejectsStaticFileTarget(t *testing.T) {
 }
 
 func TestRunOpenLaunchesBrowserAfterRouteRegistration(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	oldOpenBrowser := openBrowserFunc
@@ -3744,6 +3776,7 @@ func TestRunOpenLaunchesBrowserAfterRouteRegistration(t *testing.T) {
 }
 
 func TestRunOpenFailureKeepsServerRunning(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	oldOpenBrowser := openBrowserFunc
@@ -4000,6 +4033,7 @@ func TestRunFailureReplayAddsTrailingNewline(t *testing.T) {
 }
 
 func TestRunVerboseOutputIncludesCleanURLAndMetadata(t *testing.T) {
+	stubRunnerIdentity(t)
 	oldDefaultAdminClient := defaultAdminClientFunc
 	oldStartRunner := startRunnerFunc
 	defer func() {
@@ -4072,6 +4106,7 @@ func TestFirstRunPromptMentionsSudoOnLinux(t *testing.T) {
 }
 
 func TestRunUsesWindowsRouterBridgeFromWSL(t *testing.T) {
+	stubRunnerIdentity(t)
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:         true,
 		token:         "windows-token",
@@ -4502,6 +4537,7 @@ func TestResolveRunRouterBindsAllInterfacesOnlyWhenWSLIPIsRequired(t *testing.T)
 }
 
 func TestRunWSLBridgeChoosesPackagePortForChildBindHost(t *testing.T) {
+	stubRunnerIdentity(t)
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:         true,
 		token:         "windows-token",
@@ -4553,6 +4589,7 @@ func TestRunWSLBridgeChoosesPackagePortForChildBindHost(t *testing.T) {
 }
 
 func TestRunWSLBridgeAddsHostWhenScriptAlreadyHasPort(t *testing.T) {
+	stubRunnerIdentity(t)
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:         true,
 		token:         "windows-token",
@@ -4598,6 +4635,7 @@ func TestRunWSLBridgeAddsHostWhenScriptAlreadyHasPort(t *testing.T) {
 }
 
 func TestRunWorkspaceWSLBridgeChoosesPortsForChildBindHost(t *testing.T) {
+	stubRunnerIdentity(t)
 	restore := stubBridgeDetection(t, bridgeStub{
 		isWSL:         true,
 		token:         "windows-token",
@@ -6683,7 +6721,7 @@ func (fakeAdminClient) ProbeTarget(context.Context, string) (bool, error) {
 func (fakeAdminClient) ReserveRoutes(_ context.Context, request router.ReservationRequest) (router.ReservationResult, error) {
 	return fakeReservationResult(request), nil
 }
-func (fakeAdminClient) ActivateRoutes(_ context.Context, _ string, refs []router.RouteRef) ([]router.Route, error) {
+func (fakeAdminClient) ActivateRoutes(_ context.Context, _ string, refs []router.RouteRef, _ []router.RouteProcess) ([]router.Route, error) {
 	return fakeActivatedRoutes(refs), nil
 }
 func (fakeAdminClient) ReleaseRoutes(context.Context, string, []router.RouteRef) error { return nil }
@@ -6729,7 +6767,7 @@ func (staleTokenAdminClient) DeleteRoute(context.Context, string) error {
 func (staleTokenAdminClient) ReserveRoutes(context.Context, router.ReservationRequest) (router.ReservationResult, error) {
 	return router.ReservationResult{}, admin.ErrUnauthorized
 }
-func (staleTokenAdminClient) ActivateRoutes(context.Context, string, []router.RouteRef) ([]router.Route, error) {
+func (staleTokenAdminClient) ActivateRoutes(context.Context, string, []router.RouteRef, []router.RouteProcess) ([]router.Route, error) {
 	return nil, admin.ErrUnauthorized
 }
 func (staleTokenAdminClient) ReleaseRoutes(context.Context, string, []router.RouteRef) error {
@@ -6890,7 +6928,7 @@ func (c *multiRecordingAdminClient) ReserveRoutes(_ context.Context, request rou
 	c.routes = store.routes
 	return result, err
 }
-func (c *multiRecordingAdminClient) ActivateRoutes(_ context.Context, _ string, refs []router.RouteRef) ([]router.Route, error) {
+func (c *multiRecordingAdminClient) ActivateRoutes(_ context.Context, _ string, refs []router.RouteRef, _ []router.RouteProcess) ([]router.Route, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.activationCalls++
@@ -7106,7 +7144,7 @@ func (c *recordingAdminClient) ReserveRoutes(_ context.Context, request router.R
 	return result, err
 }
 
-func (c *recordingAdminClient) ActivateRoutes(_ context.Context, runID string, refs []router.RouteRef) ([]router.Route, error) {
+func (c *recordingAdminClient) ActivateRoutes(_ context.Context, runID string, refs []router.RouteRef, processes []router.RouteProcess) ([]router.Route, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.activateCalls++
@@ -7114,7 +7152,7 @@ func (c *recordingAdminClient) ActivateRoutes(_ context.Context, runID string, r
 		return nil, c.activateErr
 	}
 	store := &runtimeTestStore{routes: append([]router.Route(nil), c.routes...)}
-	routes, err := router.ActivateRoutes(store, runID, refs, time.Now().UTC(), router.DefaultRouteLeaseTTL)
+	routes, err := router.ActivateRoutes(store, runID, refs, processes, time.Now().UTC(), router.DefaultRouteLeaseTTL)
 	c.routes = store.routes
 	if err == nil && len(routes) > 0 {
 		c.route = routes[0]
@@ -7481,8 +7519,8 @@ func (c *testWindowsCompanionControl) ProbeTarget(ctx context.Context, target st
 func (c *testWindowsCompanionControl) ReserveRoutes(ctx context.Context, request router.ReservationRequest) (router.ReservationResult, error) {
 	return c.admin.(routeLifecycleClient).ReserveRoutes(ctx, request)
 }
-func (c *testWindowsCompanionControl) ActivateRoutes(ctx context.Context, runID string, refs []router.RouteRef) ([]router.Route, error) {
-	return c.admin.(routeLifecycleClient).ActivateRoutes(ctx, runID, refs)
+func (c *testWindowsCompanionControl) ActivateRoutes(ctx context.Context, runID string, refs []router.RouteRef, processes []router.RouteProcess) ([]router.Route, error) {
+	return c.admin.(routeLifecycleClient).ActivateRoutes(ctx, runID, refs, processes)
 }
 func (c *testWindowsCompanionControl) ReleaseRoutes(ctx context.Context, runID string, refs []router.RouteRef) error {
 	return c.admin.(routeLifecycleClient).ReleaseRoutes(ctx, runID, refs)

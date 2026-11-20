@@ -29,9 +29,13 @@ func (c *Client) ReserveRoutes(ctx context.Context, request router.ReservationRe
 	return result, nil
 }
 
-func (c *Client) ActivateRoutes(ctx context.Context, runID string, refs []router.RouteRef) ([]router.Route, error) {
-	path := reservationPath(runID) + "/activate"
-	resp, err := c.doRefsRequest(ctx, http.MethodPost, path, refs)
+func (c *Client) ActivateRoutes(ctx context.Context, runID string, refs []router.RouteRef, processes []router.RouteProcess) ([]router.Route, error) {
+	path := "/v3/route-reservations/" + url.PathEscape(runID) + "/activate"
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(router.RouteActivationRequest{Refs: refs, Processes: processes}); err != nil {
+		return nil, err
+	}
+	resp, err := c.doLifecycleRequest(ctx, http.MethodPost, path, &body)
 	if err != nil {
 		return nil, err
 	}

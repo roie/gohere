@@ -47,6 +47,17 @@ type RouteReservation struct {
 	Reuse           *RouteRef `json:"reuse,omitempty"`
 }
 
+type RouteProcess struct {
+	Ref             RouteRef `json:"ref"`
+	PID             int      `json:"pid"`
+	ProcessIdentity string   `json:"processIdentity"`
+}
+
+type RouteActivationRequest struct {
+	Refs      []RouteRef     `json:"refs"`
+	Processes []RouteProcess `json:"processes"`
+}
+
 type ReservationResult struct {
 	RunID  string          `json:"runId"`
 	Routes []ReservedRoute `json:"routes"`
@@ -276,7 +287,7 @@ func enforceSingleWSLOwner(routes []Route, candidates []RouteReservation) error 
 	return nil
 }
 
-func ActivateRoutes(store Store, runID string, refs []RouteRef, now time.Time, leaseTTL time.Duration) ([]Route, error) {
+func ActivateRoutes(store Store, runID string, refs []RouteRef, processes []RouteProcess, now time.Time, leaseTTL time.Duration) ([]Route, error) {
 	if leaseTTL <= 0 {
 		return nil, errors.New("lease TTL must be positive")
 	}
@@ -286,9 +297,33 @@ func ActivateRoutes(store Store, runID string, refs []RouteRef, now time.Time, l
 		if err != nil {
 			return nil, err
 		}
+		byRef := make(map[RouteRef]RouteProcess, len(processes))
+		for _, process := range processes {
+			if process.PID <= 0 || strings.TrimSpace(process.ProcessIdentity) == "" {
+				return nil, errors.New("activation requires a positive PID and process identity")
+			}
+			if _, duplicate := byRef[process.Ref]; duplicate {
+				return nil, ErrRouteRefMismatch
+			}
+			found := false
+			for _, index := range indexes {
+				if routes[index].Ref() == process.Ref {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, ErrRouteRefMismatch
+			}
+			byRef[process.Ref] = process
+		}
 		activated = make([]Route, len(indexes))
 		for i, index := range indexes {
 			route := routes[index]
+			if process, ok := byRef[route.Ref()]; ok {
+				route.PID = process.PID
+				route.ProcessIdentity = process.ProcessIdentity
+			}
 			route.State = RouteStateActive
 			route.Target = route.PendingTarget
 			route.PendingTarget = ""

@@ -22,11 +22,11 @@ func (c Client) ReserveRoutes(ctx context.Context, request router.ReservationReq
 	return *response.Reservation, nil
 }
 
-func (c Client) ActivateRoutes(ctx context.Context, runID string, refs []router.RouteRef) ([]router.Route, error) {
+func (c Client) ActivateRoutes(ctx context.Context, runID string, refs []router.RouteRef, processes []router.RouteProcess) ([]router.Route, error) {
 	if err := c.requireLifecycleCapability(ctx, CapabilityActivateRoutes); err != nil {
 		return nil, err
 	}
-	response, err := c.Call(ctx, Request{Operation: OperationActivateRoutes, RunID: runID, Refs: refs})
+	response, err := c.Call(ctx, Request{Operation: OperationActivateRoutes, RunID: runID, Refs: refs, Processes: processes})
 	if err != nil {
 		return nil, lifecycleOperationError(err)
 	}

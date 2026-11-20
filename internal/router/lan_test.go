@@ -142,7 +142,7 @@ func TestReserveRoutesAddsLANIntentWhenReusingRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	refs := initial.PendingRefs()
-	active, err := ActivateRoutes(store, "run-1", refs, now, time.Minute)
+	active, err := ActivateRoutes(store, "run-1", refs, nil, now, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

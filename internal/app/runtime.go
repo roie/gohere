@@ -21,7 +21,7 @@ const (
 
 type routeLifecycleClient interface {
 	ReserveRoutes(context.Context, router.ReservationRequest) (router.ReservationResult, error)
-	ActivateRoutes(context.Context, string, []router.RouteRef) ([]router.Route, error)
+	ActivateRoutes(context.Context, string, []router.RouteRef, []router.RouteProcess) ([]router.Route, error)
 	ReleaseRoutes(context.Context, string, []router.RouteRef) error
 	RenewRoutes(context.Context, string, []router.RouteRef) error
 	DeleteRouteRef(context.Context, router.RouteRef) error

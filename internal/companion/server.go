@@ -32,7 +32,7 @@ type Authority interface {
 	DeleteRoute(context.Context, string) error
 	ProbeTarget(context.Context, string) (bool, error)
 	ReserveRoutes(context.Context, router.ReservationRequest) (router.ReservationResult, error)
-	ActivateRoutes(context.Context, string, []router.RouteRef) ([]router.Route, error)
+	ActivateRoutes(context.Context, string, []router.RouteRef, []router.RouteProcess) ([]router.Route, error)
 	ReleaseRoutes(context.Context, string, []router.RouteRef) error
 	RenewRoutes(context.Context, string, []router.RouteRef) error
 	DeleteRouteRef(context.Context, router.RouteRef) error
@@ -170,9 +170,9 @@ func dispatch(ctx context.Context, authority Authority, request Request) Respons
 		return Response{OK: true, Reservation: &result}
 	case OperationActivateRoutes:
 		if strings.TrimSpace(request.RunID) == "" || len(request.Refs) == 0 {
-			return errorResponse("invalid_request", errors.New("activate-routes-v2 requires run ID and refs"))
+			return errorResponse("invalid_request", errors.New("activate-routes-v3 requires run ID and refs"))
 		}
-		routes, err := authority.ActivateRoutes(ctx, request.RunID, request.Refs)
+		routes, err := authority.ActivateRoutes(ctx, request.RunID, request.Refs, request.Processes)
 		if err != nil {
 			return authorityError(err)
 		}

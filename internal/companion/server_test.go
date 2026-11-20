@@ -72,8 +72,9 @@ func TestServeDispatchesRouteLifecycleOperations(t *testing.T) {
 		t.Fatalf("reserve response/authority = %#v/%#v", response, authority)
 	}
 	refs := []router.RouteRef{{ID: "route-1", Generation: 1}}
+	processes := []router.RouteProcess{{Ref: refs[0], PID: 123, ProcessIdentity: "linux-root"}}
 	for _, request := range []Request{
-		{Operation: OperationActivateRoutes, RunID: "run-a", Refs: refs},
+		{Operation: OperationActivateRoutes, RunID: "run-a", Refs: refs, Processes: processes},
 		{Operation: OperationRenewRoutes, RunID: "run-a", Refs: refs},
 		{Operation: OperationReleaseRoutes, RunID: "run-a", Refs: refs},
 		{Operation: OperationDeleteRouteRef, Ref: &refs[0]},
@@ -83,7 +84,7 @@ func TestServeDispatchesRouteLifecycleOperations(t *testing.T) {
 			t.Fatalf("%s response = %#v", request.Operation, response)
 		}
 	}
-	if authority.runID != "run-a" || !reflect.DeepEqual(authority.refs, refs) || authority.deletedRef != refs[0] {
+	if authority.runID != "run-a" || !reflect.DeepEqual(authority.refs, refs) || authority.deletedRef != refs[0] || !reflect.DeepEqual(authority.processes, processes) {
 		t.Fatalf("authority lifecycle state = %#v", authority)
 	}
 }
@@ -226,6 +227,7 @@ type testAuthority struct {
 	reservation    router.ReservationRequest
 	runID          string
 	refs           []router.RouteRef
+	processes      []router.RouteProcess
 	deletedRef     router.RouteRef
 }
 
@@ -288,8 +290,9 @@ func (a *testAuthority) ReserveRoutes(_ context.Context, request router.Reservat
 	return router.ReservationResult{RunID: request.RunID}, a.err
 }
 
-func (a *testAuthority) ActivateRoutes(_ context.Context, runID string, refs []router.RouteRef) ([]router.Route, error) {
+func (a *testAuthority) ActivateRoutes(_ context.Context, runID string, refs []router.RouteRef, processes []router.RouteProcess) ([]router.Route, error) {
 	a.runID, a.refs = runID, append([]router.RouteRef(nil), refs...)
+	a.processes = append([]router.RouteProcess(nil), processes...)
 	return append([]router.Route(nil), a.routes...), a.err
 }
 

@@ -218,7 +218,18 @@ func runPlannedGroup(ctx context.Context, cmdVerbose bool, items []multiRunItem,
 		}
 	}
 	if len(pendingRefs) > 0 {
-		if _, err := lifecycleClient.ActivateRoutes(ctx, runID, pendingRefs); err != nil {
+		processes := make([]router.RouteProcess, 0, len(pendingRefs))
+		for i, item := range items {
+			if item.reused {
+				continue
+			}
+			process, err := activationProcess(services[i].Ref, item.result.PID())
+			if err != nil {
+				return err
+			}
+			processes = append(processes, process)
+		}
+		if _, err := lifecycleClient.ActivateRoutes(ctx, runID, pendingRefs, processes); err != nil {
 			return err
 		}
 		activated = true
