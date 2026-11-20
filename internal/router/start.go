@@ -450,7 +450,7 @@ func writePIDFile(pidPath string, pid int) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := replaceFile(tmpPath, pidPath); err != nil {
+	if err := os.Rename(tmpPath, pidPath); err != nil {
 		return err
 	}
 	if err := os.Chmod(pidPath, 0600); err != nil {
@@ -493,7 +493,7 @@ func writeRouterInstance(path, instanceID string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := replaceFile(tmpPath, path); err != nil {
+	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
 	cleanup = false

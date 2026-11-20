@@ -262,62 +262,6 @@ func TestStateLockRecoversAfterOwnerIsKilled(t *testing.T) {
 	}
 }
 
-func TestReplaceFileForWindowsReplacesExistingTarget(t *testing.T) {
-	dir := t.TempDir()
-	dst := filepath.Join(dir, "token")
-	tmp := filepath.Join(dir, "token.tmp")
-	if err := os.WriteFile(dst, []byte("old\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(tmp, []byte("new\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := replaceFileForGOOS("windows", tmp, dst); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "new\n" {
-		t.Fatalf("target file = %q, want new contents", string(data))
-	}
-	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("temp file stat err = %v, want not exist", err)
-	}
-}
-
-func TestReplaceFileForWindowsRestoresExistingTargetWhenReplaceFails(t *testing.T) {
-	dir := t.TempDir()
-	dst := filepath.Join(dir, "token")
-	tmp := filepath.Join(dir, "token.tmp")
-	if err := os.WriteFile(dst, []byte("old\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(tmp, []byte("new\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	errReplaceFailed := errors.New("replace failed")
-	err := replaceFileForGOOSWithRename("windows", tmp, dst, func(oldPath, newPath string) error {
-		if oldPath == tmp && newPath == dst {
-			return errReplaceFailed
-		}
-		return os.Rename(oldPath, newPath)
-	})
-	if !errors.Is(err, errReplaceFailed) {
-		t.Fatalf("err = %v, want replace failure", err)
-	}
-	data, err := os.ReadFile(dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "old\n" {
-		t.Fatalf("target file = %q, want old contents restored", string(data))
-	}
-}
-
 func TestRouteStoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	store := NewRouteStore(filepath.Join(dir, "routes.json"))
@@ -342,52 +286,6 @@ func TestRouteStoreRoundTrip(t *testing.T) {
 	}
 	if len(routes) != 1 || routes[0].Host != route.Host || routes[0].Target != route.Target || routes[0].Source != "wsl" || routes[0].OwnerCWD != route.OwnerCWD || routes[0].OwnerEnv != "wsl" {
 		t.Fatalf("routes = %#v", routes)
-	}
-}
-
-func TestRouteStoreLoadWaitsForWindowsReplacementGap(t *testing.T) {
-	store := NewRouteStore(filepath.Join(t.TempDir(), RoutesFilename))
-	want := Route{Host: "shop.localhost", Target: "http://127.0.0.1:5173"}
-	if err := store.Save([]Route{want}); err != nil {
-		t.Fatal(err)
-	}
-	unlock, err := store.lock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	backup := store.path + ".replacement-gap"
-	if err := os.Rename(store.path, backup); err != nil {
-		unlock()
-		t.Fatal(err)
-	}
-
-	type result struct {
-		routes []Route
-		err    error
-	}
-	done := make(chan result, 1)
-	go func() {
-		routes, err := store.Load()
-		done <- result{routes: routes, err: err}
-	}()
-	select {
-	case got := <-done:
-		unlock()
-		t.Fatalf("Load completed during replacement gap: %#v", got)
-	case <-time.After(50 * time.Millisecond):
-	}
-	if err := os.Rename(backup, store.path); err != nil {
-		unlock()
-		t.Fatal(err)
-	}
-	unlock()
-	select {
-	case got := <-done:
-		if got.err != nil || len(got.routes) != 1 || got.routes[0].Host != want.Host {
-			t.Fatalf("Load after replacement = %#v", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Load did not finish after replacement completed")
 	}
 }
 

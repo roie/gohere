@@ -18,7 +18,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -297,7 +296,7 @@ func writeToken(path string) (string, error) {
 	if err := tmp.Close(); err != nil {
 		return "", err
 	}
-	if err := replaceFile(tmpPath, path); err != nil {
+	if err := os.Rename(tmpPath, path); err != nil {
 		return "", err
 	}
 	if err := os.Chmod(path, 0600); err != nil {
@@ -333,50 +332,6 @@ func lockTokenFile(path string) (func(), error) {
 		return nil, fmt.Errorf("timed out waiting for token lock: %s", lockPath)
 	}
 	return unlock, err
-}
-
-func replaceFile(tmpPath, path string) error {
-	return replaceFileForGOOS(runtime.GOOS, tmpPath, path)
-}
-
-func replaceFileForGOOS(goos, tmpPath, path string) error {
-	return replaceFileForGOOSWithRename(goos, tmpPath, path, os.Rename)
-}
-
-func replaceFileForGOOSWithRename(goos, tmpPath, path string, rename func(string, string) error) error {
-	if goos == "windows" {
-		backup, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.bak")
-		if err != nil {
-			return err
-		}
-		backupPath := backup.Name()
-		if err := backup.Close(); err != nil {
-			os.Remove(backupPath)
-			return err
-		}
-		if err := os.Remove(backupPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-
-		hasExisting := true
-		if err := rename(path, backupPath); err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-			hasExisting = false
-		}
-		if err := rename(tmpPath, path); err != nil {
-			if hasExisting {
-				_ = rename(backupPath, path)
-			}
-			return err
-		}
-		if hasExisting {
-			_ = os.Remove(backupPath)
-		}
-		return nil
-	}
-	return rename(tmpPath, path)
 }
 
 func validToken(token string) bool {
@@ -501,7 +456,7 @@ func (s *RouteStore) save(routes []Route) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := replaceFile(tmpPath, s.path); err != nil {
+	if err := os.Rename(tmpPath, s.path); err != nil {
 		return err
 	}
 	cleanup = false
