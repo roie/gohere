@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -35,12 +37,25 @@ func useRealGroupRunners(t *testing.T) {
 	t.Cleanup(func() { launchGroupRunnerFunc = original })
 }
 
+// Ports below every default ephemeral range cannot be handed to another
+// test's port-0 listener while the helper process is still starting.
+func choosePlannedTestPort(t *testing.T) int {
+	t.Helper()
+	for range 100 {
+		port := 20000 + rand.IntN(10000)
+		listener, err := net.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(port))
+		if err == nil {
+			listener.Close()
+			return port
+		}
+	}
+	t.Fatal("no free planned test port in 20000-29999")
+	return 0
+}
+
 func plannedProcessItem(t *testing.T, root string, index int) multiRunItem {
 	t.Helper()
-	port, err := runner.ChooseFreePort()
-	if err != nil {
-		t.Fatal(err)
-	}
+	port := choosePlannedTestPort(t)
 	dir := filepath.Join(root, fmt.Sprintf("service%d", index))
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
