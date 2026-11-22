@@ -3,6 +3,7 @@ package router
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -657,7 +658,8 @@ func startTLSTestServer(
 	done := make(chan error, 1)
 	go func() {
 		defer listener.Close()
-		for range connections {
+		strays := 0
+		for handshakes := 0; handshakes < connections; {
 			rawConnection, err := listener.Accept()
 			if err != nil {
 				done <- err
@@ -671,9 +673,16 @@ func startTLSTestServer(
 			}
 			if err := connection.Handshake(); err != nil {
 				rawConnection.Close()
+				// Another local process can connect to this ephemeral port without speaking TLS.
+				var notTLS tls.RecordHeaderError
+				if errors.As(err, &notTLS) && strays < 10 {
+					strays++
+					continue
+				}
 				done <- err
 				return
 			}
+			handshakes++
 			if _, err := connection.Write([]byte{1}); err != nil {
 				rawConnection.Close()
 				done <- err
