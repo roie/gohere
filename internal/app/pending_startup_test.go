@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -35,15 +36,20 @@ func TestPendingStartupProcessHelper(t *testing.T) {
 	if delay == "" {
 		return
 	}
-	if err := os.WriteFile(os.Getenv("GOHERE_PLANNED_ROOT"), []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
-		t.Fatal(err)
-	}
 	duration, err := time.ParseDuration(delay)
 	if err != nil {
 		t.Fatal(err)
 	}
+	listener, err := net.Listen("tcp4", "127.0.0.1:"+os.Getenv("PORT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("GOHERE_PLANNED_ROOT"), []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(duration)
-	TestPlannedProcessHelper(t)
+	fmt.Printf("Local: http://127.0.0.1:%s\n", os.Getenv("PORT"))
+	_ = http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "planned-owned-server") }))
 }
 
 func TestPendingStartup(t *testing.T) {
@@ -64,7 +70,7 @@ func TestPendingStartup(t *testing.T) {
 							delay = "100ms"
 						}
 						items[i].plan.Command = []string{os.Args[0], "-test.run=^TestPendingStartupProcessHelper$"}
-						items[i].plan.Env = append(items[i].plan.Env, "GOHERE_PLANNED_MODE=direct", "GOHERE_PENDING_STARTUP_DELAY="+delay)
+						items[i].plan.Env = append(items[i].plan.Env, "GOHERE_PENDING_STARTUP_DELAY="+delay)
 						if bridge {
 							items[i].plan.OwnerEnv, items[i].plan.OwnerInstance = "wsl", "test-owner"
 							items[i].plan.Distro, items[i].plan.LinuxUser = "test-distro", "test-user"
