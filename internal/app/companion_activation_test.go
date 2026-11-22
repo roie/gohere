@@ -47,12 +47,13 @@ func TestCompanionPlannedActivationPersistsRootIdentity(t *testing.T) {
 			defer cancel()
 			done := make(chan struct{})
 			var runErr error
+			output := make(pendingStartupOutput, 1)
 			go func() {
 				defer close(done)
 				if grouped {
-					runErr = runPlannedGroup(ctx, false, items, client, io.Discard, io.Discard)
+					runErr = runPlannedGroup(ctx, false, items, client, output, io.Discard)
 				} else {
-					runErr = runPlannedSingle(ctx, items[0].cmd, items[0].plan, client, io.Discard, io.Discard)
+					runErr = runPlannedSingle(ctx, items[0].cmd, items[0].plan, client, output, io.Discard)
 				}
 			}()
 			defer func() {
@@ -81,6 +82,13 @@ func TestCompanionPlannedActivationPersistsRootIdentity(t *testing.T) {
 						if route.OwnerEnv != "wsl" || route.OwnerInstance != "test-owner" || route.PID <= 0 || route.ProcessIdentity == "" || !lifecycle.RouteProcessVerified(route) {
 							t.Fatalf("companion lost ownership metadata: %+v", route)
 						}
+					}
+					select {
+					case <-output:
+					case <-done:
+						t.Fatalf("launch ended before announcement: %v", runErr)
+					case <-time.After(15 * time.Second):
+						t.Fatal("companion launch was not announced")
 					}
 					break
 				}
