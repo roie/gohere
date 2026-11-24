@@ -120,3 +120,43 @@ func lanTrustRequest(server *Server, host, path string) *httptest.ResponseRecord
 	server.LANHTTPHandler().ServeHTTP(response, request)
 	return response
 }
+
+func TestLANTrustPageShowsOnlyTheDetectedPlatformSteps(t *testing.T) {
+	server := NewServer(Config{Store: NewMemoryStore()})
+	server.ConfigureLANTrust(LANTrustSession{
+		Address: "192.168.1.42", Token: "secret-token", Hostname: "shop.local.",
+		Fingerprint: "AA:BB:CC", CACertificatePEM: []byte("-----BEGIN CERTIFICATE-----\nPUBLIC\n-----END CERTIFICATE-----\n"),
+	})
+	for _, test := range []struct {
+		name, userAgent string
+		apple, android  bool
+	}{
+		{"iPhone", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1", true, false},
+		{"iPad", "Mozilla/5.0 (iPad; CPU OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1", true, false},
+		{"Android", "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36", false, true},
+		{"unknown", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15", true, true},
+		{"missing", "", true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://192.168.1.42/__gohere/trust/secret-token", nil)
+			request.Host = "192.168.1.42"
+			request.RemoteAddr = "192.168.1.58:43210"
+			request.Header.Set("User-Agent", test.userAgent)
+			response := httptest.NewRecorder()
+			server.LANHTTPHandler().ServeHTTP(response, request)
+			body := response.Body.String()
+			if response.Code != http.StatusOK || !strings.Contains(body, "AA:BB:CC") || !strings.Contains(body, "Open shop.local") {
+				t.Fatalf("page = %d %q", response.Code, body)
+			}
+			if got := strings.Contains(body, "gohere.mobileconfig") && strings.Contains(body, "Certificate Trust Settings"); got != test.apple {
+				t.Fatalf("Apple steps shown = %v, want %v", got, test.apple)
+			}
+			if got := strings.Contains(body, "Install a certificate"); got != test.android {
+				t.Fatalf("Android steps shown = %v, want %v", got, test.android)
+			}
+			if got := strings.Contains(body, "<h2>"); got != (test.apple && test.android) {
+				t.Fatalf("platform headings shown = %v, want only when both platforms are shown", got)
+			}
+		})
+	}
+}

@@ -102,7 +102,7 @@ func (s *Server) serveLANTrust(w http.ResponseWriter, request *http.Request) boo
 		return true
 	}
 	if len(parts) == 1 && parts[0] != "" {
-		s.writeLANTrustPage(w, session)
+		s.writeLANTrustPage(w, session, request.UserAgent())
 		return true
 	}
 	if len(parts) != 2 {
@@ -148,7 +148,7 @@ func (s *Server) rateLimitedLANTrust(client string, now time.Time) bool {
 	return false
 }
 
-func (s *Server) writeLANTrustPage(w http.ResponseWriter, session LANTrustSession) {
+func (s *Server) writeLANTrustPage(w http.ResponseWriter, session LANTrustSession, userAgent string) {
 	base := lanTrustPathPrefix + session.Token + "/"
 	hostname := strings.TrimSuffix(session.Hostname, ".")
 	appURL := "https://" + hostname
@@ -158,7 +158,7 @@ func (s *Server) writeLANTrustPage(w http.ResponseWriter, session LANTrustSessio
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect this device · gohere</title><style>
 :root{color-scheme:light dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5}body{margin:0;background:#f4f5f7;color:#17191c}main{box-sizing:border-box;width:min(100%% - 32px,680px);margin:0 auto;padding:48px 0 64px}h1{margin:0 0 8px;font-size:2rem;line-height:1.15;letter-spacing:-.025em}h2{margin:32px 0 8px;font-size:1.15rem}p{margin:8px 0;color:#4b5159}.notice{margin:24px 0;padding:16px;background:#fff;border-radius:12px}.fingerprint{overflow-wrap:anywhere;color:#262a30}.actions{display:flex;flex-wrap:wrap;gap:10px;margin:20px 0}a.button{display:inline-block;padding:11px 16px;border-radius:8px;background:#1769e0;color:#fff;font-weight:650;text-decoration:none}a.secondary{background:#e3e7ed;color:#20242a}ol{margin:10px 0;padding-left:24px}li+li{margin-top:8px}.security{font-size:.9rem}@media(prefers-color-scheme:dark){body{background:#111315;color:#f4f5f7}.notice{background:#1d2024}p,.fingerprint{color:#c6cbd2}a.secondary{background:#30353c;color:#f4f5f7}}@media(max-width:480px){main{padding-top:28px}h1{font-size:1.65rem}.actions{display:grid}a.button{text-align:center}}
-</style></head><body><main><h1>Connect this device to %s</h1><p>One-time setup. If this device already trusts gohere, you will be forwarded automatically.</p><div class="notice"><strong>Verify before installing</strong><p class="fingerprint"><code>%s</code></p><p class="security">Only install this certificate on devices you control.</p></div><section><h2>iPhone or iPad</h2><ol><li>Open this page in <strong>Safari</strong>. Chrome’s secure-connections setting may block the initial HTTP setup page.</li><li><a href="%sgohere.mobileconfig">Download the Apple profile</a>.</li><li>Open Settings → General → <strong>VPN &amp; Device Management</strong>, select the gohere profile, and tap Install.</li><li>Then open Settings → General → About → <strong>Certificate Trust Settings</strong> and enable full trust for “gohere local development CA”.</li></ol></section><section><h2>Android</h2><ol><li><a href="%sgohere-root.pem">Download the root certificate</a>.</li><li>Open Settings and search for <strong>Install a certificate</strong>.</li><li>Choose CA certificate, select the downloaded file, and confirm.</li></ol><p>Settings names vary between Android manufacturers.</p></section><div class="actions"><a class="button" id="open-app" href="%s">Open %s</a><a class="button secondary" href="%sgohere-root.pem">Download certificate</a></div></main><script>
+</style></head><body><main><h1>Connect this device to %s</h1><p>One-time setup. If this device already trusts gohere, you will be forwarded automatically.</p><div class="notice"><strong>Verify before installing</strong><p class="fingerprint"><code>%s</code></p><p class="security">Only install this certificate on devices you control.</p></div>%s<div class="actions"><a class="button" id="open-app" href="%s">Open %s</a><a class="button secondary" href="%sgohere-root.pem">Download certificate</a></div></main><script>
 const appURL = %s;
 async function openWhenTrusted() {
   try {
@@ -168,7 +168,20 @@ async function openWhenTrusted() {
 }
 window.addEventListener("pageshow", openWhenTrusted);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) openWhenTrusted(); });
-</script></body></html>`, html.EscapeString(hostname), html.EscapeString(session.Fingerprint), html.EscapeString(base), html.EscapeString(base), html.EscapeString(appURL), html.EscapeString(hostname), html.EscapeString(base), appURLJSON)
+</script></body></html>`, html.EscapeString(hostname), html.EscapeString(session.Fingerprint), lanTrustSetupSteps(userAgent, html.EscapeString(base)), html.EscapeString(appURL), html.EscapeString(hostname), html.EscapeString(base), appURLJSON)
+}
+
+func lanTrustSetupSteps(userAgent, base string) string {
+	apple := fmt.Sprintf(`<section><ol><li>Open this page in <strong>Safari</strong>. Chrome’s secure-connections setting may block the initial HTTP setup page.</li><li><a href="%sgohere.mobileconfig">Download the Apple profile</a>.</li><li>Open Settings → General → <strong>VPN &amp; Device Management</strong>, select the gohere profile, and tap Install.</li><li>Then open Settings → General → About → <strong>Certificate Trust Settings</strong> and enable full trust for “gohere local development CA”.</li></ol></section>`, base)
+	android := fmt.Sprintf(`<section><ol><li><a href="%sgohere-root.pem">Download the root certificate</a>.</li><li>Open Settings and search for <strong>Install a certificate</strong>.</li><li>Choose CA certificate, select the downloaded file, and confirm.</li></ol><p>Settings names vary between Android manufacturers.</p></section>`, base)
+	switch {
+	case strings.Contains(userAgent, "iPhone") || strings.Contains(userAgent, "iPad") || strings.Contains(userAgent, "iPod"):
+		return apple
+	case strings.Contains(userAgent, "Android"):
+		return android
+	default:
+		return strings.Replace(apple, "<section>", "<section><h2>iPhone or iPad</h2>", 1) + strings.Replace(android, "<section>", "<section><h2>Android</h2>", 1)
+	}
 }
 
 func lanTrustMobileConfig(session LANTrustSession) []byte {
