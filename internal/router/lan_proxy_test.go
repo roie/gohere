@@ -98,3 +98,79 @@ func TestLANProxyDoesNotRewriteNonmatchingOrigin(t *testing.T) {
 		t.Fatalf("Origin = %q", got)
 	}
 }
+
+func TestLANProxyRewritesOnlyTheRouteSchemeOrigin(t *testing.T) {
+	for _, test := range []struct {
+		scheme, requestOrigin, upstreamOrigin, acao, location, wantACAO, wantLocation string
+	}{
+		{
+			scheme: "http", requestOrigin: "https://shop.local", upstreamOrigin: "http://shop.localhost",
+			acao: "http://shop.localhost", wantACAO: "https://shop.local",
+			location: "http://shop.localhost/login?q=1", wantLocation: "https://shop.local/login?q=1",
+		},
+		{
+			scheme: "http", requestOrigin: "https://other.local", upstreamOrigin: "https://other.local",
+			acao: "https://shop.localhost", wantACAO: "https://shop.localhost",
+			location: "https://shop.localhost/login", wantLocation: "https://shop.localhost/login",
+		},
+		{
+			scheme: "http", requestOrigin: "https://shop.local", upstreamOrigin: "http://shop.localhost",
+			acao: "*", wantACAO: "*",
+			location: "http://api.localhost/login", wantLocation: "http://api.localhost/login",
+		},
+		{
+			scheme: "https", requestOrigin: "https://shop.local", upstreamOrigin: "https://shop.localhost",
+			acao: "http://shop.localhost", wantACAO: "http://shop.localhost",
+			location: "http://shop.localhost/login", wantLocation: "http://shop.localhost/login",
+		},
+		{
+			scheme: "http", requestOrigin: "https://shop.local", upstreamOrigin: "http://shop.localhost",
+			acao: "http://shop.localhost", wantACAO: "https://shop.local",
+			location: "/login", wantLocation: "/login",
+		},
+	} {
+		t.Run(test.scheme+" "+test.acao+" "+test.location, func(t *testing.T) {
+			origin := make(chan string, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				origin <- request.Header.Get("Origin")
+				w.Header().Set("Access-Control-Allow-Origin", test.acao)
+				w.Header().Set("Location", test.location)
+				w.Header().Add("Set-Cookie", "sid=one; Domain=shop.localhost; Path=/")
+				w.WriteHeader(http.StatusFound)
+			}))
+			defer upstream.Close()
+			route := Route{ID: "route-1", Generation: 1, State: RouteStateActive, Host: "shop.localhost", Target: upstream.URL, PreferredScheme: test.scheme,
+				LANShare: &LANShare{State: LANShareActive, Hostname: "shop.local.", CreatedAt: time.Now()},
+			}
+			store := NewMemoryStore()
+			if err := store.Save([]Route{route}); err != nil {
+				t.Fatal(err)
+			}
+			server := NewServer(Config{Store: store})
+			if err := server.RegisterLANRoute(route.Ref(), "shop.local", tls.Certificate{}); err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodGet, "https://shop.local/", nil)
+			request.Host = "shop.local"
+			request.TLS = &tls.ConnectionState{ServerName: "shop.local"}
+			request.Header.Set("Origin", test.requestOrigin)
+			response := httptest.NewRecorder()
+			server.LANHandler().ServeHTTP(response, request)
+			if response.Code != http.StatusFound {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			if got := <-origin; got != test.upstreamOrigin {
+				t.Fatalf("upstream Origin = %q, want %q", got, test.upstreamOrigin)
+			}
+			if got := response.Header().Get("Access-Control-Allow-Origin"); got != test.wantACAO {
+				t.Fatalf("ACAO = %q, want %q", got, test.wantACAO)
+			}
+			if got := response.Header().Get("Location"); got != test.wantLocation {
+				t.Fatalf("Location = %q, want %q", got, test.wantLocation)
+			}
+			if got := response.Header().Get("Set-Cookie"); got != "sid=one; Domain=shop.local; Path=/" {
+				t.Fatalf("Set-Cookie = %q", got)
+			}
+		})
+	}
+}

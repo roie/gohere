@@ -252,7 +252,7 @@ func (s *Server) LANHandler() http.Handler {
 		s.storeMu.Lock()
 		_ = MarkLANShareConnected(s.store, route.Ref(), time.Now())
 		s.storeMu.Unlock()
-		forwarded := request.Clone(withLANProxyContext(request.Context(), hostname, route.Host))
+		forwarded := request.Clone(withLANProxyContext(request.Context(), hostname, route.Host, route.PreferredScheme))
 		forwarded.Host = route.Host
 		loopbackHandler.ServeHTTP(w, forwarded)
 	})

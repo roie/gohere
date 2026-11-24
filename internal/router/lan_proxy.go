@@ -10,13 +10,14 @@ import (
 type lanProxyContextKey struct{}
 
 type lanProxyInfo struct {
-	LANHost   string
-	RouteHost string
+	LANHost     string
+	RouteHost   string
+	RouteScheme string
 }
 
-func withLANProxyContext(ctx context.Context, lanHost, routeHost string) context.Context {
+func withLANProxyContext(ctx context.Context, lanHost, routeHost, routeScheme string) context.Context {
 	return context.WithValue(ctx, lanProxyContextKey{}, lanProxyInfo{
-		LANHost: strings.TrimSuffix(lanHost, "."), RouteHost: strings.TrimSuffix(routeHost, "."),
+		LANHost: strings.TrimSuffix(lanHost, "."), RouteHost: strings.TrimSuffix(routeHost, "."), RouteScheme: routeScheme,
 	})
 }
 
@@ -31,7 +32,7 @@ func rewriteLANRequest(out, in *http.Request) {
 		return
 	}
 	if out.Header.Get("Origin") == "https://"+info.LANHost {
-		out.Header.Set("Origin", "https://"+info.RouteHost)
+		out.Header.Set("Origin", info.RouteScheme+"://"+info.RouteHost)
 	}
 }
 
@@ -41,12 +42,13 @@ func rewriteLANResponse(response *http.Response) error {
 		return nil
 	}
 	lanOrigin := "https://" + info.LANHost
-	routeOrigin := "https://" + info.RouteHost
+	routeOrigin := info.RouteScheme + "://" + info.RouteHost
 	if response.Header.Get("Access-Control-Allow-Origin") == routeOrigin {
 		response.Header.Set("Access-Control-Allow-Origin", lanOrigin)
 	}
 	if location := response.Header.Get("Location"); location != "" {
-		if parsed, err := url.Parse(location); err == nil && parsed.Scheme == "https" && strings.EqualFold(parsed.Host, info.RouteHost) {
+		if parsed, err := url.Parse(location); err == nil && parsed.Scheme == info.RouteScheme && strings.EqualFold(parsed.Host, info.RouteHost) {
+			parsed.Scheme = "https"
 			parsed.Host = info.LANHost
 			response.Header.Set("Location", parsed.String())
 		}
