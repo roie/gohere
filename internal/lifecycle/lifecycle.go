@@ -527,32 +527,6 @@ func realProcessStartTime(pid int) (time.Time, bool) {
 	return bootTime.Add(time.Duration(ticks) * time.Second / time.Duration(hz)), true
 }
 
-func windowsProcessStartTime(pid int) (time.Time, bool) {
-	output, err := commandOutput(
-		processCommandTimeout,
-		"powershell.exe",
-		"-NoProfile",
-		"-Command",
-		fmt.Sprintf(`$p = Get-Process -Id %d -ErrorAction Stop; $p.StartTime.ToUniversalTime().ToString("o")`, pid),
-	)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return parseWindowsProcessStartTime(string(output))
-}
-
-func parseWindowsProcessStartTime(output string) (time.Time, bool) {
-	output = strings.TrimSpace(output)
-	if output == "" {
-		return time.Time{}, false
-	}
-	startedAt, err := time.Parse(time.RFC3339Nano, output)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return startedAt, true
-}
-
 func darwinProcessStartTime(pid int) (time.Time, bool) {
 	output, err := commandOutput(
 		processCommandTimeout,

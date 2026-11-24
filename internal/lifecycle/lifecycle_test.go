@@ -714,22 +714,6 @@ func TestTasklistContainsPIDHandlesCommaSeparatedMemory(t *testing.T) {
 	}
 }
 
-func TestParseWindowsProcessStartTime(t *testing.T) {
-	startedAt, ok := parseWindowsProcessStartTime("2026-05-23T21:15:42.1234567Z\r\n")
-	if !ok {
-		t.Fatal("expected start time to parse")
-	}
-	if startedAt.Year() != 2026 || startedAt.Month() != time.May || startedAt.Day() != 23 {
-		t.Fatalf("startedAt = %s", startedAt)
-	}
-}
-
-func TestParseWindowsProcessStartTimeRejectsInvalidOutput(t *testing.T) {
-	if _, ok := parseWindowsProcessStartTime("Saturday, May 23, 2026"); ok {
-		t.Fatal("expected localized output to be rejected")
-	}
-}
-
 func TestParseDarwinProcessStartTime(t *testing.T) {
 	startedAt, ok := parseDarwinProcessStartTime("Thu May 28 21:37:17 2026\n", time.UTC)
 	if !ok {
@@ -791,30 +775,6 @@ func TestWindowsPIDAliveUsesBoundedCommand(t *testing.T) {
 	}
 	if gotName != "tasklist" {
 		t.Fatalf("command = %q, want tasklist", gotName)
-	}
-	if gotTimeout <= 0 {
-		t.Fatalf("timeout = %s, want bounded timeout", gotTimeout)
-	}
-}
-
-func TestWindowsProcessStartTimeUsesBoundedCommand(t *testing.T) {
-	oldCommandOutput := commandOutput
-	defer func() {
-		commandOutput = oldCommandOutput
-	}()
-	var gotTimeout time.Duration
-	var gotName string
-	commandOutput = func(timeout time.Duration, name string, args ...string) ([]byte, error) {
-		gotTimeout = timeout
-		gotName = name
-		return []byte("2026-05-23T21:15:42.1234567Z\r\n"), nil
-	}
-
-	if _, ok := windowsProcessStartTime(26312); !ok {
-		t.Fatal("expected start time")
-	}
-	if gotName != "powershell.exe" {
-		t.Fatalf("command = %q, want powershell.exe", gotName)
 	}
 	if gotTimeout <= 0 {
 		t.Fatalf("timeout = %s, want bounded timeout", gotTimeout)
