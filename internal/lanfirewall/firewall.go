@@ -41,6 +41,7 @@ foreach ($name in @('gohere LAN HTTPS', 'gohere LAN onboarding', 'gohere LAN mDN
     }
   }
 }
+exit 0
 `
 }
 
