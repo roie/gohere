@@ -226,32 +226,31 @@ func (r *Responder) runActor() {
 					if !matched {
 						continue
 					}
-					destination, ok := responseDestination(inbound, question, entry.lastMulticast, now, r.iface.Prefix)
-					if !ok {
-						continue
-					}
+					destinations := responseDestinations(inbound, question, entry.lastMulticast, now, r.iface.Prefix)
 					legacy := inbound.Source.Port() != 5353
 					payload, responseErr := responseMessage(message, entry.current, r.iface.Prefix.Addr(), legacy)
 					if responseErr != nil {
 						continue
 					}
-					due := now.Add(queryResponseDelay(message, r.probeDelay))
-					multicast := destination == mdnsIPv4AddrPort
-					if multicast {
-						_, defense := probeOpponentIPv4(message, entry.current)
-						rateDue := multicastDue(now, entry.lastMulticast, defense)
-						if rateDue.After(due) {
-							due = rateDue
-						}
-					}
-					write := scheduledWrite{requested: requested, packet: outboundPacket{Payload: payload, Destination: destination}, due: due, multicast: multicast}
-					if !due.After(now) {
-						r.enqueueWrite(write.packet)
+					for _, destination := range destinations {
+						due := now.Add(queryResponseDelay(message, r.probeDelay))
+						multicast := destination == mdnsIPv4AddrPort
 						if multicast {
-							entry.lastMulticast = now
+							_, defense := probeOpponentIPv4(message, entry.current)
+							rateDue := multicastDue(now, entry.lastMulticast, defense)
+							if rateDue.After(due) {
+								due = rateDue
+							}
 						}
-					} else {
-						scheduled = append(scheduled, write)
+						write := scheduledWrite{requested: requested, packet: outboundPacket{Payload: payload, Destination: destination}, due: due, multicast: multicast}
+						if !due.After(now) {
+							r.enqueueWrite(write.packet)
+							if multicast {
+								entry.lastMulticast = now
+							}
+						} else {
+							scheduled = append(scheduled, write)
+						}
 					}
 					continue
 				}

@@ -161,3 +161,36 @@ func readTestResponse(t *testing.T, writes <-chan outboundPacket) outboundPacket
 		return outboundPacket{}
 	}
 }
+
+func TestQUQueryAlwaysGetsUnicastCopy(t *testing.T) {
+	source := netip.MustParseAddrPort("192.168.1.50:5353")
+	for _, test := range []struct {
+		name  string
+		idle  time.Duration
+		wants []netip.AddrPort
+	}{
+		{name: "recently multicast", idle: 10 * time.Second, wants: []netip.AddrPort{source}},
+		{name: "stale multicast", idle: time.Minute, wants: []netip.AddrPort{source, mdnsIPv4AddrPort}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			responder, clock, transport, _ := activeTestResponder(t)
+			defer responder.Close()
+			clock.Advance(test.idle)
+			query := new(dns.Msg)
+			query.Question = []dns.Question{{Name: testHostname, Qtype: dns.TypeA, Qclass: dns.ClassINET | cacheFlushBit}}
+			sendTestQuery(t, transport, query, source, mdnsIPv4AddrPort)
+			for _, want := range test.wants {
+				response := readTestResponse(t, transport.writeCh)
+				if response.Destination != want {
+					t.Fatalf("destination = %s, want %s", response.Destination, want)
+				}
+				assertARecord(t, unpackTestMessage(t, response.Payload).Answer[0], recordTTL, true)
+			}
+			select {
+			case extra := <-transport.writeCh:
+				t.Fatalf("unexpected extra response to %s", extra.Destination)
+			case <-time.After(50 * time.Millisecond):
+			}
+		})
+	}
+}

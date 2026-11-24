@@ -63,16 +63,20 @@ func knownAnswerSuppresses(msg *dns.Msg, hostname string, addr netip.Addr) bool 
 	return false
 }
 
-func responseDestination(inbound packet, question dns.Question, lastMulticast, now time.Time, prefix netip.Prefix) (netip.AddrPort, bool) {
+func responseDestinations(inbound packet, question dns.Question, lastMulticast, now time.Time, prefix netip.Prefix) []netip.AddrPort {
+	onLink := prefix.Contains(inbound.Source.Addr())
 	if inbound.Source.Port() != 5353 {
-		if !prefix.Contains(inbound.Source.Addr()) {
-			return netip.AddrPort{}, false
+		if !onLink {
+			return nil
 		}
-		return inbound.Source, true
+		return []netip.AddrPort{inbound.Source}
 	}
-	qu := question.Qclass&cacheFlushBit != 0
-	if qu && prefix.Contains(inbound.Source.Addr()) && now.Sub(lastMulticast) < time.Duration(recordTTL/4)*time.Second {
-		return inbound.Source, true
+	if question.Qclass&cacheFlushBit == 0 || !onLink {
+		return []netip.AddrPort{mdnsIPv4AddrPort}
 	}
-	return mdnsIPv4AddrPort, true
+	// Wi-Fi often delays multicast to sleeping clients, so a QU querier always gets a unicast copy.
+	if now.Sub(lastMulticast) < time.Duration(recordTTL/4)*time.Second {
+		return []netip.AddrPort{inbound.Source}
+	}
+	return []netip.AddrPort{inbound.Source, mdnsIPv4AddrPort}
 }
