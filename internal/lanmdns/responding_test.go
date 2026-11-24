@@ -11,6 +11,11 @@ import (
 
 func activeTestResponder(t *testing.T) (*Responder, *manualClock, *fakeTransport, Registration) {
 	t.Helper()
+	return activeTestResponderFor(t, "shop.local")
+}
+
+func activeTestResponderFor(t *testing.T, hostname string) (*Responder, *manualClock, *fakeTransport, Registration) {
+	t.Helper()
 	clock := newManualClock()
 	transport := newFakeTransport()
 	transport.writeCh = make(chan outboundPacket, 16)
@@ -21,7 +26,7 @@ func activeTestResponder(t *testing.T) (*Responder, *manualClock, *fakeTransport
 	}
 	result := make(chan Registration, 1)
 	go func() {
-		registration, _ := responder.Register(context.Background(), "shop.local")
+		registration, _ := responder.Register(context.Background(), hostname)
 		result <- registration
 	}()
 	assertProbeWrite(t, transport.writeCh)

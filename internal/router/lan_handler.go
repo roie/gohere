@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	goherecert "github.com/roie/gohere/internal/cert"
 )
 
 type lanRouteBinding struct {
@@ -287,15 +289,9 @@ func normalizeLANHostname(host string) (string, error) {
 	if parsed, _, err := net.SplitHostPort(host); err == nil {
 		host = parsed
 	}
-	host = strings.TrimSuffix(host, ".")
-	label, ok := strings.CutSuffix(host, ".local")
-	if !ok || label == "" || len(label) > 63 || strings.Contains(label, ".") || label[0] == '-' || label[len(label)-1] == '-' {
-		return "", fmt.Errorf("invalid LAN hostname %q", host)
+	canonical, err := goherecert.CanonicalLANHost(host)
+	if err != nil {
+		return "", err
 	}
-	for _, character := range label {
-		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
-			return "", fmt.Errorf("invalid LAN hostname %q", host)
-		}
-	}
-	return label + ".local.", nil
+	return canonical + ".", nil
 }

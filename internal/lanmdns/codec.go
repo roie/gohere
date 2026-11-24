@@ -161,9 +161,8 @@ func canonicalHostname(hostname string) (string, error) {
 	if !strings.HasSuffix(hostname, ".local.") {
 		return "", fmt.Errorf("mDNS hostname must end in .local")
 	}
-	label := strings.TrimSuffix(hostname, ".local.")
-	if label == "" || strings.Contains(label, ".") || len(label) > 63 {
-		return "", fmt.Errorf("mDNS hostname must contain one label of at most 63 bytes")
+	if hostname == ".local." {
+		return "", fmt.Errorf("mDNS hostname must have a label before .local")
 	}
 	if _, ok := dns.IsDomainName(hostname); !ok {
 		return "", fmt.Errorf("invalid mDNS hostname %q", hostname)

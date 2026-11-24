@@ -607,6 +607,38 @@ func TestIssueEphemeralLANHostCertRejectsNonLocalName(t *testing.T) {
 	}
 }
 
+func TestIssueLANHostCertCoversWorkspaceNames(t *testing.T) {
+	store := Store{StateDir: t.TempDir()}
+	ca, err := store.EnsureCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for input, want := range map[string]string{
+		"app.local":        "app.local",
+		"Web.Repo.Local.":  "web.repo.local",
+		"api.repo.local":   "api.repo.local",
+		"web-2.repo.local": "web-2.repo.local",
+	} {
+		leaf, err := store.IssueLANHostCert(ca, input, time.Now())
+		if err != nil {
+			t.Fatalf("IssueLANHostCert(%q): %v", input, err)
+		}
+		if len(leaf.Leaf.DNSNames) != 1 || leaf.Leaf.DNSNames[0] != want {
+			t.Fatalf("IssueLANHostCert(%q) DNS names = %#v", input, leaf.Leaf.DNSNames)
+		}
+		roots := x509.NewCertPool()
+		roots.AddCert(ca.Cert)
+		if _, err := leaf.Leaf.Verify(x509.VerifyOptions{DNSName: want, Roots: roots}); err != nil {
+			t.Fatalf("leaf for %q: %v", input, err)
+		}
+	}
+	for _, input := range []string{".local", "web..local", "-web.repo.local", "web.repo-.local", "web_repo.local", "web.repo.localhost", strings.Repeat("a", 64) + ".repo.local"} {
+		if _, err := store.IssueLANHostCert(ca, input, time.Now()); err == nil {
+			t.Fatalf("IssueLANHostCert(%q) error = nil", input)
+		}
+	}
+}
+
 type fileSnapshot struct {
 	Data    string
 	Mode    fs.FileMode

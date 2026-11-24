@@ -22,7 +22,7 @@ func nextConflictHostname(hostname string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	label := strings.TrimSuffix(hostname, ".local.")
+	label, parent, _ := strings.Cut(hostname, ".")
 	base := label
 	number := 2
 	if dash := strings.LastIndexByte(label, '-'); dash > 0 && dash < len(label)-1 {
@@ -38,7 +38,7 @@ func nextConflictHostname(hostname string) (string, error) {
 	if base == "" {
 		return "", fmt.Errorf("mDNS hostname cannot be suffixed")
 	}
-	return base + suffix + ".local.", nil
+	return canonicalHostname(base + suffix + "." + parent)
 }
 
 func compareProbeIPv4(ours, theirs netip.Addr) int {

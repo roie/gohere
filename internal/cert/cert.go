@@ -146,7 +146,7 @@ func (s Store) IssueEphemeralLANHostCert(host string, now time.Time) (tls.Certif
 }
 
 func (s Store) IssueLANHostCert(ca CA, host string, now time.Time) (tls.Certificate, error) {
-	canonical, err := canonicalLANHost(host)
+	canonical, err := CanonicalLANHost(host)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -225,18 +225,12 @@ func canonicalLocalhostHost(host string) (string, error) {
 	return host, nil
 }
 
-func canonicalLANHost(host string) (string, error) {
+func CanonicalLANHost(host string) (string, error) {
 	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
-	label, ok := strings.CutSuffix(host, ".local")
-	if !ok || label == "" || len(label) > 63 || strings.Contains(label, ".") || label[0] == '-' || label[len(label)-1] == '-' {
+	if label, ok := strings.CutSuffix(host, ".local"); !ok || label == "" || !validLocalhostName(host) {
 		return "", fmt.Errorf("invalid LAN hostname %q", host)
 	}
-	for _, character := range label {
-		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
-			return "", fmt.Errorf("invalid LAN hostname %q", host)
-		}
-	}
-	return label + ".local", nil
+	return host, nil
 }
 
 func (s Store) caPaths() (certPath, keyPath, fingerprintPath string) {
