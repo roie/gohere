@@ -194,3 +194,18 @@ func TestQUQueryAlwaysGetsUnicastCopy(t *testing.T) {
 		})
 	}
 }
+
+func TestDirectUnicastQueryGetsUnicastReply(t *testing.T) {
+	responder, clock, transport, _ := activeTestResponder(t)
+	defer responder.Close()
+	clock.Advance(10 * time.Second)
+	source := netip.MustParseAddrPort("192.168.1.50:5353")
+	query := new(dns.Msg)
+	query.SetQuestion(testHostname, dns.TypeA)
+	sendTestQuery(t, transport, query, source, netip.AddrPortFrom(testInterface().Prefix.Addr(), 5353))
+	response := readTestResponse(t, transport.writeCh)
+	if response.Destination != source {
+		t.Fatalf("destination = %s, want %s", response.Destination, source)
+	}
+	assertARecord(t, unpackTestMessage(t, response.Payload).Answer[0], recordTTL, true)
+}

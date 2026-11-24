@@ -156,7 +156,9 @@ func newPlatformTransport(spec Interface) (transport, error) {
 		return controlErr
 	}}
 
-	packetConn, err := listenConfig.ListenPacket(context.TODO(), "udp4", "0.0.0.0:5353")
+	// Windows gives a unicast datagram for a shared wildcard port to only one socket; binding the
+	// interface address makes direct unicast queries (RFC 6762 section 5.5) reach this responder.
+	packetConn, err := listenConfig.ListenPacket(context.TODO(), "udp4", netip.AddrPortFrom(spec.Prefix.Addr(), 5353).String())
 	if err != nil {
 		return nil, fmt.Errorf("listen for Windows LAN mDNS: %w", err)
 	}

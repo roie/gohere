@@ -9,8 +9,11 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func windowsNativeInterface(t *testing.T) Interface {
@@ -192,5 +195,56 @@ func TestWindowsTransportReadHonorsCancellation(t *testing.T) {
 	_, err = tr.ReadPacket(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ReadPacket() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestWindowsTransportReceivesDirectUnicastBesideWildcardSocket(t *testing.T) {
+	iface := windowsNativeInterface(t)
+	tr, err := newPlatformTransport(iface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+
+	competitorConfig := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
+		var controlErr error
+		if err := raw.Control(func(fd uintptr) {
+			controlErr = windows.SetsockoptInt(windows.Handle(fd), windows.SOL_SOCKET, windows.SO_REUSEADDR, 1)
+		}); err != nil {
+			return err
+		}
+		return controlErr
+	}}
+	competitor, err := competitorConfig.ListenPacket(context.Background(), "udp4", "0.0.0.0:5353")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer competitor.Close()
+
+	sender, err := net.ListenUDP("udp4", &net.UDPAddr{IP: iface.Prefix.Addr().AsSlice()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	payload := []byte("gohere-direct-unicast-" + strconv.FormatInt(time.Now().UnixNano(), 10))
+	destination := netip.AddrPortFrom(iface.Prefix.Addr(), 5353)
+	if _, err := sender.WriteToUDPAddrPort(payload, destination); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for {
+		pkt, err := tr.ReadPacket(ctx)
+		if err != nil {
+			t.Fatalf("direct unicast query was not delivered to the responder: %v", err)
+		}
+		if string(pkt.Payload) != string(payload) {
+			continue
+		}
+		if pkt.Destination != destination {
+			t.Fatalf("destination = %s, want %s", pkt.Destination, destination)
+		}
+		return
 	}
 }

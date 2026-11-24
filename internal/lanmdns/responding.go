@@ -71,10 +71,11 @@ func responseDestinations(inbound packet, question dns.Question, lastMulticast, 
 		}
 		return []netip.AddrPort{inbound.Source}
 	}
-	if question.Qclass&cacheFlushBit == 0 || !onLink {
+	unicastRequested := question.Qclass&cacheFlushBit != 0 || inbound.Destination != mdnsIPv4AddrPort
+	if !unicastRequested || !onLink {
 		return []netip.AddrPort{mdnsIPv4AddrPort}
 	}
-	// Wi-Fi often delays multicast to sleeping clients, so a QU querier always gets a unicast copy.
+	// Wi-Fi often delays multicast to sleeping clients, so a querier asking for unicast always gets a unicast copy.
 	if now.Sub(lastMulticast) < time.Duration(recordTTL/4)*time.Second {
 		return []netip.AddrPort{inbound.Source}
 	}
