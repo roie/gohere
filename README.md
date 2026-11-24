@@ -167,7 +167,7 @@ LAN sharing selects one safe private IPv4 interface and fails closed on ambiguou
 
 The terminal also shows a setup URL and QR for devices that do not yet trust the gohere installation CA. The QR opens a device-specific setup page. Verify the displayed fingerprint before installing the certificate, and only install it on devices you control.
 
-On iPhone or iPad:
+On iOS:
 
 1. Open the setup URL in Safari. Chrome's secure-connections setting may upgrade and block the initial HTTP bootstrap URL.
 2. Install the downloaded profile under **Settings → General → VPN & Device Management**.
@@ -179,7 +179,7 @@ After one-time trust setup, scan the QR again or open the persistent LAN URL. Sh
 
 Windows LAN sharing requires the selected network profile to be Private. The first share may show a Windows Firewall approval prompt. In WSL, the Windows gohere authority owns the LAN listeners, certificate, mDNS responder, and firewall rules.
 
-Devices find `.local` names with multicast DNS. Some Wi-Fi boosters, extenders, and mesh systems delay multicast by several seconds. iPhone and iPad keep asking, so the first open can be slow. Android asks once and waits two seconds. When the answer is late, Android asks the regular DNS server, gets "not found", and keeps showing `DNS_PROBE_POSSIBLE` or `ERR_NAME_NOT_RESOLVED` for that name until its DNS cache expires, which can take hours. Reconnecting the phone to Wi-Fi clears that cache. Connecting the phone and computer to the same access point avoids the delay.
+Devices find `.local` names with multicast DNS. Some Wi-Fi boosters, extenders, and mesh systems delay multicast by several seconds. iOS keeps asking, so the first open can be slow. Android asks once and waits two seconds. When the answer is late, Android asks the regular DNS server, gets "not found", and keeps showing `DNS_PROBE_POSSIBLE` or `ERR_NAME_NOT_RESOLVED` for that name until its DNS cache expires, which can take hours. Reconnecting the phone to Wi-Fi clears that cache. Connecting the phone and computer to the same access point avoids the delay.
 
 For static folders, `gohere` serves `index.html`. Files are served only from inside the static folder; symlinks that point outside it are not followed. You can also open a specific file, for example `gohere about.html`, which routes to `https://myproject.localhost/about.html`.
 

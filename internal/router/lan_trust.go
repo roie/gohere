@@ -180,7 +180,7 @@ func lanTrustSetupSteps(userAgent, base string) string {
 	case strings.Contains(userAgent, "Android"):
 		return android
 	default:
-		return strings.Replace(apple, "<section>", "<section><h2>iPhone or iPad</h2>", 1) + strings.Replace(android, "<section>", "<section><h2>Android</h2>", 1)
+		return strings.Replace(apple, "<section>", "<section><h2>iOS</h2>", 1) + strings.Replace(android, "<section>", "<section><h2>Android</h2>", 1)
 	}
 }
 
