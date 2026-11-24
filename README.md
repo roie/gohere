@@ -179,6 +179,8 @@ After one-time trust setup, scan the QR again or open the persistent LAN URL. Sh
 
 Windows LAN sharing requires the selected network profile to be Private. The first share may show a Windows Firewall approval prompt. In WSL, the Windows gohere authority owns the LAN listeners, certificate, mDNS responder, and firewall rules.
 
+Devices find `.local` names with multicast DNS. Some Wi-Fi boosters, extenders, and mesh systems delay multicast by several seconds. iPhone and iPad keep asking, so the first open can be slow. Android asks once and waits two seconds. When the answer is late, Android asks the regular DNS server, gets "not found", and keeps showing `DNS_PROBE_POSSIBLE` or `ERR_NAME_NOT_RESOLVED` for that name until its DNS cache expires, which can take hours. Reconnecting the phone to Wi-Fi clears that cache. Connecting the phone and computer to the same access point avoids the delay.
+
 For static folders, `gohere` serves `index.html`. Files are served only from inside the static folder; symlinks that point outside it are not followed. You can also open a specific file, for example `gohere about.html`, which routes to `https://myproject.localhost/about.html`.
 
 CSS, images, and scripts are served normally.
